@@ -1,0 +1,115 @@
+# Eingefrorener Messkorpus. Phase-0-Plan Schritt 5.
+#
+# Eingefroren am 2026-08-04, VOR der ersten Messung. Wer hier spaeter etwas
+# aendert, aendert die Grundlage aller Zahlen -- dann sind die alten Zahlen weg,
+# nicht vergleichbar.
+#
+# Die Klassen sind nicht Dekoration: an genau ihnen scheitern mehrsprachige
+# Klon-Modelle. `code_switching` ist der wichtigste Fall fuer Kriterium D --
+# englischer Fachbegriff im deutschen Satz, wo ein Modell mit einem
+# `language`-Schalter zwangslaeufig eine Sprache falsch bedient.
+
+de:
+  - id: de_kurz_01
+    klasse: kurz
+    text: "Fertig."
+  - id: de_kurz_02
+    klasse: kurz
+    text: "Das war knapp."
+  - id: de_zahlen_01
+    klasse: zahlen
+    text: "Die Runde dauerte 12 Minuten und 47 Sekunden, Endstand 3 zu 1."
+  - id: de_zahlen_02
+    klasse: zahlen
+    text: "1998 kostete das Gerät 2.499 Mark, heute wären das rund 2.100 Euro."
+  - id: de_abkuerzung_01
+    klasse: abkuerzung
+    text: "Die GPU hat 32 GB VRAM, die CPU 16 Kerne, z. B. für Builds."
+  - id: de_abkuerzung_02
+    klasse: abkuerzung
+    text: "Bitte d. h. nicht vor 8 Uhr, ggf. auch später, ca. gegen Mittag."
+  - id: de_komposita_01
+    klasse: komposita
+    text: "Der Grundstücksverkehrsgenehmigungszuständigkeitsübertragungsbeschluss liegt vor."
+  - id: de_komposita_02
+    klasse: komposita
+    text: "Sprachsynthesequalitätsbewertung ist ein Donnerwortungetüm."
+  - id: de_eigennamen_01
+    klasse: eigennamen
+    text: "Matthias arbeitet an Meat Machine Cycle, veröffentlicht über Clay Machine Games."
+  - id: de_code_switching_01
+    klasse: code_switching
+    text: "Der Service läuft als systemd unit und streamt raw PCM über einen Unix socket."
+  - id: de_code_switching_02
+    klasse: code_switching
+    text: "Ich habe den Pull Request gemerged, aber das Deployment hängt noch im Staging."
+  - id: de_interpunktion_01
+    klasse: interpunktion
+    text: "Wirklich? Ja — wirklich! Und zwar sofort; ohne Wenn und Aber."
+  - id: de_lang_01
+    klasse: lang
+    text: "Die Charakterstufe springt nur an, wenn genug Grafikspeicher frei ist, sonst spricht die schnelle Stufe."
+  - id: de_lang_02
+    klasse: lang
+    text: "Nach dem letzten Boss öffnet sich der Aufzug, und du entscheidest, ob du weitergehst oder umkehrst."
+
+en:
+  - id: en_kurz_01
+    klasse: kurz
+    text: "Done."
+  - id: en_kurz_02
+    klasse: kurz
+    text: "That was close."
+  - id: en_zahlen_01
+    klasse: zahlen
+    text: "The run took 12 minutes and 47 seconds, final score 3 to 1."
+  - id: en_abkuerzung_01
+    klasse: abkuerzung
+    text: "The GPU has 32 GB of VRAM and the CPU has 16 cores, e.g. for builds."
+  - id: en_eigennamen_01
+    klasse: eigennamen
+    text: "Matthias works on Meat Machine Cycle, published by Clay Machine Games."
+  - id: en_interpunktion_01
+    klasse: interpunktion
+    text: "Really? Yes — really! Right now; no ifs, no buts."
+  - id: en_lang_01
+    klasse: lang
+    text: "The character stage only kicks in when there is enough video memory free, otherwise the fast stage speaks."
+  - id: en_lang_02
+    klasse: lang
+    text: "After the final boss the elevator opens, and you decide whether to keep going or turn back."
+
+# Kriterium D: dieselben Saetze spricht Matthias selbst ein (Baseline). Die
+# `risiko`-Stellen sind VOR dem Hoeren markiert -- ein Treffer zaehlt nur, wenn
+# die Stelle hoerbar deutscher klingt als dieselbe Stelle in seiner Aufnahme.
+akzent_check:
+  - id: ak_01
+    text: "The squirrel thoroughly rewired the whole thing."
+    risiko: ["squirrel", "thoroughly", "th in the"]
+  - id: ak_02
+    text: "We should have thought about the weather earlier."
+    risiko: ["thought", "weather", "w in we"]
+  - id: ak_03
+    text: "Version three point five is available on the world wide web."
+    risiko: ["three", "version", "world wide web"]
+  - id: ak_04
+    text: "That vase is very valuable, and quite vulnerable."
+    risiko: ["vase", "very", "valuable", "v vs w"]
+  - id: ak_05
+    text: "Rural jurors rarely worry about clarity."
+    risiko: ["rural", "jurors", "r-Laut"]
+  - id: ak_06
+    text: "She sells sea shells, and the shop shuts at six."
+    risiko: ["she", "sells", "s vs z am Wortanfang"]
+  - id: ak_07
+    text: "I would rather write a wrapper than rewrite the whole runtime."
+    risiko: ["rather", "write", "wrapper", "w"]
+  - id: ak_08
+    text: "The judge acknowledged the language, though the wording was vague."
+    risiko: ["judge", "acknowledged", "though", "vague"]
+  - id: ak_09
+    text: "Comfortable, vegetable, and reasonable are all shorter than they look."
+    risiko: ["comfortable", "vegetable", "Vokalreduktion"]
+  - id: ak_10
+    text: "Data, status, and process are pronounced differently over there."
+    risiko: ["data", "status", "process"]
