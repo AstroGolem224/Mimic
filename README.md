@@ -15,23 +15,34 @@ Plan, Glossar und ADRs: `~/Dokumente/UMBRA-Notes/DDs/Mimic/`
 |---|---|---|
 | A | Blackwell — E2E-CUDA-Lauf ohne CPU-Fallback | ✅ **PASS** — GPU 63 %, VRAM +6222 MiB |
 | B | Klang-Treue — verblindete Echt/Synthetisch-Unterscheidung, ≤ 8/12 richtig | ⏳ braucht Aufnahmen |
-| C | Latenz — TTFA p95 < 300 ms (`mf`, warm, n ≥ 50) | ✅ **PASS** — 40.2 ms / 105.7 ms |
+| C | Latenz — TTFA p95 < 300 ms (`mf`, warm, n ≥ 50) | ✅ **PASS** — 90.9 ms |
 | D | Akzent-Leakage — ≤ 2 Treffer gegen eigene englische Baseline | ⏳ braucht Aufnahmen |
-| E | Kaltstart-Bereitschaft — binnen 60 s bedienbar | ✅ **PASS** — 58.1 s / 21.9 s |
+| E | Kaltstart-Bereitschaft — binnen 60 s bedienbar | ✅ **PASS** — 7.1 s |
 
-Zwei Zahlen je Kriterium = `optimize=True` / `optimize=False`.
 
-### Messwerte (RTX 5090, Treiber 610.43.02, torch 2.8.0+cu128, `mf`)
+### Messwerte
 
-| | `optimize=True` | `optimize=False` |
+RTX 5090, Treiber 610.43.02, torch 2.8.0+cu128, Checkpoint `mf`, `MemoryMax=8G` hart.
+Betriebspunkt: `optimize=False`, Modellkonstruktion direkt auf der GPU (`laden.py`).
+
+| | `optimize=False` | `optimize=True` |
 |---|---|---|
-| TTFA p95 | 40.2 ms | 105.7 ms |
-| RTF median | 0.1603 | 0.5250 |
-| Kaltstart bis erstes Audio | 58.1 s | 21.9 s |
-| Marge zu dAImons `GPU_FRIST_S=120` | 2.1× | 6.2× |
+| TTFA p95 | **90.9 ms** | — |
+| RTF median | 0.5199 | 0.16 |
+| Kaltstart bis erstes Audio | **7.1 s** | 94.1 s (**reißt E**) |
+| Marge zu dAImons `GPU_FRIST_S=120` | 30.8× | 1.5× |
 
-`soar` + `mf` gleichzeitig resident: 11.2 GiB von 32 — Moduswechsel braucht keinen
-Prozessneustart. `del` + `empty_cache()` gibt bei dots.tts 5530 MiB zurück.
+**RAM ist der Engpass, nicht VRAM.** Ein Lauf mit den Torch-Defaults wurde vom Kernel
+OOM-gekillt (`anon-rss 10.3 GB`). Ursache: `from_pretrained` baut das Modell auf der CPU
+in fp32 (~8 GB), bevor es nach cuda/bf16 wandert.
+
+| Ladepfad | RAM-Spitze | RAM Ruhe | Ladezeit |
+|---|---|---|---|
+| Torch-Defaults | 12479 MiB | 4357 MiB | 14.5 s |
+| `torch.device("cuda")` | **5514 MiB** | **2269 MiB** | **4.3 s** |
+
+`soar` + `mf` gleichzeitig: 11.2 GiB VRAM — passt. In RAM ~20 GB — passt **nicht**.
+
 
 ## Spike ausführen
 
