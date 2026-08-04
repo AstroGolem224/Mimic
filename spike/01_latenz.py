@@ -68,13 +68,8 @@ def perzentil(werte: list[float], p: float) -> float:
 
 
 def lade(optimize: bool):
-    from dots_tts.runtime import DotsTtsRuntime
-
-    ckpt = REVS["mf"]
-    return DotsTtsRuntime.from_pretrained(
-        ckpt["repo"], revision=ckpt["revision"],
-        precision="bfloat16", optimize=optimize,
-    )
+    import laden
+    return laden.runtime("mf", optimize=optimize)
 
 
 def ein_ttfa(rt, text: str, lang: str) -> tuple[float, float, float]:

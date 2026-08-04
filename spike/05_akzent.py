@@ -70,10 +70,8 @@ def erzeugen() -> int:
               f"\n  -> uv run python 02_aufnehmen.py akzent")
         return 2
 
-    from dots_tts.runtime import DotsTtsRuntime
-    c = REVS["soar"]
-    rt = DotsTtsRuntime.from_pretrained(
-        c["repo"], revision=c["revision"], precision="bfloat16", optimize=False)
+    import laden
+    rt = laden.runtime("soar")
     prompt_text = open(ref_txt).read().strip()
 
     os.makedirs(MIMIC, exist_ok=True)
