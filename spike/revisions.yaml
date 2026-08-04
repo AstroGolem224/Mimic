@@ -1,0 +1,9 @@
+# Eingefrorene Checkpoint-Revisionen. Phase-0-Plan Schritt 2: feste HF-Commits, kein `main`.
+# Ermittelt 2026-08-04 ueber die HF-API.
+checkpoints:
+  mf:
+    repo: dots-studio/dots.tts-mf
+    revision: 25c53fb462e57087e52237daa5ea30df1c5cc328
+  soar:
+    repo: dots-studio/dots.tts-soar
+    revision: e3520f75254d0020a0406db31c51a79d00d22d55
