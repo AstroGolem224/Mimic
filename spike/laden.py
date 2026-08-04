@@ -21,6 +21,23 @@ Device-Platzierung, nicht die Praezision.
 Das State-Dict geht weiterhin ueber die CPU: `model.py:350` haelt
 `load_file(path, device="cpu")` fest. Das ist der verbleibende Rest der Spitze
 und waere nur mit einem Upstream-Patch wegzubekommen.
+
+Sprach-Tag
+----------------------------------------------------------------------------
+`SPRACH_TAG` ist die zweite Festlegung aus Phase 0. dots.tts' `language`-Wert
+ist kein Modellschalter, sondern nur ein Praefix am Text (`utils/text.py:77`).
+Gehoert-Vergleich am 2026-08-04 ueber sechs Satzpaare, je einmal `de` und
+einmal `en`, inklusive Kontrollsatz auf reinem Englisch: **`en` gewinnt
+ueberall**, auch bei reinem Deutsch und auch beim Kompositum-Ungetuem. Mit
+`de` bekommen englische Fachbegriffe im deutschen Satz deutsche Phonetik
+("gemerdscht"), was fuer dAImon kein Randfall ist.
+
+Damit entfaellt der Baustein "Sprache pro Aeusserung erkennen", den ein
+`de`-Default gebraucht haette.
+
+Belastbarkeit: sechs Paare, ein Hoerer, unverblindet -- richtungsweisend, keine
+Messung. Der Gegentest ist billig (`07_sprachtag.py`), falls der Eindruck
+spaeter kippt.
 """
 
 from __future__ import annotations
@@ -29,6 +46,8 @@ import os
 
 import torch
 import yaml
+
+SPRACH_TAG = "en"
 
 REVS = yaml.safe_load(
     open(os.path.join(os.path.dirname(__file__), "revisions.yaml"))

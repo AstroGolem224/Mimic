@@ -77,7 +77,7 @@ def erzeugen() -> int:
 
     os.makedirs(MIMIC, exist_ok=True)
     for sid in ids:
-        out = rt.generate(text=texte[sid], language="de",
+        out = rt.generate(text=texte[sid], language=laden.SPRACH_TAG,
                           prompt_audio_path=ref_wav, prompt_text=prompt_text)
         sf.write(f"{MIMIC}/{sid}.wav",
                  out["audio"].squeeze().float().cpu().numpy(), out["sample_rate"])

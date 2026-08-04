@@ -76,9 +76,9 @@ def erzeugen() -> int:
 
     os.makedirs(MIMIC, exist_ok=True)
     for e in eintraege:
-        # Deutsche Referenz, englischer Text, language="en" -- genau die
-        # Konstellation, in der Akzent-Leakage entsteht.
-        out = rt.generate(text=e["text"], language="en",
+        # Deutsche Referenz, englischer Text -- genau die Konstellation, in
+        # der Akzent-Leakage entsteht. Tag kommt aus dem Betriebspunkt.
+        out = rt.generate(text=e["text"], language=laden.SPRACH_TAG,
                           prompt_audio_path=ref_wav, prompt_text=prompt_text)
         sf.write(f"{MIMIC}/{e['id']}.wav",
                  out["audio"].squeeze().float().cpu().numpy(), out["sample_rate"])

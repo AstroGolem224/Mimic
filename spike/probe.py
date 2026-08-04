@@ -33,7 +33,8 @@ STANDARD = [
 def main(argv: list[str]) -> int:
     ckpt_name = "mf" if "--mf" in argv else "soar"
     eigene = [a for a in argv if not a.startswith("--")]
-    saetze = [("de", s) for s in eigene] if eigene else STANDARD
+    # Alles faehrt das Sprach-Tag aus laden.SPRACH_TAG -- siehe dort.
+    saetze = [(None, s) for s in eigene] if eigene else STANDARD
 
     ref_wav, ref_txt = f"{STIMME}/ref.wav", f"{STIMME}/ref.txt"
     for p in (ref_wav, ref_txt):
@@ -52,7 +53,7 @@ def main(argv: list[str]) -> int:
 
     os.makedirs(OUT, exist_ok=True)
     for i, (lang, text) in enumerate(saetze, 1):
-        out = rt.generate(text=text, language=lang,
+        out = rt.generate(text=text, language=laden.SPRACH_TAG,
                           prompt_audio_path=ref_wav, prompt_text=prompt_text)
         pfad = f"{OUT}/{i:02d}_{lang}.wav"
         sf.write(pfad, out["audio"].squeeze().float().cpu().numpy(), out["sample_rate"])
