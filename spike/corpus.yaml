@@ -113,3 +113,24 @@ akzent_check:
   - id: ak_10
     text: "Data, status, and process are pronounced differently over there."
     risiko: ["data", "status", "process"]
+
+# Referenztext fuer den Klon. ~10 s zusammenhaengende Sprache -- laut README
+# bringt laenger nichts. Inhaltlich neutral, damit die Aufnahme nicht in einem
+# Jahr peinlich ist, und mit genug Vokalvielfalt fuer ein brauchbares Timbre.
+referenz:
+  id: ref_matthias
+  text: >-
+    Ich sitze hier an meinem Schreibtisch und lese diesen Absatz einmal ruhig
+    vor, in ganz normalem Tempo, so wie ich auch sonst rede. Kein Vortrag, keine
+    Betonung, einfach nur ein paar Sätze am Stück.
+
+# Kriterium B: diese sechs Texte spricht Matthias selbst UND Mimic. Sechs Paare,
+# zwoelf Proben, verblindet gemischt. Bewusst NICHT der Referenztext -- sonst
+# wuerde der Klon gegen sein eigenes Trainingsmaterial antreten.
+blindtest:
+  - de_lang_01
+  - de_lang_02
+  - de_zahlen_01
+  - de_eigennamen_01
+  - de_interpunktion_01
+  - de_code_switching_02
