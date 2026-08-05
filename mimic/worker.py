@@ -130,7 +130,17 @@ class Engine:
         return 202
 
     def emit(self, job: Job, kind: str, payload: bytes) -> bool:
+        # Deckel gegen jeden Pfad, auf dem ein Verbraucher ohne gesetztes
+        # cancelled verschwindet: der Owner-Thread ist einer fuer alle Jobs,
+        # er darf nie unbegrenzt an einem einzigen haengen. Grosszuegig, weil
+        # das Frontend einen lebenden Leser schon nach FRAME_TIMEOUT aufgibt.
+        frist = time.monotonic() + REQUEST_TIMEOUT
         while not job.cancelled.is_set():
+            if time.monotonic() > frist:
+                job.cancelled.set()
+                print(f"job=emit outcome=abandoned wartezeit_s={REQUEST_TIMEOUT:.0f}",
+                      file=sys.stderr, flush=True)
+                return False
             try:
                 job.events.put((kind, payload), timeout=0.1)
                 return True
@@ -619,12 +629,17 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 400 if exc.reason == "bad_request" else 429)
             self._error(status, exc.reason, exc.message, **exc.details)
             return
-        self.send_response(200)
-        self.send_header("Content-Type", "application/vnd.mimic.frames")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.send_header("Connection", "close")
-        self.end_headers()
+        # Der Kopf gehoert in dasselbe try wie der Stream: bricht die Gegenstelle
+        # zwischen submit und end_headers weg, verliess die BrokenPipeError den
+        # Handler ohne job.cancelled -- der Owner-Thread blieb dann fuer immer in
+        # emit() haengen und der Worker nahm keinen Job mehr an, ohne eine Zeile
+        # zu loggen.
         try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.mimic.frames")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
             while True:
                 kind, payload = job.events.get(timeout=REQUEST_TIMEOUT + 5)
                 write_chunk(self.wfile, encode_frame(kind, payload))

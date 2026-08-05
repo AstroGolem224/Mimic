@@ -447,6 +447,52 @@ class SchemaAndGuiTests(unittest.TestCase):
         return "offen"
 
 
+class OwnerFreigabeTests(unittest.TestCase):
+    """Der Owner-Thread ist einer fuer alle Jobs. Haengt er, ist der Dienst tot."""
+
+    def test_wegbrechender_leser_vor_dem_kopf_gibt_den_owner_frei(self):
+        from mimic import worker
+
+        engine = fresh_engine()
+        engine.state = "warm"
+        engine.runtimes = {"mf": object()}
+        koerper = json.dumps({"text": "x", "voice": "matthias", "mode": "mf"}).encode()
+
+        class ToterSocket(io.BytesIO):
+            def write(self, _daten):
+                raise BrokenPipeError(32, "Broken pipe")
+
+        handler = worker.WorkerHandler.__new__(worker.WorkerHandler)
+        handler.path = "/synthesize"
+        handler.request_version = "HTTP/1.1"
+        handler.headers = {"Content-Length": str(len(koerper))}
+        handler.rfile = io.BytesIO(koerper)
+        handler.wfile = ToterSocket()
+        handler.log_request = lambda *_args, **_kwargs: None
+        # ENGINE ist im Modul nur annotiert, den Wert setzt erst main().
+        with mock.patch.object(worker, "ENGINE", engine, create=True):
+            handler.do_POST()
+
+        self.assertEqual(1, len(engine.jobs), "Job wurde eingereiht")
+        job = engine.jobs[0]
+        self.assertTrue(job.cancelled.is_set(),
+                        "cancelled muss gesetzt sein, sonst haengt emit() ewig")
+        self.assertFalse(engine.emit(job, "A", b"\0\0"))
+
+    def test_emit_gibt_nach_der_frist_auf_statt_ewig_zu_warten(self):
+        from mimic import worker
+
+        engine = fresh_engine()
+        job = worker.Job(0, 0, {"text": "x", "voice": "matthias", "mode": "mf"})
+        while not job.events.full():
+            job.events.put(("A", b"\0\0"))
+        with mock.patch.object(worker, "REQUEST_TIMEOUT", 0.2):
+            gestartet = time.monotonic()
+            self.assertFalse(engine.emit(job, "A", b"\0\0"))
+        self.assertLess(time.monotonic() - gestartet, 2.0)
+        self.assertTrue(job.cancelled.is_set())
+
+
 class Phase2bTests(unittest.TestCase):
     def test_require_warm_wird_vor_dem_einreihen_abgelehnt(self):
         from mimic import worker
