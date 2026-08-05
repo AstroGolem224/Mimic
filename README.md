@@ -54,12 +54,44 @@ Sätze ab. 10–15 s ist auch der einzige gemessene Bereich — die Phase-0-Refe
 Zeile je Einsatz, `#stimme: "Text"` setzt den Sprecher, eine Zeile ohne Präfix
 erbt ihn von der Zeile darüber, `//` ist ein Kommentar. Doppelklick auf eine
 Stimme fügt den Kopf ein. **Abspielen** streamt alles durch ein einziges
-`pw-cat`, **Als WAV speichern** sammelt dieselben Blöcke und schreibt eine
-Datei. **Stopp** killt `pw-cat` und schließt die Verbindung — der Worker sieht
-den Abbruch und hört auf zu rechnen (`outcome=cancelled` im Log). Die Auswahl
-**Modus** schaltet zwischen `mf` (Realtime, Vorgabe) und `soar` (Batch, besser
-für gespeicherte Dateien). tkinter aus der Standardbibliothek, keine
-zusätzliche Abhängigkeit.
+`pw-cat`, **Als WAV** sammelt dieselben Blöcke und lädt die Datei ins
+Download-Verzeichnis. **Stopp** (oder `Esc`) killt `pw-cat` und schließt die
+Verbindung — der Worker sieht den Abbruch und hört auf zu rechnen
+(`outcome=cancelled` im Log). **Warmlauf** lädt `mf` vor, damit der erste Satz
+nicht auf das Modell wartet. Der Schalter **Modus** wechselt zwischen `mf`
+(Realtime, Vorgabe) und `soar` (Batch, besser für gespeicherte Dateien).
+`Strg`+`Enter` im Skriptfeld spricht. Kopfzeile zeigt Zustand, Modus,
+Warteschlange, freien VRAM und Laufzeit des Dienstes live; das Band unter dem
+Skript zeichnet die Pegel der laufenden Ausgabe.
+
+### Stimmenwerkstatt
+
+**Klonen** öffnet die Werkstatt-Schublade. Reiter *Neu aufnehmen*: Profilname
+(live gegen `VOICE_RE` und die vorhandenen Profile geprüft), eine der Vorlagen
+aus `charaktere.py` oder eigener Text, die Regieanweisung als Teleprompter
+darüber. Der Aufnahmeknopf startet `pw-record` mit 48 kHz mono s16 direkt ins
+Profilverzeichnis — dieselbe Mechanik wie `mimic record`, nur ohne Terminal.
+Die Zielzonenleiste zeigt live, wo du stehst: unter 3 s lehnt der Dienst ab,
+8–15 s ist der einzige gemessene Bereich (siehe `charaktere.py`), ab 60 s ist
+Schluss, und nach 90 s stoppt eine Notbremse eine vergessene Aufnahme. Danach
+Take abhören, dann *Behalten* (schreibt `ref.wav`/`ref.txt` mit 0700/0600 und
+lässt das Profil vom Dienst gegenprüfen), *Nochmal* oder *Verwerfen*. Ein
+abgebrochener erster Versuch lässt kein leeres Verzeichnis zurück. Nach dem
+Speichern sprichst du direkt einen Probesatz mit der frischen Stimme.
+
+Reiter *Verwalten*: alle Profile mit Dauer und Referenztext, defekte mit
+Grund. Referenz anhören, Probesatz sprechen, löschen — Löschen ist
+zweistufig, der erste Klick schärft nur. Ein bestehendes Profil neu
+aufzunehmen ist erlaubt, die Oberfläche warnt vorher, dass die alte Referenz
+dabei verloren geht. Aufnahme und Sprechauftrag schließen sich gegenseitig aus.
+
+Die Oberfläche ist HTML (`mimic/gui.html`) und läuft in einem
+Chromium-App-Fenster gegen einen Loopback-Server aus `http.server`, der nur
+solange lebt wie das Fenster und jede Anfrage gegen ein Zufallstoken prüft.
+Grund: echtes Glas, weiche Schatten und Rundungen gibt Tk nicht her, und ein
+Toolkit mit eigenem Renderer wäre eine dreistellige Megabyte-Abhängigkeit für
+ein Fenster mit vier Knöpfen. Ohne Chromium/Brave/Chrome öffnet `mimic gui`
+den Standardbrowser. Weiterhin keine zusätzliche Python-Abhängigkeit.
 
 Starter für die Arbeitsfläche:
 

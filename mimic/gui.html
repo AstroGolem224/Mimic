@@ -1,0 +1,1102 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mimic</title>
+<style>
+/* ═══ VITRINE ════════════════════════════════════════════════════════════
+   Anthrazit-Vitrine: geschliffenes Glas ueber Cyan/Violett-Leuchten,
+   Bedienteile aus dem Gehaeuse extrudiert. Alle Schriften liegen lokal.
+   ════════════════════════════════════════════════════════════════════ */
+:root{
+  --tinte:#06090b;
+  --anthrazit:#0d1216;
+  --anthrazit-hoch:#151c22;
+  --glas:rgba(23,32,39,.52);
+  --glas-tief:rgba(14,20,25,.66);
+  --rand:rgba(150,225,230,.11);
+  --rand-hell:rgba(180,240,245,.22);
+
+  --cyan:#2fe3d3;
+  --cyan-matt:#1a9c93;
+  --cyan-tief:#07343a;
+  --violett:#a878ff;
+  --violett-matt:#7a4fd6;
+  --violett-tief:#211636;
+  --bernstein:#ffb45c;
+  --koralle:#ff5f6d;
+
+  --text:#dcebed;
+  --text-leise:#7e959b;
+  --text-still:#4e6167;
+
+  --erhaben:-5px -5px 13px rgba(255,255,255,.030), 7px 9px 22px rgba(0,0,0,.58);
+  --erhaben-klein:-2px -2px 6px rgba(255,255,255,.028), 3px 4px 11px rgba(0,0,0,.52);
+  --vertieft:inset 5px 5px 13px rgba(0,0,0,.60), inset -3px -3px 9px rgba(255,255,255,.028);
+  --r:16px;
+  --takt:cubic-bezier(.22,.68,.36,1);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--tinte);
+  color:var(--text);
+  font:400 14px/1.5 "Fira Sans","Fira Sans Book",Cantarell,sans-serif;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ── Atmosphaere: zwei driftende Leuchten + Rasterhauch + Korn ───────── */
+.bloom,.raster,.korn{position:fixed;inset:0;pointer-events:none}
+.bloom{
+  background:
+    radial-gradient(46rem 34rem at 8% 104%, rgba(47,227,211,.22), transparent 62%),
+    radial-gradient(40rem 30rem at 96% -8%, rgba(168,120,255,.24), transparent 60%),
+    radial-gradient(28rem 22rem at 62% 58%, rgba(26,156,147,.10), transparent 70%),
+    linear-gradient(168deg,#0b1014,#070a0c 58%,#0a0d13);
+  animation:drift 46s var(--takt) infinite alternate;
+}
+@keyframes drift{
+  from{transform:translate3d(0,0,0) scale(1)}
+  to{transform:translate3d(-1.6%,1.2%,0) scale(1.055)}
+}
+.raster{
+  background-image:
+    linear-gradient(rgba(150,225,230,.030) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(150,225,230,.030) 1px, transparent 1px);
+  background-size:52px 52px;
+  mask-image:radial-gradient(70% 60% at 50% 40%,#000 20%,transparent 88%);
+}
+.korn{
+  opacity:.075;mix-blend-mode:soft-light;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='180' height='180' filter='url(%23n)'/></svg>");
+}
+
+/* ── Grundraster ────────────────────────────────────────────────────── */
+.huelle{
+  position:relative;height:100%;
+  display:grid;
+  grid-template-columns:262px minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr) auto auto;
+  gap:14px;padding:16px 18px 18px;
+}
+
+/* ── Kopf ───────────────────────────────────────────────────────────── */
+header{
+  grid-column:1/-1;
+  display:flex;align-items:center;gap:22px;
+  padding:0 4px 2px;
+}
+.marke{display:flex;align-items:baseline;gap:11px;flex:0 0 auto}
+.marke b{
+  font-family:"Fira Sans Compressed","Fira Sans Condensed","Fira Sans",sans-serif;
+  font-weight:800;font-size:30px;letter-spacing:.30em;text-transform:uppercase;
+  background:linear-gradient(102deg,var(--cyan) 0%,#8fe9ff 34%,var(--violett) 82%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 0 22px rgba(47,227,211,.22));
+}
+.marke i{
+  font-style:normal;font-size:10px;letter-spacing:.34em;text-transform:uppercase;
+  color:var(--text-still);
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+}
+/* Fuellt die Fuge zwischen Marke und Telemetrie, statt sie leer zu lassen */
+.fuge{
+  flex:1;height:100%;min-width:40px;align-self:stretch;
+  background-image:
+    linear-gradient(90deg, rgba(150,225,230,.20), rgba(150,225,230,0) 72%),
+    repeating-linear-gradient(90deg, rgba(150,225,230,.14) 0 1px, transparent 1px 13px);
+  background-size:100% 1px, 100% 7px;
+  background-position:0 62%, 0 62%;
+  background-repeat:no-repeat;
+  mask-image:linear-gradient(90deg,#000,rgba(0,0,0,.15) 82%,transparent);
+}
+
+/* Telemetrie im Kopf: Glasstreifen mit Trennfugen */
+.telemetrie{
+  margin-left:auto;display:flex;align-items:stretch;gap:0;
+  background:var(--glas);backdrop-filter:blur(20px) saturate(150%);
+  -webkit-backdrop-filter:blur(20px) saturate(150%);
+  border:1px solid var(--rand);border-radius:14px;
+  box-shadow:var(--erhaben-klein), inset 0 1px 0 rgba(255,255,255,.055);
+  overflow:hidden;
+}
+.zelle{
+  padding:9px 16px;min-width:88px;
+  border-left:1px solid rgba(150,225,230,.075);
+}
+.zelle:first-child{border-left:0}
+.zelle u{
+  display:block;text-decoration:none;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-still);
+}
+.zelle span{
+  display:block;margin-top:3px;font-size:15px;font-weight:600;
+  font-variant-numeric:tabular-nums;color:var(--text);
+}
+.zelle span small{font-size:10px;font-weight:400;color:var(--text-still);margin-left:3px}
+
+/* Zustandslampe */
+.lampe{display:flex;align-items:center;gap:8px;margin-top:3px;font-size:15px;font-weight:600}
+.lampe::before{
+  content:"";width:9px;height:9px;border-radius:50%;
+  background:var(--text-still);box-shadow:0 0 0 0 transparent;flex:0 0 auto;
+}
+.lampe.warm::before{background:var(--cyan);box-shadow:0 0 12px 2px rgba(47,227,211,.65);animation:puls 2.4s ease-in-out infinite}
+.lampe.laedt::before{background:var(--bernstein);box-shadow:0 0 12px 2px rgba(255,180,92,.6);animation:puls .9s ease-in-out infinite}
+.lampe.kalt::before{background:#3a474d}
+@keyframes puls{0%,100%{opacity:1}50%{opacity:.38}}
+
+/* VRAM-Balken */
+.vram{width:96px;height:5px;border-radius:3px;margin-top:9px;background:rgba(0,0,0,.55);box-shadow:var(--vertieft);overflow:hidden}
+.vram i{display:block;height:100%;width:0;border-radius:3px;
+  background:linear-gradient(90deg,var(--cyan-matt),var(--cyan) 55%,var(--violett));
+  box-shadow:0 0 10px rgba(47,227,211,.5);transition:width .6s var(--takt)}
+
+/* ── Glaspaneel-Basis ───────────────────────────────────────────────── */
+.paneel{
+  position:relative;min-height:0;
+  background:linear-gradient(158deg,var(--glas),var(--glas-tief));
+  backdrop-filter:blur(24px) saturate(155%);
+  -webkit-backdrop-filter:blur(24px) saturate(155%);
+  border:1px solid var(--rand);border-radius:var(--r);
+  box-shadow:var(--erhaben), inset 0 1px 0 rgba(255,255,255,.06);
+}
+/* Kante mit Lichtlauf oben links */
+.paneel::before{
+  content:"";position:absolute;inset:0;border-radius:var(--r);pointer-events:none;
+  background:linear-gradient(140deg,rgba(47,227,211,.10),transparent 26%,transparent 74%,rgba(168,120,255,.09));
+  mix-blend-mode:screen;
+}
+.titel{
+  display:flex;align-items:center;gap:9px;
+  padding:13px 16px 10px;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:10px;letter-spacing:.26em;text-transform:uppercase;color:var(--text-leise);
+}
+.titel::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--rand),transparent)}
+.titel b{font-weight:600;color:var(--cyan-matt);letter-spacing:.2em}
+
+/* ── Stimmen-Rail ───────────────────────────────────────────────────── */
+.rail{grid-row:2/3;display:flex;flex-direction:column;overflow:hidden}
+.stimmen{
+  flex:1;overflow-y:auto;padding:2px 11px 12px;
+  display:flex;flex-direction:column;gap:7px;
+  scrollbar-width:thin;scrollbar-color:rgba(47,227,211,.25) transparent;
+}
+.stimme{
+  position:relative;cursor:pointer;user-select:none;
+  padding:10px 13px 10px 17px;border-radius:11px;
+  background:linear-gradient(150deg,rgba(255,255,255,.036),rgba(0,0,0,.20));
+  border:1px solid rgba(150,225,230,.06);
+  box-shadow:var(--erhaben-klein);
+  transition:transform .18s var(--takt), box-shadow .18s var(--takt), border-color .18s;
+  animation:auf .42s var(--takt) both;
+}
+.stimme::before{
+  content:"";position:absolute;left:0;top:22%;bottom:22%;width:2px;border-radius:2px;
+  background:var(--text-still);transition:all .22s var(--takt);
+}
+.stimme:hover{transform:translateY(-1px);border-color:var(--rand-hell)}
+.stimme:hover::before{background:var(--cyan-matt);top:14%;bottom:14%}
+.stimme.aktiv{
+  background:linear-gradient(150deg,rgba(47,227,211,.13),rgba(168,120,255,.09));
+  border-color:rgba(47,227,211,.34);
+  box-shadow:var(--erhaben-klein), inset 0 0 24px rgba(47,227,211,.13);
+}
+.stimme.aktiv::before{background:linear-gradient(var(--cyan),var(--violett));top:8%;bottom:8%;width:3px;box-shadow:0 0 12px rgba(47,227,211,.8)}
+.stimme b{display:block;font-weight:500;font-size:13.5px;letter-spacing:.01em}
+.stimme s{
+  display:block;text-decoration:none;margin-top:2px;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-still);
+}
+.stimme.aktiv s{color:var(--cyan-matt)}
+.leer{padding:14px;font-size:12.5px;color:var(--text-still);line-height:1.7}
+.leer code{color:var(--cyan-matt);font-family:"FantasqueSansM Nerd Font",Hack,monospace}
+@keyframes auf{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
+
+.rail footer{padding:9px 11px 11px;border-top:1px solid rgba(150,225,230,.07)}
+
+/* ── Editor ─────────────────────────────────────────────────────────── */
+.werk{grid-row:2/3;display:flex;flex-direction:column;overflow:hidden}
+.werk .titel small{
+  margin-left:auto;text-transform:none;letter-spacing:.04em;font-size:11px;
+  color:var(--text-still);font-family:"Fira Sans",sans-serif;
+}
+.werk .titel small kbd{
+  font-family:"FantasqueSansM Nerd Font",Hack,monospace;font-size:10.5px;
+  padding:1px 5px;border-radius:5px;color:var(--cyan-matt);
+  background:rgba(0,0,0,.4);box-shadow:var(--vertieft);
+}
+.blatt{flex:1;min-height:0;padding:0 13px 13px}
+textarea{
+  width:100%;height:100%;resize:none;
+  background:rgba(4,7,9,.52);color:var(--text);
+  border:1px solid rgba(150,225,230,.07);border-radius:12px;
+  box-shadow:var(--vertieft);
+  padding:15px 17px;
+  font:400 14.5px/1.85 "FantasqueSansM Nerd Font Propo","FantasqueSansM Nerd Font",Hack,monospace;
+  outline:none;transition:border-color .2s, box-shadow .2s;
+  caret-color:var(--cyan);
+}
+textarea::placeholder{color:var(--text-still)}
+textarea:focus{
+  border-color:rgba(47,227,211,.34);
+  box-shadow:var(--vertieft), 0 0 0 3px rgba(47,227,211,.07), 0 0 26px rgba(47,227,211,.09);
+}
+textarea::selection{background:rgba(168,120,255,.34)}
+
+/* ── Wellenband ─────────────────────────────────────────────────────── */
+.welle{
+  grid-column:1/-1;grid-row:3/4;height:72px;overflow:hidden;
+  display:flex;align-items:center;
+}
+.welle canvas{width:100%;height:100%;display:block;border-radius:var(--r)}
+.welle .marke-still{
+  position:absolute;left:18px;top:50%;transform:translateY(-50%);pointer-events:none;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:9px;letter-spacing:.34em;text-transform:uppercase;color:var(--text-still);
+  transition:opacity .4s;
+}
+
+/* ── Transport ──────────────────────────────────────────────────────── */
+.transport{
+  grid-column:1/-1;grid-row:4/5;
+  display:flex;align-items:center;gap:13px;
+  padding:12px 15px;
+}
+.knopf{
+  position:relative;cursor:pointer;border:1px solid rgba(150,225,230,.09);
+  background:linear-gradient(152deg,var(--anthrazit-hoch),#0a0f13);
+  color:var(--text);border-radius:12px;
+  padding:11px 19px;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:11.5px;font-weight:600;letter-spacing:.19em;text-transform:uppercase;
+  box-shadow:var(--erhaben);
+  transition:transform .13s var(--takt), box-shadow .13s var(--takt), color .2s, border-color .2s;
+}
+.knopf:hover:not(:disabled){transform:translateY(-1.5px);border-color:var(--rand-hell)}
+.knopf:active:not(:disabled){transform:translateY(1px);box-shadow:var(--vertieft)}
+.knopf:disabled{opacity:.34;cursor:default;box-shadow:var(--erhaben-klein)}
+.knopf:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+
+/* Grosser runder Spielknopf, aus dem Gehaeuse extrudiert */
+.spiel{
+  width:62px;height:62px;border-radius:50%;padding:0;
+  display:grid;place-items:center;flex:0 0 auto;
+  background:
+    radial-gradient(circle at 34% 28%, rgba(47,227,211,.20), transparent 58%),
+    linear-gradient(150deg,#18242a,#080c0f);
+  border:1px solid rgba(47,227,211,.24);
+  box-shadow:var(--erhaben), inset 0 0 20px rgba(47,227,211,.10);
+}
+.spiel svg{width:22px;height:22px;fill:var(--cyan);filter:drop-shadow(0 0 8px rgba(47,227,211,.6));transition:fill .2s}
+.spiel:hover:not(:disabled){box-shadow:var(--erhaben), inset 0 0 30px rgba(47,227,211,.22), 0 0 28px rgba(47,227,211,.16)}
+.spiel:disabled svg{fill:var(--text-still);filter:none}
+
+.knopf.stopp{border-color:rgba(255,95,109,.26);color:#ffb0b6}
+.knopf.stopp:hover:not(:disabled){box-shadow:var(--erhaben),0 0 24px rgba(255,95,109,.20);border-color:rgba(255,95,109,.5)}
+.knopf.warm{border-color:rgba(255,180,92,.24);color:var(--bernstein)}
+.knopf.warm:hover:not(:disabled){box-shadow:var(--erhaben),0 0 24px rgba(255,180,92,.18);border-color:rgba(255,180,92,.48)}
+
+/* Segmentschalter Modus */
+.modus{
+  display:flex;gap:4px;padding:4px;border-radius:12px;margin-left:4px;
+  background:rgba(4,7,9,.55);box-shadow:var(--vertieft);flex:0 0 auto;
+}
+.modus button{
+  cursor:pointer;border:0;background:transparent;color:var(--text-leise);
+  padding:8px 15px;border-radius:9px;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  transition:all .2s var(--takt);
+}
+.modus button:hover{color:var(--text)}
+.modus button.an{
+  color:var(--tinte);
+  background:linear-gradient(140deg,var(--cyan),#5fe0ff);
+  box-shadow:0 3px 14px rgba(47,227,211,.32), inset 0 1px 0 rgba(255,255,255,.45);
+}
+.modus button.an[data-modus=soar]{
+  background:linear-gradient(140deg,var(--violett),#d3a2ff);
+  box-shadow:0 3px 14px rgba(168,120,255,.34), inset 0 1px 0 rgba(255,255,255,.4);
+}
+
+/* Statuszeile rechts */
+.status{
+  margin-left:auto;text-align:right;min-width:0;
+  display:flex;flex-direction:column;gap:3px;align-items:flex-end;
+}
+.status b{
+  font-weight:500;font-size:13px;color:var(--text);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44ch;
+}
+.status b.fehler{color:var(--koralle)}
+.status b.gut{color:var(--cyan)}
+.status u{
+  text-decoration:none;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-still);
+  font-variant-numeric:tabular-nums;
+}
+/* Fortschritt als Haarlinie unter dem Transport */
+.fort{position:absolute;left:15px;right:15px;bottom:6px;height:2px;border-radius:2px;background:rgba(0,0,0,.5);overflow:hidden;opacity:0;transition:opacity .3s}
+.fort.an{opacity:1}
+.fort i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--violett));box-shadow:0 0 10px rgba(47,227,211,.6);transition:width .35s var(--takt)}
+
+/* ── Klon-Schublade ─────────────────────────────────────────────────── */
+.schleier{
+  position:fixed;inset:0;z-index:20;
+  background:rgba(3,5,7,.62);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
+  opacity:0;pointer-events:none;transition:opacity .34s var(--takt);
+}
+.schleier.auf{opacity:1;pointer-events:auto}
+
+.schublade{
+  position:fixed;z-index:21;top:0;right:0;bottom:0;width:min(560px,94vw);
+  display:flex;flex-direction:column;
+  background:linear-gradient(196deg,rgba(21,29,36,.86),rgba(9,13,17,.94));
+  backdrop-filter:blur(30px) saturate(150%);-webkit-backdrop-filter:blur(30px) saturate(150%);
+  border-left:1px solid rgba(47,227,211,.20);
+  box-shadow:-26px 0 70px rgba(0,0,0,.68), inset 1px 0 0 rgba(255,255,255,.055);
+  transform:translateX(102%);transition:transform .38s var(--takt);
+}
+.schublade.auf{transform:none}
+.schublade::before{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:
+    radial-gradient(24rem 18rem at 108% -6%, rgba(168,120,255,.20), transparent 62%),
+    radial-gradient(20rem 16rem at -8% 106%, rgba(47,227,211,.15), transparent 62%);
+  mix-blend-mode:screen;
+}
+.sk{position:relative;display:flex;align-items:center;gap:12px;padding:17px 20px 13px}
+.sk h2{
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:19px;font-weight:700;letter-spacing:.20em;text-transform:uppercase;
+  background:linear-gradient(96deg,var(--cyan),var(--violett));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.zu{
+  margin-left:auto;width:32px;height:32px;padding:0;border-radius:10px;
+  display:grid;place-items:center;font-size:17px;letter-spacing:0;
+}
+.reiter{display:flex;gap:4px;padding:4px;margin:0 20px 4px;border-radius:12px;
+  background:rgba(4,7,9,.55);box-shadow:var(--vertieft)}
+.reiter button{
+  flex:1;cursor:pointer;border:0;background:transparent;color:var(--text-leise);
+  padding:9px 0;border-radius:9px;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  transition:all .2s var(--takt);
+}
+.reiter button:hover{color:var(--text)}
+.reiter button.an{color:var(--tinte);background:linear-gradient(140deg,var(--cyan),#5fe0ff);
+  box-shadow:0 3px 14px rgba(47,227,211,.30), inset 0 1px 0 rgba(255,255,255,.45)}
+
+.blatt-s{position:relative;flex:1;overflow-y:auto;padding:12px 20px 22px;
+  display:flex;flex-direction:column;gap:14px}
+.blatt-s.aus{display:none}
+
+.feldgruppe{display:flex;flex-direction:column;gap:6px}
+.feldgruppe > u{
+  text-decoration:none;font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--text-still);
+}
+input[type=text]{
+  background:rgba(4,7,9,.55);color:var(--text);
+  border:1px solid rgba(150,225,230,.08);border-radius:11px;
+  box-shadow:var(--vertieft);padding:11px 14px;outline:none;
+  font:400 14px/1.4 "FantasqueSansM Nerd Font Propo",Hack,monospace;
+  caret-color:var(--cyan);transition:border-color .2s, box-shadow .2s;
+}
+input[type=text]::placeholder{color:var(--text-still)}
+input[type=text]:focus{border-color:rgba(47,227,211,.32);
+  box-shadow:var(--vertieft),0 0 0 3px rgba(47,227,211,.07)}
+input[type=text].schlecht{border-color:rgba(255,95,109,.44)}
+.hinweis{font-size:12px;color:var(--text-still);line-height:1.55}
+.hinweis.warn{color:var(--bernstein)}
+.hinweis.schlimm{color:var(--koralle)}
+.hinweis.gut{color:var(--cyan)}
+
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{
+  cursor:pointer;border:1px solid rgba(150,225,230,.09);border-radius:999px;
+  background:linear-gradient(150deg,rgba(255,255,255,.035),rgba(0,0,0,.22));
+  color:var(--text-leise);padding:7px 14px;
+  box-shadow:var(--erhaben-klein);
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:10.5px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  transition:all .2s var(--takt);
+}
+.chip:hover{color:var(--text);transform:translateY(-1px)}
+.chip.an{color:var(--tinte);background:linear-gradient(140deg,var(--violett),#c9a0ff);
+  border-color:transparent;box-shadow:0 3px 14px rgba(168,120,255,.30)}
+
+/* Teleprompter */
+.prompt{
+  border:1px solid rgba(150,225,230,.09);border-radius:14px;padding:14px 16px;
+  background:linear-gradient(158deg,rgba(10,15,19,.62),rgba(6,9,12,.72));
+  box-shadow:var(--vertieft);
+  display:flex;flex-direction:column;gap:10px;
+}
+.prompt .regie{
+  font-size:12px;line-height:1.6;color:var(--bernstein);
+  padding-left:11px;border-left:2px solid rgba(255,180,92,.34);
+}
+.prompt textarea{
+  min-height:118px;height:auto;font-size:16px;line-height:1.9;
+  border-color:transparent;box-shadow:none;background:transparent;padding:0;
+}
+.prompt textarea:focus{box-shadow:none;border-color:transparent}
+.prompt .zaehler{
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-still);
+  display:flex;gap:14px;
+}
+
+/* Aufnahmepult */
+.pult{display:flex;align-items:center;gap:16px}
+.rec{
+  width:70px;height:70px;border-radius:50%;padding:0;flex:0 0 auto;
+  display:grid;place-items:center;
+  background:radial-gradient(circle at 34% 28%,rgba(255,95,109,.22),transparent 58%),
+             linear-gradient(150deg,#241a1e,#0a0709);
+  border:1px solid rgba(255,95,109,.28);
+  box-shadow:var(--erhaben), inset 0 0 20px rgba(255,95,109,.10);
+}
+.rec i{display:block;width:22px;height:22px;border-radius:50%;background:var(--koralle);
+  box-shadow:0 0 14px rgba(255,95,109,.65);transition:all .22s var(--takt)}
+.rec.laeuft i{border-radius:5px;width:20px;height:20px;animation:atem 1.5s ease-in-out infinite}
+@keyframes atem{0%,100%{box-shadow:0 0 12px rgba(255,95,109,.5)}50%{box-shadow:0 0 26px rgba(255,95,109,.95)}}
+.rec:disabled i{background:var(--text-still);box-shadow:none;animation:none}
+
+.uhr{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}
+.uhr b{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+/* Zielzone: rot zu kurz, bernstein brauchbar, cyan gemessen */
+.zone{position:relative;height:8px;border-radius:5px;background:rgba(0,0,0,.55);
+  box-shadow:var(--vertieft);overflow:hidden}
+.zone::before{
+  content:"";position:absolute;inset:0;opacity:.5;
+  background:linear-gradient(90deg,
+    rgba(255,95,109,.55) 0 3.33%, rgba(255,180,92,.5) 3.33% 8.89%,
+    rgba(47,227,211,.72) 8.89% 16.67%, rgba(255,180,92,.5) 16.67% 66.7%,
+    rgba(255,95,109,.5) 66.7% 100%);
+}
+.zone i{position:absolute;top:-3px;bottom:-3px;width:2px;left:0;border-radius:2px;
+  background:#fff;box-shadow:0 0 10px rgba(255,255,255,.85);transition:left .2s linear}
+.zone u{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.30)}
+
+audio{width:100%;height:34px;border-radius:9px;filter:saturate(.7) contrast(1.05)}
+
+/* Stimmenverwaltung */
+.karte{
+  border:1px solid rgba(150,225,230,.07);border-radius:13px;padding:12px 14px;
+  background:linear-gradient(150deg,rgba(255,255,255,.032),rgba(0,0,0,.20));
+  box-shadow:var(--erhaben-klein);
+  display:flex;flex-direction:column;gap:8px;
+}
+.karte.kaputt{border-color:rgba(255,95,109,.28)}
+.karte .kopf{display:flex;align-items:baseline;gap:10px}
+.karte .kopf b{font-size:14px;font-weight:600}
+.karte .kopf s{text-decoration:none;font-variant-numeric:tabular-nums;
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--cyan-matt)}
+.karte .ref{font-size:12px;line-height:1.6;color:var(--text-still);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.karte .reihe{display:flex;gap:7px;align-items:center}
+.klein{padding:7px 12px;font-size:10px;letter-spacing:.16em;border-radius:9px}
+.knopf.gefahr{border-color:rgba(255,95,109,.24);color:#ffb0b6;margin-left:auto}
+.knopf.gefahr.scharf{background:linear-gradient(140deg,var(--koralle),#ff8d84);
+  color:#1a0508;border-color:transparent;box-shadow:0 3px 14px rgba(255,95,109,.34)}
+
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(47,227,211,.20);border-radius:9px;border:2px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:rgba(47,227,211,.38);background-clip:content-box}
+</style>
+</head>
+<body>
+<div class="bloom"></div><div class="raster"></div><div class="korn"></div>
+
+<div class="huelle">
+  <header>
+    <div class="marke"><b>Mimic</b><i>Stimmenwerk</i></div>
+    <div class="fuge"></div>
+    <div class="telemetrie">
+      <div class="zelle"><u>Dienst</u><div class="lampe kalt" id="lampe">kalt</div></div>
+      <div class="zelle"><u>Modus</u><span id="tMode">—</span></div>
+      <div class="zelle"><u>Warteschlange</u><span id="tQueue">0</span></div>
+      <div class="zelle"><u>VRAM frei</u><span id="tVram">—<small>MiB</small></span><div class="vram"><i id="tVramBar"></i></div></div>
+      <div class="zelle"><u>Laufzeit</u><span id="tUp">—</span></div>
+    </div>
+  </header>
+
+  <section class="paneel rail">
+    <div class="titel">Stimmen <b id="zStimmen">0</b></div>
+    <div class="stimmen" id="stimmen"></div>
+    <footer style="display:flex;gap:7px">
+      <button class="knopf" id="bNeu" style="flex:1">Neu lesen</button>
+      <button class="knopf" id="bKlon" style="flex:1">Klonen</button>
+    </footer>
+  </section>
+
+  <section class="paneel werk">
+    <div class="titel">Skript
+      <small>Doppelklick auf Stimme setzt Kopf · <kbd>Strg</kbd>+<kbd>Enter</kbd> spricht</small>
+    </div>
+    <div class="blatt">
+      <textarea id="feld" spellcheck="false" placeholder='#stimme: "Text"   je Zeile
+Zeile ohne Kopf erbt den Sprecher von oben.
+// Zeilen ab zwei Schraegstrichen werden uebersprungen.'></textarea>
+    </div>
+  </section>
+
+  <section class="paneel welle">
+    <canvas id="welle"></canvas>
+    <div class="marke-still" id="welleStill">Wellenform</div>
+  </section>
+
+  <section class="paneel transport">
+    <button class="knopf spiel" id="bSpiel" title="Abspielen (Strg+Enter)">
+      <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    </button>
+    <button class="knopf" id="bSpeichern">Als WAV</button>
+    <button class="knopf stopp" id="bStopp" disabled>Stopp</button>
+    <button class="knopf warm" id="bWarm">Warmlauf</button>
+    <div class="modus" id="modus">
+      <button data-modus="mf" class="an">mf</button>
+      <button data-modus="soar">soar</button>
+    </div>
+    <div class="status">
+      <b id="sText">bereit</b>
+      <u id="sSub">—</u>
+    </div>
+    <div class="fort" id="fort"><i id="fortBar"></i></div>
+  </section>
+</div>
+
+<div class="schleier" id="schleier"></div>
+<aside class="schublade" id="schublade" aria-label="Stimmen klonen und verwalten">
+  <div class="sk">
+    <h2>Stimmenwerkstatt</h2>
+    <button class="knopf zu" id="bZu" title="Schliessen (Esc)">✕</button>
+  </div>
+  <div class="reiter" id="reiter">
+    <button data-blatt="neu" class="an">Neu aufnehmen</button>
+    <button data-blatt="verwalten">Verwalten</button>
+  </div>
+
+  <div class="blatt-s" id="blattNeu">
+    <div class="feldgruppe">
+      <u>Name des Profils</u>
+      <input type="text" id="kName" placeholder="matthias_haendler" spellcheck="false"
+             autocomplete="off" maxlength="32">
+      <div class="hinweis" id="kNameHinweis">a–z, 0–9, Unterstrich und Bindestrich, max. 32.</div>
+    </div>
+
+    <div class="feldgruppe">
+      <u>Vorlage</u>
+      <div class="chips" id="kChips"></div>
+    </div>
+
+    <div class="prompt">
+      <div class="regie" id="kRegie">Referenztext frei schreiben. Aussage, Frage und Ausruf
+        einbauen — die Referenz gibt Timbre <em>und</em> Prosodie vor.</div>
+      <textarea id="kText" spellcheck="false" placeholder="Text, den du einsprichst…"></textarea>
+      <div class="zaehler"><span id="kZeichen">0 Zeichen</span><span id="kWorte">0 Wörter</span>
+        <span id="kSchaetzung">~0 s bei normalem Tempo</span></div>
+    </div>
+
+    <div class="pult">
+      <button class="knopf rec" id="bRec" title="Aufnahme starten"><i></i></button>
+      <div class="uhr">
+        <b id="kUhr">0,0 s</b>
+        <div class="zone"><i id="kZeiger"></i>
+          <u style="left:3.33%"></u><u style="left:8.89%"></u>
+          <u style="left:16.67%"></u><u style="left:66.7%"></u>
+        </div>
+        <div class="hinweis" id="kUrteil">Ziel 8–15 s. Ruhiger Raum, ~20 cm Abstand,
+          am Stück durchsprechen.</div>
+      </div>
+    </div>
+
+    <audio id="kAudio" controls preload="none" style="display:none"></audio>
+
+    <div class="reihe" id="kEntscheid" style="display:none;gap:7px">
+      <button class="knopf" id="bBehalten">Behalten</button>
+      <button class="knopf" id="bNochmal">Nochmal</button>
+      <button class="knopf gefahr" id="bVerwerfen" style="margin-left:0">Verwerfen</button>
+    </div>
+
+    <div class="reihe" id="kProbe" style="display:none">
+      <button class="knopf" id="bProbe">Probesatz sprechen</button>
+    </div>
+  </div>
+
+  <div class="blatt-s aus" id="blattVerwalten"></div>
+</aside>
+
+<script>
+const T = new URLSearchParams(location.search).get("t") || "";
+const $ = id => document.getElementById(id);
+
+async function api(pfad, koerper){
+  const antwort = await fetch(pfad, {
+    method: koerper === undefined ? "GET" : "POST",
+    headers: {"X-Mimic-Token": T, ...(koerper === undefined ? {} : {"Content-Type":"application/json"})},
+    body: koerper === undefined ? undefined : JSON.stringify(koerper),
+  });
+  if(!antwort.ok) throw new Error("HTTP " + antwort.status);
+  return antwort.json();
+}
+
+/* ── Stimmenliste ─────────────────────────────────────────────────── */
+let stimmen = [], gewaehlt = "";
+
+function zeichneStimmen(){
+  const behaelter = $("stimmen");
+  $("zStimmen").textContent = stimmen.length;
+  behaelter.innerHTML = "";
+  if(!stimmen.length){
+    behaelter.innerHTML = '<div class="leer">Kein Stimmprofil gefunden.<br>Erst aufnehmen:<br><code>mimic record &lt;name&gt;</code></div>';
+    return;
+  }
+  if(!stimmen.includes(gewaehlt)) gewaehlt = stimmen[0];
+  stimmen.forEach((name, i) => {
+    const el = document.createElement("div");
+    el.className = "stimme" + (name === gewaehlt ? " aktiv" : "");
+    el.style.animationDelay = (i * 26) + "ms";
+    el.innerHTML = `<b></b><s>Profil</s>`;
+    el.querySelector("b").textContent = name;
+    el.onclick = () => { gewaehlt = name; zeichneStimmen(); };
+    el.ondblclick = () => kopfEinfuegen(name);
+    behaelter.appendChild(el);
+  });
+}
+
+function kopfEinfuegen(name){
+  const feld = $("feld"), pos = feld.selectionStart;
+  const vorsatz = (pos === 0 || feld.value[pos-1] === "\n") ? "" : "\n";
+  const text = `${vorsatz}#${name}: ""\n`;
+  feld.setRangeText(text, pos, feld.selectionEnd, "end");
+  feld.selectionStart = feld.selectionEnd = pos + text.length - 2;
+  feld.focus();
+}
+
+/* ── Wellenband ───────────────────────────────────────────────────── */
+const leinwand = $("welle"), stift = leinwand.getContext("2d");
+let pegel = [];
+
+function groesse(){
+  const dpr = devicePixelRatio || 1, r = leinwand.getBoundingClientRect();
+  leinwand.width = Math.max(1, r.width * dpr);
+  leinwand.height = Math.max(1, r.height * dpr);
+  stift.setTransform(dpr, 0, 0, dpr, 0, 0);
+  zeichneWelle();
+}
+addEventListener("resize", groesse);
+
+function zeichneWelle(){
+  const b = leinwand.width / (devicePixelRatio||1), h = leinwand.height / (devicePixelRatio||1);
+  stift.clearRect(0, 0, b, h);
+  $("welleStill").style.opacity = pegel.length ? 0 : 1;
+
+  // Grundlinie mit Teilstrichen: das Band ist auch still ein Instrument.
+  const basis = h / 2;
+  stift.strokeStyle = "rgba(150,225,230,.13)";
+  stift.lineWidth = 1;
+  stift.beginPath(); stift.moveTo(0, basis + .5); stift.lineTo(b, basis + .5); stift.stroke();
+  stift.strokeStyle = "rgba(150,225,230,.10)";
+  for(let x = 0; x < b; x += 26){
+    const lang = (x / 26) % 4 === 0;
+    stift.beginPath();
+    stift.moveTo(x + .5, basis - (lang ? 9 : 4));
+    stift.lineTo(x + .5, basis + (lang ? 9 : 4));
+    stift.stroke();
+  }
+  if(!pegel.length) return;
+
+  const breite = 3, luft = 2, schritt = breite + luft;
+  const platz = Math.max(1, Math.floor(b / schritt));
+  // Immer das ganze Band fuellen: aeltere Werte fallen links heraus.
+  const sicht = pegel.slice(-platz);
+  const mitte = h / 2;
+  const fuellung = stift.createLinearGradient(0, 0, b, 0);
+  fuellung.addColorStop(0, "#1a9c93");
+  fuellung.addColorStop(.42, "#2fe3d3");
+  fuellung.addColorStop(.78, "#7fc4f0");
+  fuellung.addColorStop(1, "#a878ff");
+  stift.fillStyle = fuellung;
+  stift.shadowColor = "rgba(47,227,211,.45)";
+  stift.shadowBlur = 8;
+  // Kurzes Skript waechst von links, langes scrollt am rechten Rand mit.
+  const links = sicht.length < platz ? 0 : b - sicht.length * schritt;
+  sicht.forEach((wert, i) => {
+    const hoch = Math.max(1.5, Math.pow(wert, .62) * (mitte - 6) * 2);
+    stift.beginPath();
+    stift.roundRect(links + i * schritt, mitte - hoch/2, breite, hoch, 1.5);
+    stift.fill();
+  });
+  stift.shadowBlur = 0;
+}
+
+/* ── Bedienung ────────────────────────────────────────────────────── */
+let modus = "mf", laeuft = false;
+
+$("modus").onclick = e => {
+  const knopf = e.target.closest("button[data-modus]");
+  if(!knopf) return;
+  modus = knopf.dataset.modus;
+  [...$("modus").children].forEach(b => b.classList.toggle("an", b === knopf));
+};
+
+function setzeStatus(text, art){
+  const el = $("sText");
+  el.textContent = text;
+  el.className = art || "";
+}
+
+function sperre(anAn){
+  laeuft = anAn;
+  $("bSpiel").disabled = anAn;
+  $("bSpeichern").disabled = anAn;
+  $("bWarm").disabled = anAn;
+  $("bStopp").disabled = !anAn;
+  $("fort").classList.toggle("an", anAn);
+}
+
+async function starten(speichern){
+  const text = $("feld").value;
+  if(!text.trim()){ setzeStatus("nichts zu sprechen", "fehler"); return; }
+  pegel = []; zeichneWelle();
+  sperre(true);
+  setzeStatus("wird vorbereitet…");
+  try{
+    await api("/api/speak", {text, mode: modus, voice: gewaehlt, speichern});
+  }catch(fehler){
+    sperre(false);
+    setzeStatus("" + fehler, "fehler");
+  }
+}
+
+$("bSpiel").onclick = () => starten(false);
+$("bSpeichern").onclick = () => starten(true);
+$("bStopp").onclick = () => { api("/api/stop", {}).catch(()=>{}); setzeStatus("bricht ab…"); };
+$("bWarm").onclick = async () => {
+  $("bWarm").disabled = true;
+  setzeStatus("Warmlauf angefordert…");
+  try{
+    const wert = await api("/api/warm", {});
+    setzeStatus(wert.message || "Warmlauf laeuft", wert.ok ? "gut" : "fehler");
+  }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+  finally{ if(!laeuft) $("bWarm").disabled = false; }
+};
+$("bNeu").onclick = () => tick(true);
+
+$("feld").addEventListener("keydown", e => {
+  if(e.key === "Enter" && (e.ctrlKey || e.metaKey)){ e.preventDefault(); if(!laeuft) starten(false); }
+});
+addEventListener("keydown", e => {
+  if(e.key !== "Escape") return;
+  if($("schublade").classList.contains("auf")) schubladeAuf(false);
+  else if(laeuft) $("bStopp").click();
+});
+
+/* ── Puls: ein Endpunkt, zwei Takte ───────────────────────────────── */
+function zeit(s){
+  if(s === null || s === undefined) return "—";
+  s = Math.floor(s);
+  if(s < 60) return s + "s";
+  if(s < 3600) return Math.floor(s/60) + "m " + (s%60) + "s";
+  return Math.floor(s/3600) + "h " + Math.floor(s%3600/60) + "m";
+}
+
+let marke = 0, letzteStimmen = "";
+
+async function tick(neuLesen){
+  let wert;
+  try{
+    wert = await api(`/api/state?seit=${marke}${neuLesen ? "&frisch=1" : ""}`);
+  }catch(fehler){
+    setzeStatus("GUI-Server nicht erreichbar", "fehler");
+    return;
+  }
+
+  const schlussel = wert.voices.join(" ");
+  if(schlussel !== letzteStimmen){ letzteStimmen = schlussel; stimmen = wert.voices; zeichneStimmen(); }
+
+  const d = wert.service || {};
+  const lampe = $("lampe");
+  const zustand = d.state || "kalt";
+  lampe.textContent = zustand;
+  lampe.className = "lampe " + (zustand.startsWith("warm") && zustand !== "warm_laeuft" ? "warm"
+                              : /laed|warm_l|start/.test(zustand) ? "laedt" : "kalt");
+  $("tMode").textContent = d.mode || "—";
+  $("tQueue").textContent = d.queue ?? 0;
+  const frei = d.vram_free_mib;
+  $("tVram").innerHTML = frei == null ? "—<small>MiB</small>" : `${frei}<small>MiB</small>`;
+  $("tVramBar").style.width = frei == null ? "0%" : Math.min(100, frei / 32768 * 100) + "%";
+  $("tUp").textContent = zeit(d.uptime_s);
+
+  if(wert.record) zeigeAufnahme(wert.record);
+
+  const auftrag = wert.job || {};
+  if(wert.levels && wert.levels.length){ pegel.push(...wert.levels); zeichneWelle(); }
+  marke = wert.cursor ?? marke;
+
+  if(auftrag.running){
+    if(!laeuft) sperre(true);
+    setzeStatus(auftrag.message || "spricht…");
+    $("sSub").textContent = `Einsatz ${auftrag.index}/${auftrag.total} · ${auftrag.voice} · ${auftrag.mode}`;
+    $("fortBar").style.width = (auftrag.total ? (auftrag.index - 1) / auftrag.total * 100 : 0) + "%";
+  }else{
+    if(laeuft){
+      sperre(false);
+      $("fortBar").style.width = "100%";
+    }
+    // Auch nach einem Neuladen den letzten Ausgang zeigen, nicht stumm "bereit".
+    setzeStatus(auftrag.message || "bereit", !auftrag.message ? "" : auftrag.ok === false ? "fehler" : "gut");
+    if(auftrag.download) location.href = "/api/wav?t=" + encodeURIComponent(T);
+    if(!auftrag.message) $("sSub").textContent = "—";
+  }
+}
+
+/* ── Stimmenwerkstatt ─────────────────────────────────────────────── */
+let charaktere = [], inventar = [], deckel = 90, letzteAufnahme = null, frischeStimme = "";
+
+function schubladeAuf(an){
+  $("schublade").classList.toggle("auf", an);
+  $("schleier").classList.toggle("auf", an);
+  if(an){ inventarLaden(); $("kName").focus(); }
+}
+$("bKlon").onclick = () => schubladeAuf(true);
+$("bZu").onclick = () => schubladeAuf(false);
+$("schleier").onclick = () => schubladeAuf(false);
+
+$("reiter").onclick = e => {
+  const knopf = e.target.closest("button[data-blatt]");
+  if(!knopf) return;
+  [...$("reiter").children].forEach(b => b.classList.toggle("an", b === knopf));
+  $("blattNeu").classList.toggle("aus", knopf.dataset.blatt !== "neu");
+  $("blattVerwalten").classList.toggle("aus", knopf.dataset.blatt !== "verwalten");
+};
+
+async function inventarLaden(){
+  try{
+    const wert = await api("/api/inventar");
+    charaktere = wert.charaktere; inventar = wert.voices;
+    deckel = 90;
+    zeichneChips(); zeichneVerwaltung(); pruefeName();
+  }catch(fehler){ $("kNameHinweis").textContent = "" + fehler; }
+}
+
+function zeichneChips(){
+  const behaelter = $("kChips");
+  behaelter.innerHTML = "";
+  const eintraege = [...charaktere, {name: "eigener", regie: "", text: ""}];
+  eintraege.forEach(c => {
+    const el = document.createElement("button");
+    el.className = "chip";
+    el.textContent = c.name === "eigener" ? "Eigener Text" : c.name.replace(/^matthias_/, "");
+    el.onclick = () => {
+      [...behaelter.children].forEach(b => b.classList.toggle("an", b === el));
+      if(c.name !== "eigener"){
+        $("kName").value = c.name;
+        $("kText").value = c.text;
+        $("kRegie").textContent = c.regie;
+      }else{
+        $("kRegie").innerHTML = "Referenztext frei schreiben. Aussage, Frage und Ausruf " +
+          "einbauen — die Referenz gibt Timbre <em>und</em> Prosodie vor.";
+      }
+      pruefeName(); zaehle();
+    };
+    behaelter.appendChild(el);
+  });
+}
+
+function zeichneVerwaltung(){
+  const behaelter = $("blattVerwalten");
+  behaelter.innerHTML = "";
+  if(!inventar.length){
+    behaelter.innerHTML = '<div class="hinweis">Noch kein Profil angelegt.</div>';
+    return;
+  }
+  inventar.forEach(v => {
+    const el = document.createElement("div");
+    el.className = "karte" + (v.ok ? "" : " kaputt");
+    el.innerHTML = `<div class="kopf"><b></b><s></s></div><div class="ref"></div>
+      <div class="reihe">
+        <button class="knopf klein" data-tun="hoeren">Referenz hören</button>
+        <button class="knopf klein" data-tun="sprechen">Probesatz</button>
+        <button class="knopf klein gefahr" data-tun="loeschen">Löschen</button>
+      </div>`;
+    el.querySelector("b").textContent = v.name;
+    el.querySelector("s").textContent = v.ok ? (v.dauer_s != null ? v.dauer_s + " s" : "ok") : "defekt";
+    el.querySelector(".ref").textContent = v.ok ? v.text : v.grund;
+    const hoeren = el.querySelector('[data-tun=hoeren]');
+    const sprechen = el.querySelector('[data-tun=sprechen]');
+    const loeschen = el.querySelector('[data-tun=loeschen]');
+    if(!v.ok){ hoeren.disabled = true; sprechen.disabled = true; }
+    hoeren.onclick = () => {
+      const spieler = $("kAudio");
+      spieler.style.display = "block";
+      spieler.src = "/api/reference?name=" + encodeURIComponent(v.name) + "&t=" + encodeURIComponent(T);
+      spieler.play().catch(()=>{});
+    };
+    sprechen.onclick = () => probeSprechen(v.name);
+    // Zweistufig statt Dialog: erster Klick schaerft, zweiter loescht.
+    let scharf = null;
+    loeschen.onclick = async () => {
+      if(!scharf){
+        loeschen.classList.add("scharf");
+        loeschen.textContent = "Wirklich löschen?";
+        scharf = setTimeout(() => {
+          scharf = null; loeschen.classList.remove("scharf"); loeschen.textContent = "Löschen";
+        }, 4000);
+        return;
+      }
+      clearTimeout(scharf); scharf = null;
+      try{
+        await api("/api/voice/delete", {name: v.name});
+        setzeStatus(`Stimme ${v.name} gelöscht`, "gut");
+        await inventarLaden(); tick(true);
+      }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+    };
+    behaelter.appendChild(el);
+  });
+}
+
+function pruefeName(){
+  const name = $("kName").value.trim();
+  const feld = $("kName"), hinweis = $("kNameHinweis");
+  const gueltig = /^[a-z0-9][a-z0-9_-]{0,31}$/.test(name);
+  feld.classList.toggle("schlecht", !!name && !gueltig);
+  if(!name){ hinweis.className = "hinweis"; hinweis.textContent =
+    "a–z, 0–9, Unterstrich und Bindestrich, max. 32."; return; }
+  if(!gueltig){ hinweis.className = "hinweis schlimm";
+    hinweis.textContent = "Nur Kleinbuchstaben, Ziffern, _ und -; Anfang alphanumerisch."; return; }
+  const vorhanden = inventar.find(v => v.name === name);
+  if(vorhanden){
+    hinweis.className = "hinweis warn";
+    hinweis.textContent = `${name} existiert schon (${vorhanden.dauer_s ?? "?"} s) — Aufnahme ` +
+      `überschreibt die alte Referenz unwiderruflich.`;
+  }else{
+    hinweis.className = "hinweis gut";
+    hinweis.textContent = "Name ist frei.";
+  }
+}
+$("kName").addEventListener("input", pruefeName);
+
+function zaehle(){
+  const text = $("kText").value.trim();
+  const worte = text ? text.split(/\s+/).length : 0;
+  $("kZeichen").textContent = `${$("kText").value.length} Zeichen`;
+  $("kWorte").textContent = `${worte} Wörter`;
+  // 150 Wörter je Minute ist ruhiges Vorlesetempo -- reicht als Peilung.
+  $("kSchaetzung").textContent = `~${(worte / 2.5).toFixed(0)} s bei normalem Tempo`;
+}
+$("kText").addEventListener("input", zaehle);
+
+$("bRec").onclick = async () => {
+  const knopf = $("bRec");
+  if(knopf.classList.contains("laeuft")){
+    knopf.disabled = true;
+    try{ await api("/api/record/stop", {}); }
+    catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+    finally{ knopf.disabled = false; }
+    return;
+  }
+  const name = $("kName").value.trim();
+  const vorhanden = inventar.some(v => v.name === name);
+  try{
+    await api("/api/record/start", {name, force: vorhanden});
+    $("kAudio").style.display = "none";
+    $("kEntscheid").style.display = "none";
+    $("kProbe").style.display = "none";
+  }catch(fehler){
+    $("kUrteil").className = "hinweis schlimm";
+    $("kUrteil").textContent = "" + fehler;
+  }
+};
+
+$("bNochmal").onclick = () => { $("bVerwerfen").click(); setTimeout(() => $("bRec").click(), 120); };
+$("bVerwerfen").onclick = async () => {
+  try{ await api("/api/record/discard", {}); }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+  letzteAufnahme = null;
+  $("kAudio").style.display = "none";
+  $("kEntscheid").style.display = "none";
+  $("kUrteil").className = "hinweis";
+  $("kUrteil").textContent = "Ziel 8–15 s. Ruhiger Raum, ~20 cm Abstand, am Stück durchsprechen.";
+};
+$("bBehalten").onclick = async () => {
+  try{
+    const wert = await api("/api/record/keep", {text: $("kText").value});
+    frischeStimme = wert.name;
+    $("kEntscheid").style.display = "none";
+    $("kProbe").style.display = "flex";
+    $("kUrteil").className = "hinweis gut";
+    $("kUrteil").textContent = `${wert.name} gespeichert und vom Dienst geprüft.`;
+    setzeStatus(`Stimme ${wert.name} angelegt`, "gut");
+    await inventarLaden(); tick(true);
+  }catch(fehler){
+    $("kUrteil").className = "hinweis schlimm";
+    $("kUrteil").textContent = "" + fehler;
+  }
+};
+
+async function probeSprechen(name){
+  const stimme = name || frischeStimme;
+  if(!stimme) return;
+  try{
+    await api("/api/speak", {text: `#${stimme}: "Probe. Klingt das nach mir? Ja!"`,
+                             mode: modus, voice: stimme, speichern: false});
+    sperre(true);
+    schubladeAuf(false);
+  }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+}
+$("bProbe").onclick = () => probeSprechen(frischeStimme);
+
+function zeigeAufnahme(stand){
+  const knopf = $("bRec");
+  knopf.classList.toggle("laeuft", stand.laeuft);
+  knopf.title = stand.laeuft ? "Aufnahme stoppen" : "Aufnahme starten";
+  if(stand.laeuft){
+    $("kUhr").textContent = stand.sekunden.toFixed(1).replace(".", ",") + " s";
+    $("kZeiger").style.left = Math.min(100, stand.sekunden / (stand.deckel_s || 90) * 100) + "%";
+    const s = stand.sekunden;
+    $("kUrteil").className = "hinweis " + (s < 3 ? "schlimm" : s <= 15 ? "gut" : "warn");
+    $("kUrteil").textContent = s < 3 ? "noch zu kurz" : s <= 15 ? "im Zielbereich — jetzt stoppen"
+                             : s <= 60 ? "über dem gemessenen Bereich" : "der Dienst lehnt das ab";
+    return;
+  }
+  const fertig = stand.fertig;
+  if(fertig && fertig !== letzteAufnahme){
+    letzteAufnahme = fertig;
+    $("kUhr").textContent = fertig.dauer_s.toFixed(1).replace(".", ",") + " s";
+    $("kZeiger").style.left = Math.min(100, fertig.dauer_s / (stand.deckel_s || 90) * 100) + "%";
+    $("kUrteil").className = "hinweis " + (fertig.brauchbar ? "gut" : "schlimm");
+    $("kUrteil").textContent = fertig.hinweis;
+    const spieler = $("kAudio");
+    spieler.style.display = "block";
+    spieler.src = "/api/take?t=" + encodeURIComponent(T) + "&v=" + fertig.dauer_s;
+    $("kEntscheid").style.display = "flex";
+    $("bBehalten").disabled = !fertig.brauchbar;
+  }
+}
+
+groesse();
+tick(true);
+setInterval(() => tick(false), 220);
+// Direkteinstieg: #werkstatt oder #werkstatt-verwalten
+if(location.hash.startsWith("#werkstatt")){
+  schubladeAuf(true);
+  if(location.hash.endsWith("verwalten"))
+    document.querySelector('#reiter button[data-blatt=verwalten]').click();
+}
+</script>
+</body>
+</html>

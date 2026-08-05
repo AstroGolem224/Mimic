@@ -1,4 +1,4 @@
-"""Kleines Fenster zum Vorlesen von Skripten mit mehreren Stimmen.
+"""Fenster zum Vorlesen von Skripten mit mehreren Stimmen.
 
 Format im Textfeld, eine Zeile je Einsatz:
 
@@ -9,28 +9,65 @@ Format im Textfeld, eine Zeile je Einsatz:
 Die Anfuehrungszeichen sind optional. Eine Zeile ohne Praefix erbt den
 Sprecher der Zeile darueber; ganz am Anfang gilt die links ausgewaehlte
 Stimme. Leerzeilen und Zeilen ab '//' werden uebersprungen.
+
+Die Oberflaeche liegt als HTML in gui.html und laeuft in einem
+Chromium-App-Fenster gegen einen kurzlebigen Loopback-Server. Grund: echtes
+Glas (backdrop-filter), weiche Schatten und Rundungen gibt Tk nicht her, und
+ein Toolkit mit Rendering-Faehigkeiten waere eine dreistellige
+Megabyte-Abhaengigkeit fuer ein Fenster mit vier Knoepfen.
 """
 
 from __future__ import annotations
 
+import array
+import hmac
+import http.server
+import io
 import json
-import queue
-import subprocess
+import os
+import secrets
+import shutil
 import socket
+import subprocess
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cli import open_request, request
+from .charaktere import CHARAKTERE
+from .cli import _dauer, open_request, profil_anlegen, request, speichern
 from .protocol import read_frame
-from .voices import VoiceError, close_voice, default_voices_dir, load_voice
+from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
+                     default_voices_dir, load_voice)
 
 SPRECHERPAUSE_MS = 300      # Luft zwischen zwei Einsaetzen
+PEGEL_FENSTER = 600         # Proben je Balken im Wellenband, bei 24 kHz 40 Balken/s
+STATUS_CACHE_S = 0.9        # /status des Dienstes nicht bei jedem Puls holen
+STIMMEN_CACHE_S = 4.0       # Profilscan kostet je Stimme einen WAV-Kopf
+MAX_TEXT_ZEICHEN = 100_000  # Grenze am Vertrauensrand; der Dienst prueft je Einsatz erneut
+# Der Dienst nimmt 3-60 s. 8-15 s ist der einzige gemessene Bereich, siehe
+# charaktere.py -- ausserhalb warnt die Oberflaeche, lehnt aber nicht ab.
+DAUER_MIN_S, DAUER_MAX_S = 3.0, 60.0
+DAUER_ZIEL = (8.0, 15.0)
+AUFNAHME_DECKEL_S = 90.0    # Notbremse gegen eine vergessene laufende Aufnahme
 
 
 def stille(kopf: dict) -> bytes:
     return bytes(int(kopf["sample_rate"] * SPRECHERPAUSE_MS / 1000) * 2 * kopf["channels"])
+
+
+def pegel(pcm: bytes) -> list[float]:
+    """Spitzenwert je Fenster, 0..1 -- Futter fuer das Wellenband."""
+    proben = array.array("h")
+    proben.frombytes(pcm[:len(pcm) - len(pcm) % 2])
+    werte = []
+    for start in range(0, len(proben), PEGEL_FENSTER):
+        fenster = proben[start:start + PEGEL_FENSTER]
+        if not fenster:
+            break
+        werte.append(min(1.0, max(max(fenster), -min(fenster)) / 32767))
+    return werte
 
 
 @dataclass(frozen=True)
@@ -75,6 +112,191 @@ def verfuegbare_stimmen() -> list[str]:
         close_voice(profil)
         namen.append(name)
     return namen
+
+
+def stimmen_details() -> list[dict]:
+    """Inventar fuer die Stimmenverwaltung -- auch kaputte Profile mit Grund."""
+    root = default_voices_dir()
+    try:
+        eintraege = sorted(e.name for e in root.iterdir() if e.is_dir())
+    except FileNotFoundError:
+        return []
+    inventar = []
+    for name in eintraege:
+        eintrag: dict = {"name": name, "ok": True, "grund": "", "dauer_s": None, "text": ""}
+        try:
+            profil = load_voice(name, root)
+        except VoiceError as fehler:
+            eintrag.update(ok=False, grund=f"{fehler.reason}: {fehler.message}")
+        else:
+            eintrag["text"] = profil.prompt_text
+            close_voice(profil)
+            try:
+                eintrag["dauer_s"] = round(_dauer(root / name / "ref.wav"), 1)
+            except (OSError, wave.Error):
+                pass
+        inventar.append(eintrag)
+    return inventar
+
+
+def dauer_urteil(dauer: float) -> tuple[bool, str]:
+    if not DAUER_MIN_S <= dauer <= DAUER_MAX_S:
+        return False, (f"{dauer:.1f} s liegt ausserhalb {DAUER_MIN_S:.0f}-{DAUER_MAX_S:.0f} s "
+                       f"-- der Dienst wuerde das Profil ablehnen")
+    if not DAUER_ZIEL[0] <= dauer <= DAUER_ZIEL[1]:
+        return True, (f"{dauer:.1f} s -- brauchbar, aber ausserhalb der gemessenen "
+                      f"{DAUER_ZIEL[0]:.0f}-{DAUER_ZIEL[1]:.0f} s")
+    return True, f"{dauer:.1f} s -- im Zielbereich"
+
+
+class Aufnahme:
+    """pw-record ins Profilverzeichnis, gesteuert vom Fenster.
+
+    Dieselbe Mechanik wie `mimic record`: SIGTERM an pw-record schliesst die
+    WAV ordentlich ab, und die Datei liegt von Anfang an im Zielverzeichnis,
+    weil os.replace keine Dateisystemgrenze ueberschreiten kann.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.prozess: subprocess.Popen | None = None
+        self.name = ""
+        self.profil: Path | None = None
+        self.datei: Path | None = None
+        self.gestartet = 0.0
+        self.profil_war_neu = False
+        self.wache: threading.Timer | None = None
+        self.letzte: dict | None = None     # fertige Aufnahme, wartet auf Behalten
+
+    def starten(self, name: str, force: bool) -> None:
+        if not VOICE_RE.fullmatch(name):
+            raise ValueError("Name nur a-z, 0-9, _ und -, max. 32 Zeichen, Anfang alphanumerisch")
+        root = default_voices_dir()
+        profil = root / name
+        if (profil / "ref.wav").exists() and not force:
+            raise ValueError(f"{name!r} existiert schon -- Ueberschreiben bestaetigen")
+        with self.lock:
+            if self.prozess is not None:
+                raise RuntimeError("es laeuft schon eine Aufnahme")
+            self.profil_war_neu = not profil.exists()
+            profil_anlegen(profil)
+            self.name, self.profil = name, profil
+            self.datei = profil / "ref.wav.tmp"
+            self.letzte = None
+            self.gestartet = time.monotonic()
+            self.prozess = subprocess.Popen(
+                ["pw-record", "--rate", "48000", "--channels", "1", "--format", "s16",
+                 str(self.datei)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.wache = threading.Timer(AUFNAHME_DECKEL_S, self._deckel)
+            self.wache.daemon = True
+            self.wache.start()
+
+    def _deckel(self) -> None:
+        try:
+            self.stoppen()
+        except RuntimeError:
+            pass
+
+    def stoppen(self) -> dict:
+        with self.lock:
+            prozess, datei = self.prozess, self.datei
+            if prozess is None or datei is None:
+                raise RuntimeError("es laeuft keine Aufnahme")
+            self.prozess = None
+            if self.wache is not None:
+                self.wache.cancel()
+                self.wache = None
+        prozess.terminate()
+        try:
+            prozess.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            prozess.kill()
+            prozess.wait()
+        try:
+            datei.chmod(0o600)
+            dauer = _dauer(datei)
+        except (OSError, wave.Error) as fehler:
+            with self.lock:
+                self.letzte = None
+            raise RuntimeError(f"Aufnahme unbrauchbar: {fehler}") from None
+        brauchbar, hinweis = dauer_urteil(dauer)
+        ergebnis = {"name": self.name, "dauer_s": round(dauer, 1),
+                    "brauchbar": brauchbar, "hinweis": hinweis}
+        with self.lock:
+            self.letzte = ergebnis
+        return ergebnis
+
+    def behalten(self, text: str) -> dict:
+        text = " ".join(text.split())
+        if not text:
+            raise ValueError("Referenztext fehlt")
+        if len(text.encode()) > MAX_TEXT_BYTES:
+            raise ValueError("Referenztext ist zu lang")
+        with self.lock:
+            if self.letzte is None or self.profil is None or self.datei is None:
+                raise RuntimeError("keine fertige Aufnahme vorhanden")
+            if not self.letzte["brauchbar"]:
+                raise ValueError(self.letzte["hinweis"])
+            profil, datei, name = self.profil, self.datei, self.name
+        speichern(profil, datei, text)
+        try:
+            geprueft = load_voice(name)
+        except VoiceError as fehler:
+            raise RuntimeError(f"{fehler.reason}: {fehler.message}") from None
+        close_voice(geprueft)
+        with self.lock:
+            self.letzte = None
+            self.datei = self.profil = None
+            self.profil_war_neu = False
+        return {"name": name}
+
+    def verwerfen(self) -> None:
+        with self.lock:
+            if self.prozess is not None:
+                raise RuntimeError("erst die laufende Aufnahme stoppen")
+            profil, datei, war_neu = self.profil, self.datei, self.profil_war_neu
+            self.letzte = None
+            self.datei = self.profil = None
+            self.profil_war_neu = False
+        if datei is not None:
+            datei.unlink(missing_ok=True)
+        # Ein abgebrochener erster Versuch soll keine Bauruine hinterlassen.
+        if profil is not None and war_neu:
+            try:
+                profil.rmdir()
+            except OSError:
+                pass
+
+    def stand(self) -> dict:
+        with self.lock:
+            laeuft = self.prozess is not None
+            return {"laeuft": laeuft, "name": self.name,
+                    "sekunden": round(time.monotonic() - self.gestartet, 1) if laeuft else 0.0,
+                    "deckel_s": AUFNAHME_DECKEL_S, "fertig": self.letzte}
+
+    def schliessen(self) -> None:
+        try:
+            self.stoppen()
+        except RuntimeError:
+            return
+        self.verwerfen()
+
+
+def stimme_loeschen(name: str) -> None:
+    if not VOICE_RE.fullmatch(name):
+        raise ValueError("unbekannter Name")
+    root = default_voices_dir()
+    profil = (root / name).resolve()
+    # Nach VOICE_RE kann name keinen Pfad enthalten; die Pruefung bleibt trotzdem,
+    # weil hier unwiderruflich geloescht wird.
+    if profil.parent != root.resolve() or not profil.is_dir():
+        raise ValueError("kein Stimmprofil unter diesem Namen")
+    for eintrag in sorted(profil.iterdir(), reverse=True):
+        if eintrag.is_dir():
+            raise ValueError("Profil enthaelt Unterverzeichnisse -- von Hand pruefen")
+        eintrag.unlink()
+    profil.rmdir()
 
 
 class Abgebrochen(Exception):
@@ -258,154 +480,464 @@ class Sammler:
         if self.bloecke and self.kopf is not None:
             self.bloecke.append(stille(self.kopf))
 
-    def schreiben(self, ziel: Path) -> None:
+    def _schreiben(self, ziel) -> None:
         if not self.bloecke or self.kopf is None:
             raise RuntimeError("nichts erzeugt")
-        vorlaeufig = ziel.with_suffix(ziel.suffix + ".tmp")
-        with wave.open(str(vorlaeufig), "wb") as ausgabe:
+        with wave.open(ziel, "wb") as ausgabe:
             ausgabe.setnchannels(self.kopf["channels"])
             ausgabe.setsampwidth(2)
             ausgabe.setframerate(self.kopf["sample_rate"])
             ausgabe.writeframes(b"".join(self.bloecke))
+
+    def schreiben(self, ziel: Path) -> None:
+        vorlaeufig = ziel.with_suffix(ziel.suffix + ".tmp")
+        self._schreiben(str(vorlaeufig))
         vorlaeufig.replace(ziel)
 
+    def wav(self) -> bytes:
+        puffer = io.BytesIO()
+        self._schreiben(puffer)
+        return puffer.getvalue()
 
-def main() -> int:
-    import tkinter as tk
-    from tkinter import filedialog, ttk
 
-    meldungen: queue.Queue[tuple[str, str]] = queue.Queue()
-    abbruch = threading.Event()
-    aktive = AktiveVerbindung(abbruch)
+# ── GUI-Sitzung ─────────────────────────────────────────────────────────
 
-    wurzel = tk.Tk()
-    wurzel.title("Mimic")
-    wurzel.geometry("820x460")
-    wurzel.columnconfigure(1, weight=1)
-    wurzel.rowconfigure(0, weight=1)
+class Sitzung:
+    """Ein Auftrag zur Zeit, Zustand fuer den Puls der Oberflaeche."""
 
-    links = ttk.Frame(wurzel, padding=8)
-    links.grid(row=0, column=0, sticky="ns")
-    ttk.Label(links, text="Stimmen").pack(anchor="w")
-    liste = tk.Listbox(links, width=22, exportselection=False)
-    liste.pack(fill="y", expand=True)
+    def __init__(self) -> None:
+        self.token = secrets.token_urlsafe(24)
+        self.lock = threading.Lock()
+        self.abbruch = threading.Event()
+        self.aktive = AktiveVerbindung(self.abbruch)
+        self.thread: threading.Thread | None = None
+        self.aufnahme = Aufnahme()
+        self.auftrag: dict = {"running": False, "index": 0, "total": 0, "voice": "",
+                              "mode": "", "message": "", "ok": True, "download": False}
+        self.pegel: list[float] = []
+        self.wav: bytes | None = None
+        self._status: tuple[float, dict] = (0.0, {})
+        self._stimmen: tuple[float, list[str]] = (0.0, [])
 
-    rechts = ttk.Frame(wurzel, padding=8)
-    rechts.grid(row=0, column=1, sticky="nsew")
-    rechts.rowconfigure(1, weight=1)
-    rechts.columnconfigure(0, weight=1)
-    ttk.Label(rechts, text='Skript   —   #stimme: "Text"   je Zeile').grid(row=0, column=0, sticky="w")
-    feld = tk.Text(rechts, wrap="word", undo=True, height=12)
-    feld.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
+    # -- Zwischenspeicher, damit der 220-ms-Puls den Dienst nicht schlaegt --
 
-    mode_wahl = tk.StringVar(value="mf")
-    knoepfe = ttk.Frame(rechts)
-    knoepfe.grid(row=2, column=0, sticky="ew")
-    zustand = ttk.Label(rechts, text="bereit", anchor="w")
-    zustand.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+    def stimmen(self, frisch: bool = False) -> list[str]:
+        alter, wert = self._stimmen
+        if frisch or time.monotonic() - alter > STIMMEN_CACHE_S:
+            wert = verfuegbare_stimmen()
+            self._stimmen = (time.monotonic(), wert)
+        return wert
 
-    def stimmen_laden() -> None:
-        liste.delete(0, tk.END)
-        for name in verfuegbare_stimmen():
-            liste.insert(tk.END, name)
-        if liste.size():
-            liste.selection_set(0)
-
-    def gewaehlt() -> str:
-        auswahl = liste.curselection()
-        return liste.get(auswahl[0]) if auswahl else ""
-
-    def einfuegen(_ereignis=None) -> str:
-        # Doppelklick setzt den Sprecherkopf -- schneller als tippen.
-        if gewaehlt():
-            feld.insert("insert", f'#{gewaehlt()}: ""\n')
-            feld.mark_set("insert", "insert -3c")
-            feld.focus_set()
-        return "break"
-
-    liste.bind("<Double-Button-1>", einfuegen)
-
-    def lauf(ziel: Path | None) -> None:
-        einsaetze = parse_skript(feld.get("1.0", tk.END), gewaehlt())
-        if not einsaetze:
-            meldungen.put(("fertig", "nichts zu sprechen"))
-            return
-        bekannt = set(verfuegbare_stimmen())
-        unbekannt = {e.stimme for e in einsaetze} - bekannt
-        if unbekannt:
-            meldungen.put(("fertig", "unbekannte Stimme: " + ", ".join(sorted(unbekannt))))
-            return
-        senke = Sammler() if ziel else Wiedergabe()
-        modus = mode_wahl.get()
+    def dienst(self) -> dict:
+        alter, wert = self._status
+        if time.monotonic() - alter <= STATUS_CACHE_S:
+            return wert
         try:
+            antwort = request("GET", "/status")
+            try:
+                wert = json.loads(antwort.read()) if antwort.status == 200 else {}
+            finally:
+                antwort.close()
+                verbindung = getattr(antwort, "_mimic_connection", None)
+                if verbindung is not None:
+                    verbindung.close()
+        except (OSError, ValueError):
+            wert = {"state": "offline"}
+        self._status = (time.monotonic(), wert)
+        return wert
+
+    def melden(self, **felder) -> None:
+        with self.lock:
+            self.auftrag.update(felder)
+
+    def starten(self, text: str, modus: str, standard: str, speichern: bool) -> None:
+        if self.aufnahme.stand()["laeuft"]:
+            raise RuntimeError("es laeuft eine Aufnahme")
+        with self.lock:
+            if self.auftrag["running"]:
+                raise RuntimeError("es laeuft noch ein Auftrag")
+            self.abbruch.clear()
+            self.aktive.zuruecksetzen()
+            self.pegel = []
+            self.wav = None
+            self.auftrag = {"running": True, "index": 0, "total": 0, "voice": "",
+                            "mode": modus, "message": "wird vorbereitet…",
+                            "ok": True, "download": False}
+        self.thread = threading.Thread(target=self._lauf, name="mimic-gui-auftrag",
+                                       args=(text, modus, standard, speichern), daemon=True)
+        self.thread.start()
+
+    def _lauf(self, text: str, modus: str, standard: str, speichern: bool) -> None:
+        senke = Sammler() if speichern else Wiedergabe()
+
+        def gemessen(kopf: dict, pcm: bytes) -> None:
+            senke(kopf, pcm)
+            with self.lock:
+                self.pegel.extend(pegel(pcm))
+
+        try:
+            einsaetze = parse_skript(text, standard)
+            if not einsaetze:
+                self.melden(running=False, message="nichts zu sprechen", ok=False)
+                return
+            unbekannt = {e.stimme for e in einsaetze} - set(self.stimmen(frisch=True))
+            if unbekannt:
+                self.melden(running=False, ok=False,
+                            message="unbekannte Stimme: " + ", ".join(sorted(unbekannt)))
+                return
             for nummer, einsatz in enumerate(einsaetze, 1):
-                meldungen.put(("lauf", f"{nummer}/{len(einsaetze)}  {einsatz.stimme}  [{modus}]"))
-                sprich(einsatz, modus, senke, abbruch, aktive)
+                self.melden(index=nummer, total=len(einsaetze), voice=einsatz.stimme,
+                            message=f"spricht Einsatz {nummer} von {len(einsaetze)}")
+                sprich(einsatz, modus, gemessen, self.abbruch, self.aktive)
                 if nummer < len(einsaetze):
                     senke.pause()
             if isinstance(senke, Sammler):
-                senke.schreiben(ziel)  # type: ignore[arg-type]
-                meldungen.put(("fertig", f"gespeichert: {ziel}"))
+                daten = senke.wav()
+                with self.lock:
+                    self.wav = daten
+                self.melden(running=False, download=True, ok=True,
+                            message=f"WAV bereit ({len(daten) // 1024} KiB) — wird geladen")
             else:
                 senke.schliessen()
-                meldungen.put(("fertig", f"{len(einsaetze)} Einsaetze gesprochen"))
+                self.melden(running=False, ok=True,
+                            message=f"{len(einsaetze)} Einsaetze gesprochen")
         except Abgebrochen:
             if isinstance(senke, Wiedergabe):
                 senke.abbrechen()
-            meldungen.put(("fertig", "abgebrochen"))
+            self.melden(running=False, ok=False, message="abgebrochen")
         except Exception as fehler:
             if isinstance(senke, Wiedergabe):
                 senke.abbrechen()
-            meldungen.put(("fertig", f"Fehler: {fehler}"))
+            self.melden(running=False, ok=False, message=f"Fehler: {fehler}")
 
-    def starten(ziel: Path | None) -> None:
-        abbruch.clear()
-        aktive.zuruecksetzen()
-        for knopf in (abspielen, speichern):
-            knopf.state(["disabled"])
-        stopp.state(["!disabled"])
-        threading.Thread(target=lauf, args=(ziel,), daemon=True).start()
+    def stoppen(self) -> None:
+        self.aktive.abbrechen()
 
-    def speichern_klick() -> None:
-        pfad = filedialog.asksaveasfilename(defaultextension=".wav",
-                                            filetypes=[("WAV", "*.wav")])
-        if pfad:
-            starten(Path(pfad))
+    def schliessen(self) -> None:
+        self.stoppen()
+        self.aufnahme.schliessen()
+        if self.thread is not None:
+            self.thread.join(2.0)
 
-    abspielen = ttk.Button(knoepfe, text="Abspielen", command=lambda: starten(None))
-    abspielen.pack(side="left")
-    speichern = ttk.Button(knoepfe, text="Als WAV speichern", command=speichern_klick)
-    speichern.pack(side="left", padx=6)
-    stopp = ttk.Button(knoepfe, text="Stopp", command=aktive.abbrechen)
-    stopp.pack(side="left")
-    stopp.state(["disabled"])
-    ttk.Button(knoepfe, text="Stimmen neu lesen", command=stimmen_laden).pack(side="left", padx=6)
-    # mf ist Realtime und die Vorgabe, soar rechnet laenger und ist fuer
-    # gespeicherte Dateien die bessere Wahl.
-    ttk.Label(knoepfe, text="Modus").pack(side="left", padx=(12, 4))
-    ttk.Combobox(knoepfe, textvariable=mode_wahl, values=("mf", "soar"),
-                 state="readonly", width=6).pack(side="left")
 
-    def pumpe() -> None:
+# ── Loopback-Server ─────────────────────────────────────────────────────
+
+class _GuiHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "MimicGui/1"
+    sitzung: Sitzung        # von handler_klasse gesetzt
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        pass                # ein Fenster, ein Nutzer -- Zugriffslog waere Rauschen
+
+    # -- Antwortformen --
+
+    def _senden(self, status: int, typ: str, koerper: bytes, kopf: dict | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", typ)
+        self.send_header("Content-Length", str(len(koerper)))
+        self.send_header("Cache-Control", "no-store")
+        for name, wert in (kopf or {}).items():
+            self.send_header(name, wert)
+        self.end_headers()
+        self.wfile.write(koerper)
+
+    def _json(self, status: int, wert: dict) -> None:
+        self._senden(status, "application/json",
+                     json.dumps(wert, ensure_ascii=False).encode())
+
+    def _erlaubt(self) -> bool:
+        """Token aus Kopf oder Abfrage. Loopback allein reicht nicht: jeder
+        andere Prozess des Nutzers koennte sonst den Dienst fernsteuern."""
+        gegeben = self.headers.get("X-Mimic-Token", "")
+        if not gegeben and "?" in self.path:
+            from urllib.parse import parse_qs, urlsplit
+            gegeben = parse_qs(urlsplit(self.path).query).get("t", [""])[0]
+        if hmac.compare_digest(gegeben, self.sitzung.token):
+            return True
+        self._json(403, {"message": "Token fehlt oder ist falsch"})
+        return False
+
+    def _koerper(self) -> dict:
+        laenge = int(self.headers.get("Content-Length") or 0)
+        if laenge <= 0 or laenge > MAX_TEXT_ZEICHEN * 4:
+            return {}
+        wert = json.loads(self.rfile.read(laenge))
+        return wert if isinstance(wert, dict) else {}
+
+    # -- Endpunkte --
+
+    def do_GET(self) -> None:
+        pfad = self.path.split("?", 1)[0]
+        if pfad == "/":
+            if not self._erlaubt():
+                return
+            seite = (Path(__file__).parent / "gui.html").read_bytes()
+            self._senden(200, "text/html; charset=utf-8", seite)
+            return
+        if not self._erlaubt():
+            return
+        if pfad == "/api/state":
+            self._zustand()
+        elif pfad == "/api/wav":
+            with self.sitzung.lock:
+                daten = self.sitzung.wav
+            if daten is None:
+                self._json(404, {"message": "keine WAV bereit"})
+                return
+            self._senden(200, "audio/wav", daten,
+                         {"Content-Disposition": 'attachment; filename="mimic.wav"'})
+        elif pfad == "/api/inventar":
+            self._json(200, {"voices": stimmen_details(),
+                             "charaktere": [{"name": name, "regie": wert.regie, "text": wert.text}
+                                            for name, wert in sorted(CHARAKTERE.items())],
+                             "dauer": {"min": DAUER_MIN_S, "max": DAUER_MAX_S,
+                                       "ziel": list(DAUER_ZIEL)}})
+        elif pfad == "/api/reference":
+            self._referenz()
+        elif pfad == "/api/take":
+            self._take()
+        else:
+            self._json(404, {"message": "unbekannter Endpunkt"})
+
+    def _wav_datei(self, datei: Path, name: str) -> None:
         try:
-            while True:
-                art, text = meldungen.get_nowait()
-                zustand.config(text=text)
-                if art == "fertig":
-                    for knopf in (abspielen, speichern):
-                        knopf.state(["!disabled"])
-                    stopp.state(["disabled"])
-        except queue.Empty:
-            pass
-        wurzel.after(60, pumpe)
+            daten = datei.read_bytes()
+        except OSError:
+            self._json(404, {"message": "keine Aufnahme vorhanden"})
+            return
+        if len(daten) > MAX_WAV_BYTES:
+            self._json(413, {"message": "Aufnahme ist zu gross"})
+            return
+        self._senden(200, "audio/wav", daten,
+                     {"Content-Disposition": f'inline; filename="{name}"'})
 
-    stimmen_laden()
-    if liste.size():
-        feld.insert("1.0", f'#{liste.get(0)}: "Der Turm steht offen, und niemand bewacht ihn."\n')
-    pumpe()
-    wurzel.mainloop()
-    return 0
+    def _referenz(self) -> None:
+        from urllib.parse import parse_qs, urlsplit
+        name = parse_qs(urlsplit(self.path).query).get("name", [""])[0]
+        if not VOICE_RE.fullmatch(name):
+            self._json(400, {"message": "unbekannter Name"})
+            return
+        self._wav_datei(default_voices_dir() / name / "ref.wav", f"{name}.wav")
+
+    def _take(self) -> None:
+        aufnahme = self.sitzung.aufnahme
+        with aufnahme.lock:
+            datei = aufnahme.datei if aufnahme.letzte is not None else None
+        if datei is None:
+            self._json(404, {"message": "keine fertige Aufnahme"})
+            return
+        self._wav_datei(datei, "take.wav")
+
+    def do_POST(self) -> None:
+        pfad = self.path.split("?", 1)[0]
+        if not self._erlaubt():
+            return
+        try:
+            wunsch = self._koerper()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            self._json(400, {"message": "JSON ist ungueltig"})
+            return
+        if pfad == "/api/speak":
+            self._sprechen(wunsch)
+        elif pfad == "/api/stop":
+            self.sitzung.stoppen()
+            self._json(200, {"ok": True})
+        elif pfad == "/api/warm":
+            self._warm()
+        elif pfad.startswith("/api/record/") or pfad == "/api/voice/delete":
+            self._profilpflege(pfad, wunsch)
+        else:
+            self._json(404, {"message": "unbekannter Endpunkt"})
+
+    def _profilpflege(self, pfad: str, wunsch: dict) -> None:
+        """Aufnahme und Loeschen. ValueError = Nutzerfehler, RuntimeError = Ablauf."""
+        aufnahme = self.sitzung.aufnahme
+        try:
+            if pfad == "/api/record/start":
+                if self.sitzung.auftrag["running"]:
+                    raise RuntimeError("es laeuft ein Sprechauftrag")
+                aufnahme.starten(str(wunsch.get("name", "")), bool(wunsch.get("force")))
+                self._json(200, {"ok": True, **aufnahme.stand()})
+            elif pfad == "/api/record/stop":
+                self._json(200, {"ok": True, **aufnahme.stoppen()})
+            elif pfad == "/api/record/keep":
+                self._json(200, {"ok": True, **aufnahme.behalten(str(wunsch.get("text", "")))})
+            elif pfad == "/api/record/discard":
+                aufnahme.verwerfen()
+                self._json(200, {"ok": True})
+            elif pfad == "/api/voice/delete":
+                stimme_loeschen(str(wunsch.get("name", "")))
+                self._json(200, {"ok": True})
+            else:
+                self._json(404, {"message": "unbekannter Endpunkt"})
+                return
+        except ValueError as fehler:
+            self._json(400, {"message": str(fehler)})
+            return
+        except RuntimeError as fehler:
+            self._json(409, {"message": str(fehler)})
+            return
+        except OSError as fehler:
+            self._json(500, {"message": f"Dateisystem: {fehler}"})
+            return
+        self.sitzung.stimmen(frisch=True)      # Liste im Fenster sofort richtig
+
+    def _zustand(self) -> None:
+        from urllib.parse import parse_qs, urlsplit
+        abfrage = parse_qs(urlsplit(self.path).query)
+        try:
+            seit = max(0, int(abfrage.get("seit", ["0"])[0]))
+        except ValueError:
+            seit = 0
+        frisch = abfrage.get("frisch", ["0"])[0] == "1"
+        with self.sitzung.lock:
+            auftrag = dict(self.sitzung.auftrag)
+            neue = self.sitzung.pegel[seit:]
+            marke = len(self.sitzung.pegel)
+            if auftrag["download"]:
+                # Nur einmal ausliefern, sonst laedt jeder Puls die Datei erneut.
+                self.sitzung.auftrag["download"] = False
+        self._json(200, {"voices": self.sitzung.stimmen(frisch), "service": self.sitzung.dienst(),
+                         "job": auftrag, "levels": neue, "cursor": marke,
+                         "record": self.sitzung.aufnahme.stand()})
+
+    def _sprechen(self, wunsch: dict) -> None:
+        text = wunsch.get("text")
+        modus = wunsch.get("mode", "mf")
+        stimme = wunsch.get("voice") or ""
+        if not isinstance(text, str) or not text.strip():
+            self._json(400, {"message": "text fehlt"})
+            return
+        if len(text) > MAX_TEXT_ZEICHEN:
+            self._json(400, {"message": "Skript ist zu lang"})
+            return
+        if modus not in ("mf", "soar"):
+            self._json(400, {"message": "mode muss mf oder soar sein"})
+            return
+        try:
+            self.sitzung.starten(text, modus, stimme, bool(wunsch.get("speichern")))
+        except RuntimeError as fehler:
+            self._json(409, {"message": str(fehler)})
+            return
+        self._json(200, {"ok": True})
+
+    def _warm(self) -> None:
+        try:
+            antwort = request("POST", "/warm", {"mode": "mf"})
+            try:
+                wert = json.loads(antwort.read() or b"{}")
+                status = antwort.status
+            finally:
+                antwort.close()
+                verbindung = getattr(antwort, "_mimic_connection", None)
+                if verbindung is not None:
+                    verbindung.close()
+        except (OSError, ValueError) as fehler:
+            self._json(200, {"ok": False, "message": f"Dienst nicht erreichbar: {fehler}"})
+            return
+        self._json(200, {"ok": status < 400,
+                         "message": wert.get("message") or wert.get("state") or f"HTTP {status}"})
+
+
+def handler_klasse(sitzung: Sitzung) -> type[_GuiHandler]:
+    return type("MimicGuiHandler", (_GuiHandler,), {"sitzung": sitzung})
+
+
+# ── Fenster ─────────────────────────────────────────────────────────────
+
+def _browser() -> str | None:
+    for name in ("chromium", "google-chrome-stable", "google-chrome", "brave",
+                 "brave-browser", "vivaldi-stable", "microsoft-edge-stable"):
+        pfad = shutil.which(name)
+        if pfad:
+            return pfad
+    return None
+
+
+def _fenster(url: str) -> int:
+    """Blockiert, bis das Fenster zu ist -- das ist unser Beenden-Signal."""
+    programm = _browser()
+    if programm is None:
+        import webbrowser
+        print(f"Kein Chromium gefunden. Oberflaeche im Standardbrowser:\n  {url}\n"
+              f"Fenster schliessen und hier Strg+C druecken zum Beenden.")
+        webbrowser.open(url)
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            pass
+        return 0
+    # Eigenes Profil: ohne --user-data-dir uebergibt Chromium die URL an eine
+    # laufende Instanz und beendet sich sofort -- dann faellt unser Warten aus.
+    profil = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "mimic-gui"
+    profil.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return subprocess.run([programm, f"--app={url}", f"--user-data-dir={profil}",
+                           "--window-size=1280,860", "--class=Mimic",
+                           "--no-first-run", "--no-default-browser-check",
+                           "--disable-features=Translate,MediaRouter"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+
+def main() -> int:
+    sitzung = Sitzung()
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_klasse(sitzung))
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, name="mimic-gui-server", daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}/?t={sitzung.token}"
+    try:
+        return _fenster(url)
+    finally:
+        sitzung.schliessen()
+        server.shutdown()
+        server.server_close()
+
+
+def demo() -> None:
+    """Selbstpruefung ohne Fenster: Parser, Pegel und Token-Wache."""
+    assert parse_skript('#a: "eins"\nzwei\n// weg\n', "z") == [
+        Einsatz("a", "eins"), Einsatz("a", "zwei")]
+    assert parse_skript("Er sagte: komm.", "z") == [Einsatz("z", "Er sagte: komm.")]
+    laut = array.array("h", [32767, -32768] * PEGEL_FENSTER).tobytes()
+    assert pegel(laut) == [1.0, 1.0], pegel(laut)
+    assert pegel(bytes(PEGEL_FENSTER * 2)) == [0.0]
+    assert pegel(b"") == []
+
+    assert dauer_urteil(2.9)[0] is False and dauer_urteil(60.1)[0] is False
+    assert dauer_urteil(3.0)[0] and dauer_urteil(60.0)[0]
+    assert "Zielbereich" in dauer_urteil(10.0)[1]
+    assert "gemessenen" in dauer_urteil(30.0)[1]
+
+    aufnahme = Aufnahme()
+    assert aufnahme.stand() == {"laeuft": False, "name": "", "sekunden": 0.0,
+                                "deckel_s": AUFNAHME_DECKEL_S, "fertig": None}
+    for boese in ("", "Gross", "../flucht", "_start", "x" * 33, "a/b"):
+        try:
+            aufnahme.starten(boese, False)
+        except ValueError:
+            pass
+        else:                                   # pragma: no cover
+            raise AssertionError(f"Name {boese!r} haette abgelehnt werden muessen")
+    for boese in ("", "../../etc", "Gross"):
+        try:
+            stimme_loeschen(boese)
+        except ValueError:
+            pass
+        else:                                   # pragma: no cover
+            raise AssertionError(f"Loeschen von {boese!r} haette scheitern muessen")
+
+    sitzung = Sitzung()
+    assert len(sitzung.token) >= 24
+    assert not sitzung.auftrag["running"]
+    sammler = Sammler()
+    sammler({"sample_rate": 24000, "channels": 1}, bytes(480))
+    kopf = sammler.wav()[:4]
+    assert kopf == b"RIFF", kopf
+    print("gui demo ok")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if os.environ.get("MIMIC_GUI_DEMO"):
+        demo()
+    else:
+        raise SystemExit(main())

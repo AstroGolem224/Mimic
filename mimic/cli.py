@@ -272,8 +272,8 @@ def record(args: argparse.Namespace) -> int:
 
 
 def gui(_args: argparse.Namespace) -> int:
-    # Erst hier importieren: tkinter zieht Tcl/Tk nach, und die reine CLI
-    # soll das nicht bezahlen.
+    # Erst hier importieren: das GUI zieht http.server und den Browserstart
+    # nach, und die reine CLI soll das nicht bezahlen.
     from .gui import main as gui_main
     return gui_main()
 
