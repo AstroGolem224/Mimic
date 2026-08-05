@@ -1,5 +1,5 @@
 # Plan: Mimic Phase 2 — dAImon-Anbindung
-_Rev 6, 2026-08-05, nach Codex-Runde 5 (MAX_ROUNDS). Begriffe nach
+_Rev 7, 2026-08-05, nach Codex-Runde 6. Begriffe nach
 `~/Dokumente/UMBRA-Notes/DDs/Mimic/CONTEXT.md`._
 
 ## Goal
@@ -50,6 +50,43 @@ am 2026-08-05 durch Codex' Review gefunden und von Hand am Code bestätigt worde
    Preis, offen benannt: dAImon sagt „ge-mer-get" statt „gemördscht". Das ist das
    Fehlerbild aus Kriterium B, und es bleibt — der Validator wiegt schwerer als die
    Aussprache.
+
+## Phase 2a-bis — was die Parallelarbeit aufgerissen hat
+
+Zwischen Rev 1 und Rev 6 ist im Repo unabhängig gearbeitet worden (`f3a26bb` stumme
+Takes und Charakterstimmen, `4cacd90` GUI). Zwei davon machen Teile dieses Plans
+**falsch**, wenn sie nicht vorher behandelt werden.
+
+2a. **„Erster `A`-Rahmen" ist nicht mehr „erster Ton".** Seit `f3a26bb` sendet der Worker
+   einen stummen Take **vollständig**, misst `spitze` und erkennt ihn erst **danach** als
+   stumm — dann wiederholt er. Die ganze Engine-Wahl aus Schritt 12 hängt aber daran, dass
+   der erste Rahmen hörbares Audio bedeutet: dAImon würde binnen 500 ms auf Mimic
+   festlegen und dann sekundenlang Stille abspielen. Zwei stumme Takes hintereinander
+   enden sogar mit `status=ok`.
+   Fix: Anfangsrahmen zurückhalten, bis `STUMM_PEAK` **überschritten** ist; stumme Takes
+   verwerfen statt senden; nach zwei stummen Takes **vor** dem Stream fehlschlagen.
+   Damit wird „erster `A`" wieder gleichbedeutend mit „erster Ton", und erst dann trägt
+   Schritt 12.
+2b. **Zwei residente Runtimes passen nicht in die Unit.** `self.runtimes[mode]` behält
+   jeden geladenen Modus, geräumt wird nie. Phase 0 hat gemessen: beide zusammen ~20 GiB
+   RAM — `MemoryMax` ist **7G**. Bisher fiel das nicht auf, weil nur ein Modus benutzt
+   wurde. Mit der GUI (nutzt `soar`) und dem geplanten `/warm(mf)` lädt Mimic den zweiten
+   daneben und der Worker stirbt.
+   Fix: **ein residenter Modus.** Vor dem Laden eines anderen wird der bisherige geräumt,
+   und der Moduswechsel wird unter der echten cgroup abgenommen — `soar` → `/warm(mf)` und
+   `mf` → GUI-`soar`. Das korrigiert auch eine Aussage in `ERGEBNIS.md`, die nur für VRAM
+   galt und für RAM nie.
+2c. **Der GUI-Stopp erreicht die Verbindung nicht.** `gui.py` hält sie im Synthesethread,
+   der Tk-Rückruf setzt nur ein Event. Währenddessen hängt `getresponse()` oder
+   `read_frame()`, der Socket ist unerreichbar und der Worker rechnet weiter — dasselbe
+   Loch wie in Schritt 5, nur im anderen Client. Fix: aktive Verbindung threadsicher
+   veröffentlichen, Stopp macht `shutdown(SHUT_RDWR)` plus `close()`.
+2d. **Das erweiterte `/speak`-Schema muss CLI und GUI unverändert lassen.** Beide senden
+   heute nur `text`, `voice`, `mode`. Vorgaben deshalb rückwärtskompatibel:
+   `aussprache=true`, `require_warm=false`, Korrelations-ID serverseitig erzeugt, wenn sie
+   fehlt. **dAImon sendet explizit** `false` / `true` / eigene ID. CLI und GUI kommen als
+   Regressionstests dazu — sonst schaltet eine naheliegende Umsetzung ihre
+   Aussprachekorrektur ab oder bricht sie ganz.
 
 ## Phase 2b — Mimic-Seite
 
@@ -217,8 +254,8 @@ dass der echte Worker den Hub fragt oder `aussprache:false` befolgt:
 
 | Prüfstand | Wofür |
 |---|---|
-| **dAImon-Doppel** — zählt Anfragen, erzwingt Absage, Verzögerung, Tod im Stream | Routing, Fristen, Rückfall, Abbruch: P2-A, P2-B, P2-C, P2-D1, P2-D2, P2-E(a), P2-H, P2-I |
-| **echter Mimic, Stub-Runtime, Fake-Hub** — echter Worker- und Frontendcode, Modell durch Attrappe ersetzt | Protokoll, Sperre, Aussprache-Abschaltung: P2-E(b), P2-G |
+| **dAImon-Doppel** — zählt Anfragen, erzwingt Absage, Verzögerung, Tod im Stream | Routing, Fristen, Rückfall: P2-A, P2-B, P2-C, P2-E(a), P2-H, P2-I, P2-J |
+| **echter Mimic, Stub-Runtime, Fake-Hub** — echter Worker- und Frontendcode, Modell durch steuerbare Attrappe ersetzt | Protokoll, Sperre, Aussprache, **und Abbruch**: P2-E(b), P2-G, **P2-D1, P2-D2**, P2-K, Moduswechsel aus 2b. D1 liest das echte Mimic-Journal, D2 beobachtet Worker-Cancel, `next()` und `emit()` — ein Doppel kann beides nicht. |
 | **echtes warmes Modell** | nur P2-F |
 
 **Vor dem ersten Lauf eingefroren:** Korpus, Lastzustand, Warmzustand, Perzentil-Methode
@@ -231,12 +268,14 @@ Begründung innerhalb derselben Abnahme.
 | P2-B | Kalt wartet nicht | Bei kaltem Mimic beginnt Ton in < 400 ms — `require_warm` liefert sofort `cold`, die 500-ms-Gesamtfrist greift gar nicht. `/warm` ist danach angestoßen. n ≥ 20. |
 | P2-C | Ausfall unsichtbar, auch langsam | Fünf Fälle, je mit Frist: (a) Dienst gestoppt, (b) Socket da, niemand horcht, (c) `SIGKILL` mitten im Stream, (d) Mimic lebt, verzögert den ersten `A` über die Gesamtfrist, (e) Mimic lebt, stockt im Stream über den Rahmenabstand. In a/b/d spricht dAImon **vollständig** mit sherpa, Ton binnen 700 ms. In c/e endet der Satz still. In **allen** Fällen wird die nächste Äußerung binnen 700 ms bedient. Je Fall ein maschinenlesbarer Grund. |
 | P2-D1 | Abbruch bei laufender Wiedergabe | Neue Äußerung während laufender Mimic-Äußerung: alte Wiedergabe endet in **< 100 ms**, Mimic-Journal zeigt `outcome=cancelled`. |
-| P2-D2 | Abbruch **vor** dem ersten Rahmen | Dort gibt es keine Wiedergabe, die enden könnte — also eigene Frist: das Cancel-Flag erreicht den Worker in **< 300 ms**. Gemessen wird **ab beobachtetem Abbruch**: es beginnt **kein neuer `next()`-Aufruf** mehr, ein bereits laufender darf zurückkehren und sein Chunk wird **verworfen**, `emit()` gelingt nicht mehr, und gepufferte Rahmen erreichen den Konsumenten nicht. „Keine Yields ab gesetztem Flag" wäre nicht erfüllbar — setzt ein anderer Thread das Flag, während der Eigentümer in `next()` steckt, liefert dieser Aufruf noch einen Chunk. „Keine Rahmen mehr" allein wäre mehrdeutig — ein Rahmen kann vor dem Abbruch im Puffer liegen und erst danach beobachtet werden. Das ist das Loch aus Schritt 5. |
+| P2-D2 | Abbruch **vor** dem ersten Rahmen | Dort gibt es keine Wiedergabe, die enden könnte — also eigene Frist: das Cancel-Flag erreicht den Worker in **< 300 ms**. Gemessen wird **ab beobachtetem Abbruch**: es beginnt **kein neuer `next()`-Aufruf** mehr — auch nicht der eines
+**Wiederholungs-Takes** nach einem stummen (`worker.py` startet den nächsten Generator
+heute ohne erneute Cancel-Prüfung; ein Testfall erzwingt einen stummen ersten Take) — ein bereits laufender darf zurückkehren und sein Chunk wird **verworfen**, `emit()` gelingt nicht mehr, und gepufferte Rahmen erreichen den Konsumenten nicht. „Keine Yields ab gesetztem Flag" wäre nicht erfüllbar — setzt ein anderer Thread das Flag, während der Eigentümer in `next()` steckt, liefert dieser Aufruf noch einen Chunk. „Keine Rahmen mehr" allein wäre mehrdeutig — ein Rahmen kann vor dem Abbruch im Puffer liegen und erst danach beobachtet werden. Das ist das Loch aus Schritt 5. |
 | P2-E | Hub unumgehbar, in beide Richtungen | (a) Vom Hub abgelehnter Text: der Doppel zählt **null** Anfragen. (b) Freigegebener Text plus eine Aussprache-Regel, die ihn semantisch verändert und den Zeichenfilter passiert: dAImon spricht trotzdem **exakt** den Hub-Text. (b) ist der Test, der Schritt 2 absichert — (a) allein prüft ihn nicht. |
-| P2-F | TTFA im Budget | Mimic-Pfad p95 **< 300 ms**, gemessen wie dAImon misst (erste Bytes in `pw-cat`s Pipe), n ≥ 30, eingefrorener Korpus, warmer Dienst, Maschine ohne Fremdlast. Kein erhöhtes Budget: die 250 ms enthalten Frontend, Socket und Rahmung bereits. |
+| P2-F | TTFA im Budget | Mimic-Pfad p95 **< 300 ms**, gemessen bis zum ersten **hörbaren** Sample (Amplitude über `STUMM_PEAK`), nicht bis zum ersten PCM-Byte — seit `f3a26bb` sind das nicht mehr dasselbe. n ≥ 30, eingefrorener Korpus, warmer Dienst, Maschine ohne Fremdlast. Kein erhöhtes Budget: die 250 ms enthalten Frontend, Socket und Rahmung bereits. |
 | P2-G | Sperre wirkt und gibt frei | (a) Hub verweigert → Mimic lädt **nicht**, meldet `load_denied` mit `hub_reason`, je einmal für `vram`, `fullscreen`, `lade_sperre`. (b) Hub nicht erreichbar → Mimic lädt (fail open). (c) **Erfolgreiches Laden → `fertig` bestätigt → ein zweiter Lader bekommt sofort eine neue Sperre**, nicht `lade_sperre`. Ohne (c) bliebe eine kaputte Freigabe unentdeckt, bis die 120-s-Frist sie zudeckt. (d) **Kaputte Hub-Antwort** — leer, ungültiges JSON, schemafremd: jeweils **kein** Ladeversuch, eigener Diagnosegrund. Schritt 1 verlangt hier fail-closed; ohne (d) wäre das unabgenommen. |
 | P2-H | Marke ist generationssicher | Deterministischer A/B-Lauf: A wird abgebrochen, B meldet `beginnt`, **dann** trifft As verspätetes `gesprochen` ein. Erwartung: B bleibt aktive Marke, `tts_active` bleibt `true`. Ohne diesen Test kann eine Umsetzung ein Feld hinzufügen, ohne das falsche Löschen zu verhindern. |
-| P2-K | Warmlauf wirkt wirklich | Kalt → sherpa spricht fristgerecht → `/warm` führt binnen 30 s zu `warm` **oder scheitert sichtbar im Journal** → die **nächste** lange Äußerung ist `engine=mimic`. Gegenfall: ein `/warm`, das nie antwortet, verändert die sherpa-TTFA **nicht** und erzeugt höchstens **einen** Hintergrundaufruf. P2-B beweist nur, dass ein Wunsch angestoßen wurde — ein Eigentümer, der den Condition-Wakeup verliert, käme damit durch. |
+| P2-K | Warmlauf wirkt wirklich | Zwei getrennte Zweige, nicht einer: **Erfolg** — kalt → sherpa spricht fristgerecht → `/warm` wird binnen 30 s `warm` → die **nächste** lange Äußerung ist `engine=mimic`. **Fehlschlag** — `/warm` scheitert sichtbar → die nächste Äußerung geht fristgerecht an sherpa, mit korreliertem Diagnosegrund. (Rev 5 verlangte in beiden Fällen `engine=mimic`, was nach einem Fehlschlag gerade nicht zugesagt ist.) Gegenfall: ein `/warm`, das nie antwortet, verändert die sherpa-TTFA **nicht** und erzeugt höchstens **einen** Hintergrundaufruf. P2-B beweist nur, dass ein Wunsch angestoßen wurde — ein Eigentümer, der den Condition-Wakeup verliert, käme damit durch. |
 | P2-J | Hängendes Mimic blockiert den Start nicht | `/status` wird angenommen, aber nie beantwortet. Erwartung: dAImons Startprüfung endet binnen 300 ms, der Mimic-Pfad wird deaktiviert und protokolliert, `daimon-tts` startet fertig, und sherpa spricht danach in seinem Budget. Die Sandbox-Abnahme in Schritt 19 deckt nur „Mimic nicht installiert" — der schlimmere Fall ist ein Dienst, der da ist und schweigt. |
 | P2-I | Terminalpfade räumen auf | Nach **jedem** Ende — `E:error`, EOF, Rahmenfrist, lokaler Abbruch, Erfolg — gilt: keine offene Mimic-Sitzung, kein verwaister `pw-cat`, kein laufender Leser-Thread, und **die beendete Generation besitzt keine aktive Marke mehr**. `tts_active=false` nur dann, wenn **keine neuere Generation spricht** — sonst widerspräche P2-I dem Fall aus P2-H, wo B gerade redet, während A verspätet endet. Abschluss idempotent und generationsgebunden. |
 

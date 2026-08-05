@@ -373,3 +373,70 @@ nicht als solches ausgegeben.
 Substanziell gefunden wurden dabei zwei Defekte im LAUFENDEN Code (kaputte Hub-Sperre,
 Aussprache umgeht den Validator) und ein drittes Messproblem (Torch-Import blockiert die
 Kalt-Ablehnung) -- alle drei am Code verifiziert, nicht nur behauptet.
+
+## Round 6 — Codex (auf Anforderung ueber MAX_ROUNDS hinaus)
+
+Rev 6 ist noch nicht freigabefähig. Die neuen Commits legen mehrere bisher unsichtbare Lücken offen.
+
+1. **Der Torch-Startup-Fix steht im Plan, wird durch P2-B aber nicht erzwungen.** „Kaltes Mimic“ kann auch einen bereits laufenden Worker ohne Runtime bedeuten; dann besteht P2-B trotz unverändertem Torch-Import in `Engine.__init__`.  
+Fix: P2-B muss jeden Lauf mit nachweislich nicht vorhandenem Worker-PID/socket-aktiviertem Neustart beginnen.
+
+2. **P2-D1/D2 sind dem falschen Prüfstand zugeordnet.** Die Matrix ordnet sie dem dAImon-Doppel zu, obwohl D1 das echte Mimic-Journal und D2 Worker-Cancel, `next()` und `emit()` beobachtet; ein Doppel kann Schritt 5 nicht abnehmen.  
+Fix: P2-D1/D2 zusätzlich gegen echtes Frontend und echten Worker mit steuerbarer Stub-Runtime ausführen.
+
+3. **Die neue Silent-Take-Wiederholung verletzt P2-D2 an der Retry-Grenze.** Nach einem vollständig stummen Take startet [worker.py](/home/itiger013/Dokumente/Github/Mimic/mimic/worker.py:160) den nächsten Generator ohne erneute Cancel-Prüfung; ein zwischen den Takes beobachteter Abbruch kann daher einen neuen `next()` auslösen.  
+Fix: Vor jedem Generatorstart und jedem `next()` Cancel prüfen und D2 mit einem erzwungen stummen ersten Take testen.
+
+4. **„Erster `A`-Frame“ bedeutet seit f3a26bb nicht mehr „erster Ton“.** Der Worker sendet den stummen Take vollständig, erkennt ihn erst danach und kann sogar zwei stumme Takes mit `status=ok` beenden; dAImon entscheidet damit binnen 500 ms für Mimic, während hörbare Sprache sekundenlang ausbleibt. P2-F misst ebenfalls nur Bytes und übersieht das.  
+Fix: Anfangsframes bis zum ersten Überschreiten von `STUMM_PEAK` puffern, stille Takes verwerfen, nach zwei stillen Takes vor dem Stream fehlschlagen und einen erzwungenen Silent-Take-Fall abnehmen.
+
+5. **Der GUI-Stopp kann die Verbindung gerade in den kritischen Phasen nicht schließen.** [gui.py](/home/itiger013/Dokumente/Github/Mimic/mimic/gui.py:83) hält die Verbindung nur im Synthesethread; der Tk-Callback setzt lediglich ein Event. Während `getresponse()` vor dem ersten Audio oder eines blockierenden `read_frame()` läuft, bleibt der Socket unerreichbar und der Worker rechnet weiter.  
+Fix: Die aktive GUI-Verbindung vor `getresponse()` threadsicher veröffentlichen und beim Stopp per `shutdown(SHUT_RDWR)` plus `close()` abbrechen; Warteschlangen- und Frame-Stall testen.
+
+6. **Das erweiterte `/speak`-Schema lässt CLI und GUI undefiniert zurück.** Beide senden heute nur `text`, `voice` und `mode`; Rev 6 spezifiziert weder Defaults für `aussprache`/`require_warm` noch, ob die zwingend kanonische Korrelations-ID fehlen darf. Eine naheliegende Umsetzung bricht beide bestehenden Clients oder schaltet ihre Aussprachekorrektur ab.  
+Fix: Rückwärtskompatibel `aussprache=true`, `require_warm=false` und serverseitige ID bei Fehlen definieren, während dAImon explizit `false/true/eigene ID` sendet; CLI und GUI als Regressionstests aufnehmen.
+
+7. **GUI-`soar` und der geplante `mf`-Warmlauf passen nicht in den bestehenden Speicherentwurf.** Der Worker behält Runtimes pro Modus gleichzeitig; Phase 0 misst dafür rund 20 GiB RAM, die Unit erlaubt 7 GiB. Nach einem GUI-`soar` versucht `/warm` deshalb `mf` daneben zu laden und kann den Worker töten. „Ein Eigentümer“ verhindert Doppel-Laden, aber nicht Doppel-Residenz.  
+Fix: Einen gemessenen, speichersicheren Moduswechsel festlegen und `soar → /warm(mf)` sowie `mf → GUI-soar` unter der echten cgroup abnehmen.
+
+8. **P2-K ist logisch widersprüchlich.** Es verlangt nach „warm oder sichtbar gescheitert“ in beiden Fällen die nächste Äußerung mit `engine=mimic`; nach einem sichtbaren Fehlschlag ist genau das nicht zugesagt.  
+Fix: Erfolgszweig auf `engine=mimic` festlegen, Fehlerzweig auf fristgerechtes sherpa plus korrelierten Diagnosegrund.
+
+Die Viererwarteschlange wird durch eine einzelne GUI nicht geflutet, weil sie Einsätze seriell sendet; `mimic record` erzeugt ebenfalls keinen zweiten Modell-Eigentümer. P2-Fs 300-ms-Grenze ist durch die gemessenen 250 ms begründet, muss aber um „hörbares Audio statt beliebiger PCM-Bytes“ korrigiert werden.
+
+VERDICT: REVISE
+### Claude's response — Round 6
+
+Alle acht angenommen. Diese Runde hat sich bezahlt gemacht, und zwar ausgerechnet an der
+Parallelarbeit, die der Plan bis dahin nie gesehen hatte. Zwei Funde am Code verifiziert:
+
+**#4 -- "erster A-Rahmen" ist nicht mehr "erster Ton".** Seit f3a26bb emittiert die
+Schleife jeden Chunk und prueft `spitze >= STUMM_PEAK` erst NACH dem ganzen Take. Ein
+stummer Take geht also vollstaendig zum Konsumenten, bevor er als stumm erkannt wird.
+Damit haette dAImon binnen 500 ms auf Mimic festgelegt und sekundenlang Stille
+abgespielt -- die gesamte Engine-Wahl aus Schritt 12 haengt daran, dass der erste Rahmen
+hoerbares Audio bedeutet. Zwei stumme Takes enden sogar mit status=ok. Neuer Schritt 2a.
+
+**#7 -- zwei residente Runtimes passen nicht in die Unit.** self.runtimes[mode] behaelt
+jeden geladenen Modus, geraeumt wird nie. Meine eigene ERGEBNIS.md sagt: beide zusammen
+~20 GiB RAM, MemoryMax ist 7G. Bisher fiel das nicht auf, weil nur ein Modus benutzt
+wurde -- mit der GUI (soar) und meinem geplanten /warm(mf) haette der Plan den Worker
+umgebracht. Das ist mein eigener dokumentierter Befund, den mein eigener Plan verletzt
+haette. Neuer Schritt 2b: ein residenter Modus, Wechsel raeumt, Abnahme unter der echten
+cgroup.
+
+Weiter angenommen: GUI-Stopp erreicht die Verbindung nicht (#5, dasselbe Loch wie
+Schritt 5, nur im anderen Client) -- Schritt 2c. Rueckwaertskompatible Vorgaben fuer das
+erweiterte /speak-Schema, damit CLI und GUI nicht brechen (#6) -- Schritt 2d. P2-D1/D2
+gehoeren an den echten Pruefstand, nicht ans Doppel (#2). P2-D2 muss auch den
+Wiederholungs-Take nach einem stummen abdecken (#3). P2-F misst ab jetzt bis zum ersten
+HOERBAREN Sample, nicht bis zum ersten PCM-Byte (#4, zweiter Teil).
+
+**#8 war wieder ein Widerspruch in meiner eigenen Formulierung:** P2-K verlangte nach
+"warm oder sichtbar gescheitert" in beiden Faellen engine=mimic. Nach einem Fehlschlag
+ist genau das nicht zugesagt. Jetzt zwei getrennte Zweige.
+
+Nicht beanstandet und damit bestaetigt: die Viererwarteschlange wird von einer einzelnen
+GUI nicht geflutet (sie sendet seriell), `mimic record` erzeugt keinen zweiten
+Modell-Eigentuemer, und die 300-ms-Grenze aus P2-F bleibt durch die gemessenen 250 ms
+gedeckt.
