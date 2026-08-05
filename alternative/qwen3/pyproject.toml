@@ -1,0 +1,15 @@
+[project]
+name = "qwen-tts-gui"
+version = "0.1.0"
+description = "Browser-GUI fuer Qwen3-TTS: Stimme klonen, sprechen, als MP3 speichern"
+requires-python = ">=3.12"
+dependencies = [
+    "qwen-tts",
+    "gradio",
+    "soundfile",
+    # librosa zieht sonst numba 0.53 mit llvmlite, das nur bis Python 3.9 baut.
+    "numba>=0.61",
+]
+
+[tool.uv]
+package = false

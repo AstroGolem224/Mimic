@@ -2,3 +2,4 @@ spike/.venv/
 spike/out/
 __pycache__/
 spike/aufnahmen/
+alternative/qwen3/.venv/
