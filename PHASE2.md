@@ -158,6 +158,19 @@ Takes und Charakterstimmen, `4cacd90` GUI). Zwei davon machen Teile dieses Plans
    **ausschließlich für `mf` definiert**; jeder andere Modus wird **synchron abgelehnt**,
    nicht als unerledigter Wunsch abgelegt. `soar` wärmt der Batch-Pfad durch seine erste
    echte Anfrage, und der wartet ohnehin.
+4a. **Der Warmlauf muss auch den Audio-Pfad bezahlen — beim Bau am 2026-08-05 gemessen.**
+   Nur das Modell zu laden reicht nicht: librosa zieht beim **ersten** Laden eines
+   Referenzaudios numba durch die JIT-Kompilierung. Im frisch gewärmten Worker gemessen:
+   8.7 s allein für `_load_prompt_audio`, TTFA **10 596 ms** — danach 377, 300, 217 ms.
+   Ein Warmlauf ohne diesen Teil meldet „warm" und lässt den nächsten Aufruf trotzdem
+   zehn Sekunden warten; für dAImon hieße das Frist gerissen, Rückfall auf sherpa,
+   Warmlauf umsonst. Der Warmlauf schickt deshalb einmal Referenzaudio durch.
+   Danach gemessen: erster Aufruf **676 ms**, zweiter 225 ms.
+   **Rest offen:** 676 ms liegen weiter über der 500-ms-Gesamtfrist aus Schritt 13. Die
+   erste Äußerung nach einem Warmlauf fällt also noch auf die Vorgabestufe zurück, erst
+   die zweite kommt von Mimic. Sauberes Verhalten, aber die Zusage ist nicht ganz
+   eingelöst — gehört vor P2-K nachgemessen.
+
 5. **Abbruch vor dem ersten Rahmen muss beim Worker ankommen.** Heute liest das Frontend
    Worker-Rahmen, bis der erste `A` da ist, und sieht erst danach nach dem Konsumenten
    (`frontend.py:174` gegen `:214`). Bricht dAImon während Warteschlange oder langsamem

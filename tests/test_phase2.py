@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import array
+import heapq
 import io
+import itertools
 import json
 import os
+import queue
 import socket
 import tempfile
 import threading
@@ -92,6 +95,28 @@ def run_engine(runtime: StubRuntime, request: dict):
           mock.patch.object(worker, "wake_listener")):
         engine._execute(job)
     return engine, events
+
+
+def fresh_engine():
+    from mimic import worker
+
+    engine = worker.Engine.__new__(worker.Engine)
+    engine.jobs = []
+    engine.sequence = itertools.count()
+    engine.runtimes = {}
+    engine.state = "cold"
+    engine.state_lock = threading.Lock()
+    engine.condition = threading.Condition(engine.state_lock)
+    engine.warm_request = None
+    engine.warming_mode = None
+    engine.loading_mode = None
+    engine.mode = None
+    engine.last_load_s = None
+    engine.vram_free_mib = None
+    engine.started = time.monotonic()
+    engine.fatal = threading.Event()
+    engine.write_status = lambda *_args: None
+    return engine
 
 
 class HubProtocolTests(unittest.TestCase):
@@ -252,6 +277,8 @@ class WorkerDefectTests(unittest.TestCase):
         engine.runtimes = {}
         engine.state = "cold"
         engine.state_lock = threading.Lock()
+        engine.condition = threading.Condition(engine.state_lock)
+        engine.loading_mode = None
         engine.mode = None
         engine.last_load_s = None
         engine.started = time.monotonic()
@@ -341,6 +368,7 @@ class SchemaAndGuiTests(unittest.TestCase):
         result = self._frontend_request({"text": "Hallo", "voice": "matthias", "mode": "mf"})
         request = result["request"]
         self.assertIs(True, request["aussprache"])
+        self.assertIs(False, request["require_warm"])
         self.assertRegex(request["correlation_id"], r"^[0-9a-f]{32}$")
 
         supplied = "A" * 32
@@ -348,6 +376,9 @@ class SchemaAndGuiTests(unittest.TestCase):
                                          "correlation_id": supplied})
         self.assertIs(False, result["request"]["aussprache"])
         self.assertEqual(supplied, result["request"]["correlation_id"])
+
+        result = self._frontend_request({"text": "Hallo", "require_warm": True})
+        self.assertIs(True, result["request"]["require_warm"])
 
         for invalid in ("", "g" * 32, "a" * 31, "a" * 33, "a" * 31 + "\n"):
             with self.subTest(invalid=invalid):
@@ -414,6 +445,220 @@ class SchemaAndGuiTests(unittest.TestCase):
             from mimic.gui import Abgebrochen
             return "abgebrochen" if isinstance(exc, Abgebrochen) else type(exc).__name__
         return "offen"
+
+
+class Phase2bTests(unittest.TestCase):
+    def test_require_warm_wird_vor_dem_einreihen_abgelehnt(self):
+        from mimic import worker
+
+        engine = fresh_engine()
+        with self.assertRaises(worker.WorkerRefusal) as raised:
+            engine.submit({"text": "x", "voice": "matthias", "mode": "mf",
+                           "require_warm": True})
+        self.assertEqual("cold", raised.exception.reason)
+        self.assertEqual([], engine.jobs)
+
+        engine.state = "warm"
+        engine.runtimes = {"soar": object()}
+        with self.assertRaises(worker.WorkerRefusal):
+            engine.submit({"text": "x", "voice": "matthias", "mode": "mf",
+                           "require_warm": True})
+        engine.runtimes["mf"] = object()
+        job = engine.submit({"text": "x", "voice": "matthias", "mode": "mf",
+                             "require_warm": True})
+        self.assertIs(job, engine.jobs[0])
+
+    def test_require_warm_mitten_im_warmlauf_wartet_nicht_auf_load(self):
+        from mimic import worker
+
+        engine = fresh_engine()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_load(_mode):
+            entered.set()
+            self.assertTrue(release.wait(1))
+            return object()
+
+        engine._load = slow_load
+        thread = threading.Thread(target=engine._warm,
+                                  args=({"mode": "mf", "correlation_id": "1" * 32},))
+        thread.start()
+        self.assertTrue(entered.wait(0.5))
+        started = time.monotonic()
+        with self.assertRaises(worker.WorkerRefusal) as raised:
+            engine.submit({"text": "x", "voice": "matthias", "mode": "mf",
+                           "require_warm": True})
+        self.assertEqual("cold", raised.exception.reason)
+        self.assertLess(time.monotonic() - started, 0.1)
+        release.set()
+        thread.join(0.5)
+        self.assertFalse(thread.is_alive())
+
+    def test_initialstatus_fasst_vram_und_torch_nicht_an(self):
+        from mimic import worker
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        old_runtime = os.environ.get("XDG_RUNTIME_DIR")
+        os.environ["XDG_RUNTIME_DIR"] = str(root)
+        self.addCleanup(lambda: (os.environ.pop("XDG_RUNTIME_DIR", None) if old_runtime is None
+                                 else os.environ.__setitem__("XDG_RUNTIME_DIR", old_runtime)))
+        idle_thread = SimpleNamespace(start=lambda: None)
+        with mock.patch.object(worker.threading, "Thread", return_value=idle_thread), \
+             mock.patch.object(worker, "vram_free_mib",
+                               side_effect=AssertionError("VRAM-Abfrage zu frueh")):
+            worker.Engine()
+        value = json.loads((root / "mimic/worker-status.json").read_text())
+        self.assertEqual(1, value["v"])
+        self.assertIsNone(value["vram_free_mib"])
+
+    def test_warmwunsch_weckt_condition_und_belegt_keinen_jobplatz(self):
+        from mimic import worker
+
+        engine = fresh_engine()
+        seen = threading.Event()
+
+        def consume(request):
+            seen.set()
+            raise SystemExit
+
+        engine._warm = consume
+        owner = threading.Thread(target=engine._run, daemon=True)
+        owner.start()
+        self.assertEqual(202, engine.request_warm(
+            {"mode": "mf", "correlation_id": "2" * 32}))
+        self.assertTrue(seen.wait(0.5))
+        owner.join(0.5)
+
+        engine = fresh_engine()
+        self.assertEqual(202, engine.request_warm({"mode": "mf"}))
+        self.assertEqual(409, engine.request_warm({"mode": "mf"}))
+        soar = engine.submit({"text": "x", "voice": "matthias", "mode": "soar"})
+        mf = engine.submit({"text": "x", "voice": "matthias", "mode": "mf"})
+        for _ in range(2):
+            engine.submit({"text": "x", "voice": "matthias", "mode": "soar"})
+        with self.assertRaises(worker.WorkerRefusal) as raised:
+            engine.submit({"text": "x", "voice": "matthias", "mode": "mf"})
+        self.assertEqual("busy", raised.exception.reason)
+        self.assertIs(mf, heapq.heappop(engine.jobs))
+        self.assertIs(soar, heapq.heappop(engine.jobs))
+        self.assertIsNotNone(engine.warm_request)
+
+        engine.warm_request = None
+        engine.state = "warm"
+        engine.runtimes = {"mf": object()}
+        self.assertEqual(200, engine.request_warm({"mode": "mf"}))
+        with self.assertRaises(worker.WorkerRefusal) as raised:
+            engine.request_warm({"mode": "soar"})
+        self.assertEqual("bad_request", raised.exception.reason)
+
+    def test_status_listet_nur_ladbare_stimmen_mit_version(self):
+        from mimic import frontend
+        from tests.test_phase1 import create_voice
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        voices = root / "voices"
+        create_voice(voices, "valid")
+        broken = voices / "broken"
+        broken.mkdir(mode=0o700)
+        (broken / "ref.txt").write_text("unvollstaendig", encoding="utf-8")
+        (broken / "ref.txt").chmod(0o600)
+        saved = {key: os.environ.get(key) for key in ("MIMIC_VOICES_DIR", "XDG_RUNTIME_DIR")}
+        os.environ["MIMIC_VOICES_DIR"] = str(voices)
+        os.environ["XDG_RUNTIME_DIR"] = str(root)
+        self.addCleanup(self._restore_env, saved)
+        handler = frontend.FrontendHandler.__new__(frontend.FrontendHandler)
+        result = {}
+        handler.path = "/status"
+        handler._json = lambda status, value: result.update(status=status, value=value)
+        handler.do_GET()
+        self.assertEqual(200, result["status"])
+        self.assertEqual(1, result["value"]["v"])
+        self.assertEqual(["valid"], result["value"]["voices"])
+
+    def test_fehler_bleiben_versioniert_strukturiert_und_unbekannt(self):
+        from mimic import frontend
+
+        handler = frontend.FrontendHandler.__new__(frontend.FrontendHandler)
+        result = {}
+        handler._json = lambda status, value: result.update(status=status, value=value)
+        handler._error("future_reason", "neu", hub_reason="vram", secret="weg")
+        self.assertEqual(503, result["status"])
+        self.assertEqual({"v": 1, "reason": "future_reason", "message": "neu",
+                          "hub_reason": "vram"}, result["value"])
+        handler._error("cold", "kalt")
+        self.assertEqual(503, result["status"])
+        self.assertEqual("cold", result["value"]["reason"])
+
+        class FakeReader:
+            def __init__(self, _body):
+                self.events = queue.Queue()
+                self.events.put(("response", object()))
+                payload = json.dumps({"status": "error", "reason": "future_worker_reason",
+                                      "message": "bleibt"}).encode()
+                self.events.put(("frame", "E", payload))
+
+            def start(self):
+                pass
+
+            def close(self):
+                pass
+
+        with mock.patch.object(frontend, "_WorkerReader", FakeReader):
+            handler._proxy_once({"text": "x"}, retry_mode=False)
+        self.assertEqual("future_worker_reason", result["value"]["reason"])
+
+    def test_frontend_warm_reicht_202_200_409_durch_und_lehnt_soar_ab(self):
+        from mimic import frontend
+
+        class Response:
+            def __init__(self, status):
+                self.status = status
+
+            def read(self, _limit):
+                return json.dumps({"v": 1, "status": self.status}).encode()
+
+            def close(self):
+                pass
+
+        for status in (202, 200, 409):
+            with self.subTest(status=status):
+                sent = {}
+
+                class Connection:
+                    sock = SimpleNamespace(settimeout=lambda _value: None)
+
+                    def request(self, method, path, body, _headers):
+                        sent.update(method=method, path=path, body=json.loads(body))
+
+                    def getresponse(self):
+                        return Response(status)
+
+                    def close(self):
+                        pass
+
+                handler = frontend.FrontendHandler.__new__(frontend.FrontendHandler)
+                result = {}
+                handler._json = lambda code, value: result.update(status=code, value=value)
+                with mock.patch.object(frontend, "UnixHTTPConnection", return_value=Connection()):
+                    handler._handle_warm({"mode": "mf", "correlation_id": "a" * 32})
+                self.assertEqual(status, result["status"])
+                self.assertEqual("/warm", sent["path"])
+                self.assertEqual("mf", sent["body"]["mode"])
+
+        handler = frontend.FrontendHandler.__new__(frontend.FrontendHandler)
+        result = {}
+        handler._error = lambda reason, message, **details: result.update(reason=reason)
+        handler._handle_warm({"mode": "soar"})
+        self.assertEqual("bad_request", result["reason"])
+
+    @staticmethod
+    def _restore_env(saved):
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 if __name__ == "__main__":

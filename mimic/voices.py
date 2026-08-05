@@ -172,6 +172,28 @@ def close_voice(profile: VoiceProfile) -> None:
         pass
 
 
+def available_voices(voices_dir: Path | None = None) -> list[str]:
+    """Nur Profile melden, die dieselbe Pruefung wie eine echte Anfrage bestehen."""
+    root = voices_dir or default_voices_dir()
+    try:
+        names = sorted(entry.name for entry in root.iterdir() if VOICE_RE.fullmatch(entry.name))
+    except OSError:
+        return []
+    valid: list[str] = []
+    for name in names:
+        # Ein blosses Verzeichnislisting waere ein falsches Bereitschaftssignal:
+        # Rechte, Symlinks, WAV-Format und Dauer werden erst von load_voice geprueft.
+        # Genau dieselbe Pruefung hier verhindert, dass /status eine Stimme verspricht,
+        # die /speak unmittelbar danach ablehnen muss.
+        try:
+            profile = load_voice(name, root)
+        except VoiceError:
+            continue
+        close_voice(profile)
+        valid.append(name)
+    return valid
+
+
 def apply_pronunciation(text: str, path: Path | None = None) -> str:
     path = path or default_voices_dir().parent / "pronunciation.json"
     try:

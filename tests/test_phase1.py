@@ -70,6 +70,12 @@ class StubWorker:
                         "request_id": "stub-id", "mode": request["mode"], "voice": request["voice"]}
                 try:
                     write_chunk(self.wfile, json_frame("H", head))
+                    if text == "pre-cancel":
+                        owner.pre_cancel_ready.set()
+                        self.connection.settimeout(1)
+                        if self.connection.recv(1) == b"":
+                            owner.pre_cancelled.set()
+                        return
                     if text == "cancel":
                         for number in range(100):
                             owner.generated = number + 1
@@ -90,6 +96,8 @@ class StubWorker:
         self.requests = []
         self.generated = 0
         self.cancelled = threading.Event()
+        self.pre_cancel_ready = threading.Event()
+        self.pre_cancelled = threading.Event()
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -245,17 +253,21 @@ class Phase1Tests(unittest.TestCase):
         # Auch die echte Worker-Warteschlange lehnt den fuenften Wartenden ab,
         # ohne einen Ladepfad zu betreten; mf wird vor bereits wartendem soar gezogen.
         import itertools
-        import queue
+        import heapq
+        import threading
         from mimic import worker
         engine = worker.Engine.__new__(worker.Engine)
-        engine.jobs = queue.PriorityQueue(worker.MAX_WAITING)
+        engine.jobs = []
         engine.sequence = itertools.count()
         engine.runtimes = {}
+        engine.state = "cold"
+        engine.state_lock = threading.Lock()
+        engine.condition = threading.Condition(engine.state_lock)
         engine.write_status = lambda *_args: None
         soar = engine.submit({"text": "x", "voice": "matthias", "mode": "soar"})
         mf = engine.submit({"text": "x", "voice": "matthias", "mode": "mf"})
-        self.assertIs(mf, engine.jobs.get_nowait())
-        self.assertIs(soar, engine.jobs.get_nowait())
+        self.assertIs(mf, heapq.heappop(engine.jobs))
+        self.assertIs(soar, heapq.heappop(engine.jobs))
         for _ in range(worker.MAX_WAITING):
             engine.submit({"text": "x", "voice": "matthias", "mode": "soar"})
         with self.assertRaises(worker.WorkerRefusal) as raised:
@@ -289,6 +301,20 @@ class Phase1Tests(unittest.TestCase):
         finally:
             os.environ.pop("MIMIC_VRAM_FREE_MIB", None)
             os.environ.pop("MIMIC_FAKE_LOAD_MARKER", None)
+
+    def test_08_disconnect_vor_erstem_rahmen_schliesst_worker(self):
+        self.stub.pre_cancel_ready.clear()
+        self.stub.pre_cancelled.clear()
+        body = json.dumps({"text": "pre-cancel"}).encode()
+        consumer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        consumer.connect(str(self.front_socket))
+        consumer.sendall(
+            b"POST /speak HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+        self.assertTrue(self.stub.pre_cancel_ready.wait(0.5))
+        consumer.shutdown(socket.SHUT_RDWR)
+        consumer.close()
+        self.assertTrue(self.stub.pre_cancelled.wait(0.5))
 
 
 if __name__ == "__main__":

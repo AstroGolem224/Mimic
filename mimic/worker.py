@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import heapq
 import json
 import os
 import queue
@@ -73,33 +74,60 @@ class Job:
 
 class Engine:
     def __init__(self) -> None:
-        self.jobs: queue.PriorityQueue[Job] = queue.PriorityQueue(MAX_WAITING)
+        self.jobs: list[Job] = []
         self.sequence = itertools.count()
         self.runtimes: dict[str, object] = {}
         self.state = "cold"
         self.state_lock = threading.Lock()
+        self.condition = threading.Condition(self.state_lock)
+        self.warm_request: dict | None = None
+        self.warming_mode: str | None = None
+        self.loading_mode: str | None = None
         self.started = time.monotonic()
         self.last_load_s: float | None = None
+        self.vram_free_mib: int | None = None
         self.mode: str | None = None
         self.fatal = threading.Event()
+        # Der socket-aktivierte Prozess muss `require_warm` beantworten koennen,
+        # bevor ein Torch-Import die gemessenen 0.69--0.75 s kostet. Deshalb ist
+        # der erste Status absichtlich eine reine CPU-Datei mit VRAM null.
+        self.write_status("kalt")
         self.owner = threading.Thread(target=self._run, name="mimic-model-owner", daemon=True)
         self.owner.start()
-        self.write_status("kalt")
 
     def submit(self, request: dict) -> Job:
-        state_lock = getattr(self, "state_lock", None)
-        if state_lock is not None:
-            with state_lock:
-                if self.state == "loading":
-                    raise WorkerRefusal("cold", "Worker laedt bereits einen Modus")
         job = Job(0 if request["mode"] == "mf" else 1, next(self.sequence), request)
-        try:
-            self.jobs.put_nowait(job)
-        except queue.Full:
-            raise WorkerRefusal("busy", "Warteschlange ist voll") from None
-        state = getattr(self, "state", "warm" if self.runtimes else "cold")
+        condition = getattr(self, "condition", None)
+        if condition is None:
+            # Kompatibilitaet fuer kleine, bewusst unvollstaendige Test-Engines.
+            condition = threading.Condition(getattr(self, "state_lock", threading.Lock()))
+            self.condition = condition
+        with condition:
+            state = getattr(self, "state", "warm" if self.runtimes else "cold")
+            mode_warm = state == "warm" and request["mode"] in self.runtimes
+            if state == "loading" or (request.get("require_warm", False) and not mode_warm):
+                raise WorkerRefusal("cold", f"Modus {request['mode']} ist nicht warm")
+            if len(self.jobs) >= MAX_WAITING:
+                raise WorkerRefusal("busy", "Warteschlange ist voll")
+            heapq.heappush(self.jobs, job)
+            condition.notify()
         self.write_status("warm" if state == "warm" else "kalt")
         return job
+
+    def request_warm(self, request: dict) -> int:
+        mode = request.get("mode")
+        if mode != "mf":
+            raise WorkerRefusal("bad_request", "Warmlauf ist nur fuer mf definiert")
+        with self.condition:
+            if self.state == "warm" and mode in self.runtimes:
+                return 200
+            if self.warm_request is not None or self.warming_mode == mode or (
+                    self.state == "loading" and self.loading_mode == mode):
+                return 409
+            self.warm_request = request
+            self.condition.notify()
+        self.write_status("kalt")
+        return 202
 
     def emit(self, job: Job, kind: str, payload: bytes) -> bool:
         while not job.cancelled.is_set():
@@ -112,22 +140,112 @@ class Engine:
 
     def _run(self) -> None:
         while True:
-            job = self.jobs.get()
+            with self.condition:
+                while not self.jobs and self.warm_request is None:
+                    self.condition.wait()
+                if self.jobs:
+                    job = heapq.heappop(self.jobs)
+                    warm_request = None
+                else:
+                    job = None
+                    warm_request = self.warm_request
+                    self.warm_request = None
+                    self.warming_mode = warm_request["mode"]
+            if job is None:
+                self._warm(warm_request)
+                continue
             try:
                 self._execute(job)
             except Exception as exc:
                 reason = exc.reason if isinstance(exc, WorkerRefusal) else "worker_unavailable"
                 message = exc.message if isinstance(exc, WorkerRefusal) else f"Worker-Fehler: {exc}"
                 details = exc.details if isinstance(exc, WorkerRefusal) else {}
-                self.emit(job, "E", json.dumps({"status": "error", "reason": reason,
+                self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": reason,
                                                 "message": message, "samples": 0, **details},
                                                ensure_ascii=False, separators=(",", ":")).encode())
                 job.delivered.wait(1)
                 self.fatal.set()
                 wake_listener()
             finally:
-                self.jobs.task_done()
                 self.write_status("warm" if self.state == "warm" else "kalt")
+
+    def _warm(self, request: dict | None) -> None:
+        if request is None:
+            return
+        mode = request["mode"]
+        started = time.monotonic()
+        outcome, reason = "ok", ""
+        try:
+            if self.state == "warm":
+                if mode in self.runtimes:
+                    return
+                raise ModeSwitch("mode_restart", f"Moduswechsel zu {mode} braucht Worker-Neustart",
+                                 worker_pid=os.getpid())
+            self._publish_loading(mode)
+            try:
+                runtime = self._load(mode)
+            except BaseException:
+                with self.condition:
+                    self.state = "cold"
+                    self.loading_mode = None
+                raise
+            with self.condition:
+                self.runtimes[mode] = runtime
+                self.mode = mode
+                self.state = "warm"
+                self.loading_mode = None
+            self._warm_audio_path(runtime, request.get("voice", "matthias"))
+        except FatalWorkerError as exc:
+            outcome, reason = "error", exc.reason
+            self.fatal.set()
+            wake_listener()
+        except (WorkerRefusal, Exception) as exc:
+            outcome = "error"
+            reason = exc.reason if isinstance(exc, WorkerRefusal) else "worker_unavailable"
+        finally:
+            with self.condition:
+                self.warming_mode = None
+            self.write_status("warm" if self.state == "warm" else "kalt")
+            fields = {"correlation_id": request.get("correlation_id"), "mode": mode,
+                      "operation": "warm", "outcome": outcome,
+                      "elapsed_s": round(time.monotonic() - started, 3)}
+            if reason:
+                fields["reason"] = reason
+            print(" ".join(f"{key}={value}" for key, value in fields.items()), flush=True)
+
+    def _warm_audio_path(self, runtime, voice: str) -> None:
+        """Referenzaudio einmal durchschicken, damit der JIT bezahlt ist.
+
+        Das Modell zu laden reicht nicht: librosa zieht beim ERSTEN Laden eines
+        Referenzaudios numba durch die JIT-Kompilierung. Gemessen am 2026-08-05
+        im frisch gewaermten Worker: 8.7 s allein fuer `_load_prompt_audio`,
+        TTFA 10596 ms -- danach 377, 300, 217 ms. Ein Warmlauf, der diesen Teil
+        auslaesst, meldet "warm" und laesst den naechsten Aufruf trotzdem zehn
+        Sekunden warten. Fuer dAImon hiesse das: Frist gerissen, Rueckfall auf
+        sherpa, Warmlauf umsonst.
+
+        Fehler hier sind kein Grund, den Warmlauf zu verwerfen -- das Modell ist
+        geladen, nur der Audio-Pfad ist noch kalt. Also protokollieren und weiter.
+        """
+        profile = None
+        try:
+            profile = load_voice(voice)
+            for _ in runtime.generate_stream(text="Warmlauf.", language="en",
+                                             prompt_audio_path=profile.wav_path,
+                                             prompt_text=profile.prompt_text):
+                break          # der erste Chunk genuegt, der JIT ist damit durch
+        except Exception as exc:
+            print(f"warm=audiopfad outcome=error grund={type(exc).__name__}",
+                  file=sys.stderr, flush=True)
+        finally:
+            if profile is not None:
+                close_voice(profile)
+
+    def _publish_loading(self, mode: str) -> None:
+        with self.condition:
+            self.state = "loading"
+            self.loading_mode = mode
+        self.write_status("laedt", mode)
 
     def _execute(self, job: Job) -> None:
         request = job.request
@@ -148,18 +266,18 @@ class Engine:
                 raise ModeSwitch("mode_restart", f"Moduswechsel zu {mode} braucht Worker-Neustart",
                                  worker_pid=os.getpid())
             if cold:
-                with self.state_lock:
-                    self.state = "loading"
-                self.write_status("laedt", mode)
+                self._publish_loading(mode)
                 try:
                     runtime = self._load(mode)
                 except BaseException:
-                    with self.state_lock:
+                    with self.condition:
                         self.state = "cold"
+                        self.loading_mode = None
                     raise
-                self.runtimes[mode] = runtime
-                with self.state_lock:
+                with self.condition:
+                    self.runtimes[mode] = runtime
                     self.state = "warm"
+                    self.loading_mode = None
             runtime = self.runtimes[mode]
             self.mode = mode
             sample_rate = int(runtime.sample_rate)
@@ -224,7 +342,7 @@ class Engine:
             outcome, reason = "ok", ""
         except FatalWorkerError as exc:
             reason = exc.reason
-            self.emit(job, "E", json.dumps({"status": "error", "reason": exc.reason,
+            self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": exc.reason,
                                              "message": exc.message, "samples": samples,
                                              **exc.details},
                                             ensure_ascii=False, separators=(",", ":")).encode())
@@ -233,18 +351,18 @@ class Engine:
             wake_listener()
         except WorkerRefusal as exc:
             reason = exc.reason
-            self.emit(job, "E", json.dumps({"status": "error", "reason": exc.reason,
+            self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": exc.reason,
                                              "message": exc.message, "samples": samples,
                                              **exc.details},
                                             ensure_ascii=False, separators=(",", ":")).encode())
         except VoiceError as exc:
             reason = exc.reason
-            self.emit(job, "E", json.dumps({"status": "error", "reason": exc.reason,
+            self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": exc.reason,
                                              "message": exc.message, "samples": samples},
                                             ensure_ascii=False, separators=(",", ":")).encode())
         except Exception as exc:
             reason = "worker_unavailable"
-            self.emit(job, "E", json.dumps({"status": "error", "reason": reason,
+            self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": reason,
                                              "message": f"Worker-Fehler: {exc}", "samples": samples},
                                             ensure_ascii=False, separators=(",", ":")).encode())
             job.delivered.wait(1)
@@ -274,6 +392,7 @@ class Engine:
 
     def _load(self, mode: str):
         free_mib = vram_free_mib()
+        self.vram_free_mib = free_mib
         if free_mib < MIN_VRAM_MIB:
             # Bewusst KEIN FatalWorkerError: knapper VRAM ist ein erwarteter,
             # voruebergehender Zustand (ComfyUI laeuft), kein beschaedigter
@@ -309,13 +428,22 @@ class Engine:
     def write_status(self, state: str, mode: str | None = None) -> None:
         path = runtime_dir() / "worker-status.json"
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        value = {"state": state, "mode": mode or self.mode, "queue": self.jobs.qsize(),
+        value = {"v": 1, "state": state, "mode": mode or self.mode, "queue": len(self.jobs),
                  "worker_pid": os.getpid(), "last_load_s": self.last_load_s,
-                 "vram_free_mib": safe_vram_free_mib(),
+                 "vram_free_mib": self.vram_free_mib,
                  "uptime_s": int(time.monotonic() - self.started)}
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
-        os.replace(temporary, path)
+        # Eindeutiger Zwischenname je Aufruf. Mit einem gemeinsamen ".tmp"
+        # laufen zwei Schreiber ineinander: der erste benennt um, dem zweiten
+        # fehlt die Quelle und os.replace wirft FileNotFoundError -- was den
+        # Worker beim Start umbringt. Aufgetreten am 2026-08-05, nachdem die
+        # Condition aus Punkt 4 mehr Nebenlaeufigkeit in write_status brachte.
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            temporary.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
 
 
 def vram_free_mib() -> int:
@@ -325,13 +453,6 @@ def vram_free_mib() -> int:
     import torch
     free, _total = torch.cuda.mem_get_info()
     return int(free // (1024 * 1024))
-
-
-def safe_vram_free_mib() -> int | None:
-    try:
-        return vram_free_mib()
-    except Exception:
-        return None
 
 
 def peak_vram_mib() -> int:
@@ -458,8 +579,12 @@ class WorkerHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None:
         pass
 
-    def _error(self, status: int, reason: str, message: str) -> None:
-        body = json.dumps({"reason": reason, "message": message}, separators=(",", ":")).encode()
+    def _error(self, status: int, reason: str, message: str, **details: object) -> None:
+        body = json.dumps({"v": 1, "reason": reason, "message": message, **details},
+                          separators=(",", ":")).encode()
+        self._json(status, body)
+
+    def _json(self, status: int, body: bytes) -> None:
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -467,12 +592,22 @@ class WorkerHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self) -> None:
-        if self.path != "/synthesize":
+        if self.path not in {"/synthesize", "/warm"}:
             self._error(400, "bad_request", "unbekannter Endpunkt")
             return
         try:
             length = int(self.headers.get("Content-Length", ""))
             request = json.loads(self.rfile.read(length))
+            if self.path == "/warm":
+                status = ENGINE.request_warm(request)
+                if status == 409:
+                    self._error(409, "warm_in_progress", "Warmlauf laeuft bereits")
+                else:
+                    body = json.dumps({"v": 1, "status":
+                                       "already_warm" if status == 200 else "accepted"},
+                                      separators=(",", ":")).encode()
+                    self._json(status, body)
+                return
             if request.get("mode") not in REVISIONS or not isinstance(request.get("text"), str):
                 raise ValueError
             job = ENGINE.submit(request)
@@ -480,8 +615,9 @@ class WorkerHandler(BaseHTTPRequestHandler):
             self._error(400, "bad_request", "ungueltige interne Anfrage")
             return
         except WorkerRefusal as exc:
-            status = 503 if exc.reason in {"cold", "load_denied"} else 429
-            self._error(status, exc.reason, exc.message)
+            status = 503 if exc.reason in {"cold", "load_denied"} else (
+                400 if exc.reason == "bad_request" else 429)
+            self._error(status, exc.reason, exc.message, **exc.details)
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.mimic.frames")

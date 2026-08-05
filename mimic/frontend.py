@@ -5,17 +5,19 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import queue
 import select
 import socket
 import socketserver
 import sys
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from .protocol import MEDIA_TYPE, finish_chunks, read_frame, write_chunk
-from .voices import VoiceError, close_voice, load_voice
+from .voices import VoiceError, available_voices, close_voice, load_voice
 
 MAX_TEXT_CHARS = int(os.environ.get("MIMIC_MAX_TEXT_CHARS", "1000"))
 MAX_BODY_BYTES = int(os.environ.get("MIMIC_MAX_BODY_BYTES", str(64 * 1024)))
@@ -27,7 +29,10 @@ REASON_STATUS = {
     "bad_request": 400, "text_too_long": 400, "unknown_voice": 404,
     "invalid_voice_profile": 422, "busy": 429, "insufficient_vram": 503,
     "worker_unavailable": 503, "worker_timeout": 504, "load_denied": 503,
+    "cold": 503, "warm_in_progress": 409,
 }
+ERROR_DETAIL_FIELDS = {"hub_reason"}
+READER_JOIN_TIMEOUT = 0.5
 
 
 def runtime_dir() -> Path:
@@ -88,6 +93,87 @@ def _wait_worker_exit(pid: object, timeout: float = CONNECT_TIMEOUT) -> bool:
     return False
 
 
+class _ConsumerDisconnected(Exception):
+    pass
+
+
+class _WorkerReader:
+    """Liest HTTP und Rahmen im eigenen Thread, also inklusive Puffer von http.client."""
+
+    def __init__(self, body: bytes):
+        self.conn = UnixHTTPConnection(worker_socket_path(), CONNECT_TIMEOUT)
+        self.body = body
+        self.events: queue.Queue[tuple] = queue.Queue(maxsize=4)
+        self.stopped = threading.Event()
+        self.response: http.client.HTTPResponse | None = None
+        self.thread = threading.Thread(target=self._run, name="mimic-worker-reader", daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def _put(self, event: tuple) -> bool:
+        while not self.stopped.is_set():
+            try:
+                self.events.put(event, timeout=0.05)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _run(self) -> None:
+        stage = "header"
+        try:
+            self.conn.request("POST", "/synthesize", self.body,
+                              {"Content-Type": "application/json",
+                               "Content-Length": str(len(self.body))})
+            assert self.conn.sock is not None
+            self.conn.sock.settimeout(HEADER_TIMEOUT)
+            self.response = self.conn.getresponse()
+            if self.response.status != 200:
+                raw = self.response.read(MAX_BODY_BYTES)
+                self._put(("http_error", self.response.status, raw))
+                return
+            if not self._put(("response", self.response)):
+                return
+            stage = "first_audio"
+            _set_response_timeout(self.response, FIRST_AUDIO_TIMEOUT)
+            audio_seen = False
+            while not self.stopped.is_set():
+                kind, payload = read_frame(self.response)
+                if not self._put(("frame", kind, payload)):
+                    return
+                if kind == "A" and not audio_seen:
+                    audio_seen = True
+                    stage = "frame"
+                    _set_response_timeout(self.response, FRAME_TIMEOUT)
+                if kind == "E":
+                    return
+        except BaseException as exc:
+            self._put(("reader_error", stage, exc))
+
+    def close(self) -> None:
+        self.stopped.set()
+        sockets = []
+        raw = getattr(getattr(self.response, "fp", None), "raw", None)
+        response_sock = getattr(raw, "_sock", None)
+        if response_sock is not None:
+            sockets.append(response_sock)
+        if self.conn.sock is not None and self.conn.sock not in sockets:
+            sockets.append(self.conn.sock)
+        # shutdown vor close weckt den Leser auch dann, wenn er bereits in einem
+        # gepufferten HTTP-read steckt; ein nacktes close ist dafuer nicht verlaesslich.
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except (AttributeError, OSError):
+                pass
+        if self.response is not None:
+            self.response.close()
+        self.conn.close()
+        if self.thread is not threading.current_thread():
+            self.thread.join(READER_JOIN_TIMEOUT)
+
+
 class FrontendHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "Mimic/1"
@@ -107,11 +193,13 @@ class FrontendHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _error(self, reason: str, message: str, **details: object) -> None:
-        self._json(REASON_STATUS[reason], {"reason": reason, "message": message, **details})
+        allowed = {key: value for key, value in details.items() if key in ERROR_DETAIL_FIELDS}
+        self._json(REASON_STATUS.get(reason, 503),
+                   {"v": 1, "reason": reason, "message": message, **allowed})
 
     def do_GET(self) -> None:
         if self.path != "/status":
-            self._json(404, {"reason": "bad_request", "message": "unbekannter Endpunkt"})
+            self._error("bad_request", "unbekannter Endpunkt")
             return
         status_path = runtime_dir() / "worker-status.json"
         try:
@@ -120,14 +208,16 @@ class FrontendHandler(BaseHTTPRequestHandler):
             if not isinstance(pid, int):
                 raise ValueError
             os.kill(pid, 0)
-        except (OSError, ValueError, json.JSONDecodeError):
-            value = {"state": "kalt", "mode": None, "queue": 0, "worker_pid": None,
+        except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            value = {"v": 1, "state": "kalt", "mode": None, "queue": 0, "worker_pid": None,
                      "last_load_s": None, "vram_free_mib": None, "uptime_s": 0}
+        value["v"] = 1
+        value["voices"] = available_voices()
         self._json(200, value)
 
     def do_POST(self) -> None:
-        if self.path != "/speak":
-            self._json(404, {"reason": "bad_request", "message": "unbekannter Endpunkt"})
+        if self.path not in {"/speak", "/warm"}:
+            self._error("bad_request", "unbekannter Endpunkt")
             return
         length_raw = self.headers.get("Content-Length")
         try:
@@ -143,7 +233,13 @@ class FrontendHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._error("bad_request", "JSON ist ungueltig")
             return
-        if not isinstance(request, dict) or not isinstance(request.get("text"), str) or not request["text"]:
+        if not isinstance(request, dict):
+            self._error("bad_request", "JSON muss ein Objekt sein")
+            return
+        if self.path == "/warm":
+            self._handle_warm(request)
+            return
+        if not isinstance(request.get("text"), str) or not request["text"]:
             self._error("bad_request", "text fehlt oder ist leer")
             return
         if len(request["text"]) > MAX_TEXT_CHARS:
@@ -152,12 +248,16 @@ class FrontendHandler(BaseHTTPRequestHandler):
         mode = request.get("mode", "mf")
         voice = request.get("voice", "matthias")
         aussprache = request.get("aussprache", True)
+        require_warm = request.get("require_warm", False)
         correlation_id = request.get("correlation_id")
         if mode not in ("mf", "soar"):
             self._error("bad_request", "mode muss mf oder soar sein")
             return
         if type(aussprache) is not bool:
             self._error("bad_request", "aussprache muss true oder false sein")
+            return
+        if type(require_warm) is not bool:
+            self._error("bad_request", "require_warm muss true oder false sein")
             return
         if correlation_id is None:
             correlation_id = uuid.uuid4().hex
@@ -173,8 +273,43 @@ class FrontendHandler(BaseHTTPRequestHandler):
         else:
             close_voice(profile)
         request = {"text": request["text"], "voice": voice, "mode": mode,
-                   "aussprache": aussprache, "correlation_id": correlation_id}
+                   "aussprache": aussprache, "require_warm": require_warm,
+                   "correlation_id": correlation_id}
         self._proxy(request)
+
+    def _handle_warm(self, request: dict) -> None:
+        mode = request.get("mode", "mf")
+        if mode != "mf":
+            self._error("bad_request", "Warmlauf ist nur fuer mf definiert")
+            return
+        correlation_id = request.get("correlation_id")
+        if correlation_id is None:
+            correlation_id = uuid.uuid4().hex
+        elif (not isinstance(correlation_id, str) or len(correlation_id) != 32
+              or any(c not in "0123456789abcdefABCDEF" for c in correlation_id)):
+            self._error("bad_request", "correlation_id muss 32-stelliges Hex sein")
+            return
+        body = json.dumps({"mode": mode, "correlation_id": correlation_id},
+                          separators=(",", ":")).encode()
+        conn = UnixHTTPConnection(worker_socket_path(), CONNECT_TIMEOUT)
+        try:
+            conn.request("POST", "/warm", body, {"Content-Type": "application/json",
+                                                  "Content-Length": str(len(body))})
+            assert conn.sock is not None
+            conn.sock.settimeout(HEADER_TIMEOUT)
+            response = conn.getresponse()
+            value = json.loads(response.read(MAX_BODY_BYTES))
+            status = response.status
+            response.close()
+        except socket.timeout:
+            self._error("worker_timeout", "Worker-Antwort auf Warmlauf blieb aus")
+            return
+        except (OSError, http.client.HTTPException, json.JSONDecodeError, UnicodeDecodeError):
+            self._error("worker_unavailable", "Worker ist nicht erreichbar")
+            return
+        finally:
+            conn.close()
+        self._json(status, value)
 
     def _proxy(self, request: dict) -> None:
         for retry in range(2):
@@ -184,78 +319,61 @@ class FrontendHandler(BaseHTTPRequestHandler):
 
     def _proxy_once(self, request: dict, *, retry_mode: bool) -> bool:
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode()
-        conn = UnixHTTPConnection(worker_socket_path(), CONNECT_TIMEOUT)
+        reader = _WorkerReader(body)
+        reader.start()
         try:
-            conn.request("POST", "/synthesize", body, {"Content-Type": "application/json",
-                                                         "Content-Length": str(len(body))})
-            assert conn.sock is not None
-            conn.sock.settimeout(HEADER_TIMEOUT)
-            response = conn.getresponse()
-        except socket.timeout:
-            conn.close()
-            self._error("worker_timeout", "Worker-Antwortkopf blieb aus")
-            return False
-        except (OSError, http.client.HTTPException):
-            conn.close()
-            self._error("worker_unavailable", "Worker ist nicht erreichbar")
-            return False
-        if response.status != 200:
-            error: dict = {}
-            try:
-                error = json.loads(response.read(MAX_BODY_BYTES))
+            event = self._next_worker_event(reader, HEADER_TIMEOUT)
+            if event[0] == "http_error":
+                error: dict = {}
+                try:
+                    error = json.loads(event[2])
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
                 reason = error.get("reason", "worker_unavailable")
                 message = error.get("message", "Worker hat abgelehnt")
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                reason, message = "worker_unavailable", "ungueltige Worker-Antwort"
-            response.close()
-            conn.close()
-            details = {"hub_reason": error["hub_reason"]} if "hub_reason" in error else {}
-            self._error(reason if reason in REASON_STATUS else "worker_unavailable", message,
-                        **details)
-            return False
+                details = {key: error[key] for key in ERROR_DETAIL_FIELDS if key in error}
+                self._error(reason, message, **details)
+                return False
+            if event[0] == "reader_error":
+                self._reader_error(event[1], event[2], before_audio=True)
+                return False
+            if event[0] != "response":
+                raise ValueError("Worker-Antwortkopf fehlt")
 
-        buffered: list[tuple[str, bytes]] = []
-        audio_seen = False
-        try:
-            _set_response_timeout(response, FIRST_AUDIO_TIMEOUT)
+            buffered: list[tuple[str, bytes]] = []
+            audio_seen = False
             while not audio_seen:
-                kind, payload = read_frame(response)
+                event = self._next_worker_event(reader, FIRST_AUDIO_TIMEOUT)
+                if event[0] == "reader_error":
+                    self._reader_error(event[1], event[2], before_audio=True)
+                    return False
+                if event[0] != "frame":
+                    raise ValueError("ungueltiges Worker-Ereignis")
+                _, kind, payload = event
                 buffered.append((kind, payload))
                 if kind == "A":
                     audio_seen = True
                 elif kind == "E":
                     end = json.loads(payload)
                     reason = end.get("reason", "worker_unavailable")
-                    response.close()
-                    conn.close()
                     if reason == "mode_restart" and retry_mode:
+                        reader.close()
                         if _wait_worker_exit(end.get("worker_pid")):
                             return True
                         self._error("worker_unavailable", "Worker-Neustart blieb aus")
                         return False
-                    details = {"hub_reason": end["hub_reason"]} if "hub_reason" in end else {}
-                    self._error(reason if reason in REASON_STATUS else "worker_unavailable",
+                    details = {key: end[key] for key in ERROR_DETAIL_FIELDS if key in end}
+                    self._error(reason,
                                 end.get("message", "Worker hat vor dem Stream abgebrochen"),
                                 **details)
                     return False
-        except socket.timeout:
-            response.close()
-            conn.close()
-            self._error("worker_timeout", "erstes Audio blieb aus")
-            return False
-        except (OSError, EOFError, ValueError, http.client.HTTPException):
-            response.close()
-            conn.close()
-            self._error("worker_unavailable", "Worker starb vor dem Stream")
-            return False
 
-        self.send_response(200)
-        self.send_header("Content-Type", MEDIA_TYPE)
-        self.send_header("Transfer-Encoding", "chunked")
-        self.send_header("Connection", "close")
-        self.end_headers()
-        samples = 0
-        try:
+            self.send_response(200)
+            self.send_header("Content-Type", MEDIA_TYPE)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            samples = 0
             for kind, payload in buffered:
                 from .protocol import encode_frame
                 write_chunk(self.wfile, encode_frame(kind, payload))
@@ -263,29 +381,60 @@ class FrontendHandler(BaseHTTPRequestHandler):
                     samples += len(payload) // 2
                 if self._client_disconnected():
                     raise ConnectionResetError
-            _set_response_timeout(response, FRAME_TIMEOUT)
             while buffered[-1][0] != "E":
-                kind, payload = read_frame(response)
+                event = self._next_worker_event(reader, FRAME_TIMEOUT)
+                if event[0] == "reader_error":
+                    self._reader_error(event[1], event[2], before_audio=False, samples=samples)
+                    return False
+                _, kind, payload = event
                 from .protocol import encode_frame
                 write_chunk(self.wfile, encode_frame(kind, payload))
                 if self._client_disconnected():
                     raise ConnectionResetError
                 buffered.append((kind, b""))
             finish_chunks(self.wfile)
+        except _ConsumerDisconnected:
+            pass
         except (BrokenPipeError, ConnectionResetError):
             # Schliessen der Worker-Verbindung ist das Cancel-Signal. Der Worker
             # prueft es nach jedem Yield und schliesst den Generator im finally.
             pass
-        except socket.timeout:
-            self._stream_error("worker_timeout", "Abstand zwischen Rahmen ueberschritten", samples)
-        except (OSError, EOFError, http.client.HTTPException):
-            self._stream_error("worker_unavailable", "Worker starb im Stream", samples)
+        except (OSError, EOFError, ValueError, http.client.HTTPException):
+            self._error("worker_unavailable", "Worker starb vor dem Stream")
         finally:
-            response.close()
-            conn.close()
+            reader.close()
         return False
 
+    def _next_worker_event(self, reader: _WorkerReader, timeout: float) -> tuple:
+        deadline = time.monotonic() + timeout
+        while True:
+            if self._client_disconnected():
+                raise _ConsumerDisconnected
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return ("reader_error", "timeout", socket.timeout())
+            try:
+                return reader.events.get(timeout=min(0.02, remaining))
+            except queue.Empty:
+                continue
+
+    def _reader_error(self, stage: str, exc: BaseException, *, before_audio: bool,
+                      samples: int = 0) -> None:
+        if isinstance(exc, socket.timeout) or stage == "timeout":
+            if before_audio:
+                message = ("Worker-Antwortkopf blieb aus" if stage == "header"
+                           else "erstes Audio blieb aus")
+                self._error("worker_timeout", message)
+            else:
+                self._stream_error("worker_timeout", "Abstand zwischen Rahmen ueberschritten", samples)
+        elif before_audio:
+            self._error("worker_unavailable", "Worker starb vor dem Stream")
+        else:
+            self._stream_error("worker_unavailable", "Worker starb im Stream", samples)
+
     def _client_disconnected(self) -> bool:
+        if not hasattr(self, "connection"):
+            return False
         readable, _, _ = select.select([self.connection], [], [], 0)
         if not readable:
             return False
@@ -297,7 +446,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
     def _stream_error(self, reason: str, message: str, samples: int) -> None:
         from .protocol import json_frame
         try:
-            write_chunk(self.wfile, json_frame("E", {"status": "error", "reason": reason,
+            write_chunk(self.wfile, json_frame("E", {"v": 1, "status": "error", "reason": reason,
                                                        "message": message, "samples": samples}))
             finish_chunks(self.wfile)
         except (BrokenPipeError, ConnectionResetError, OSError):
