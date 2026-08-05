@@ -4,20 +4,33 @@ Self-hosted Voice-Cloning-TTS. Engine: [dots.tts](https://github.com/rednote-hil
 
 Zwei Konsumenten: **dAImon** (Charakterstufe, Streaming) und **MMC** (Sprachaufnahmen zur Bauzeit).
 
-**Stand: Phase 0 (Spike).** Der Dienst existiert noch nicht. `spike/` ist Wegwerfcode, der
+**Stand: Phase 0 abgenommen (2026-08-05).** Der Dienst existiert noch nicht. `spike/` ist Wegwerfcode, der
 genau eine Frage beantwortet: taugt dots.tts auf einer RTX 5090 für diesen Zweck?
 
 Plan, Glossar und ADRs: `~/Dokumente/UMBRA-Notes/DDs/Mimic/`
 
 ## Phase-0-Abnahme
 
-| # | Kriterium | Stand |
-|---|---|---|
-| A | Blackwell — E2E-CUDA-Lauf ohne CPU-Fallback | ✅ **PASS** — GPU 63 %, VRAM +6222 MiB |
-| B | Klang-Treue — verblindete Echt/Synthetisch-Unterscheidung, ≤ 8/12 richtig | ⏳ braucht Aufnahmen |
-| C | Latenz — TTFA p95 < 300 ms (`mf`, warm, n ≥ 50) | ✅ **PASS** — 90.9 ms |
-| D | Akzent-Leakage — ≤ 2 Treffer gegen eigene englische Baseline | ⏳ braucht Aufnahmen |
-| E | Kaltstart-Bereitschaft — binnen 60 s bedienbar | ✅ **PASS** — 7.1 s |
+**Ergebnis: dots.tts bleibt.** Vollständiger Bericht: [spike/ERGEBNIS.md](spike/ERGEBNIS.md)
+
+| # | Kriterium | Ergebnis | |
+|---|---|---|---|
+| A | Blackwell, kein CPU-Fallback | GPU 63 %, VRAM +6222 MiB | ✅ |
+| B | Echt/Synthetisch ununterscheidbar (≤ 8/12) | 12/12 — Klon ist hörbar | ❌ |
+| B2 | Brauchbar als Matthias' Stimme (≥ 5/6) | `[EN]` 6/6, `[DE]` 5/6, Kontrolle 5/6 | ✅ |
+| C | TTFA p95 < 300 ms | 90.9 ms | ✅ |
+| D | Akzent-Leakage ≤ 2/10 | 1 Treffer | ✅ |
+| E | Kaltstart < 60 s | 7.1 s | ✅ |
+
+B ist durchgefallen und wird nicht umgedeutet. Der Klon ist erkennbar — an der Aussprache
+einzelner Wörter, nicht an Timbre oder Rhythmus. B2 ersetzt es mit der Frage, die zum
+Zweck passt, ist aber ein weiches Kriterium: zwei Läufe derselben Bedingung ergaben 1/6
+und 6/6. Details in [ERGEBNIS.md](spike/ERGEBNIS.md).
+
+### Betriebspunkt
+
+`mf` (Realtime) / `soar` (Batch) · `optimize=False` · Modellkonstruktion direkt auf der
+GPU · Sprach-Tag `en` auch für Deutsch · 48 kHz nativ
 
 
 ### Messwerte
@@ -54,6 +67,7 @@ uv run python 00_blackwell.py         # Kriterium A
 uv run python 01_latenz.py            # Kriterium C
 uv run python 01_latenz.py --kaltstart  # Kriterium E
 uv run python 03_modewechsel.py       # Schritt 7
+uv run python 08_ram.py mf            # RSS-Bedarf
 uv run python test_spike.py           # Selbstchecks
 ```
 
@@ -65,8 +79,9 @@ uv run python 02_aufnehmen.py blindtest   # 6 Sätze
 uv run python 02_aufnehmen.py akzent      # 10 englische Sätze
 uv run python 02_aufnehmen.py status
 
-uv run python 04_blindtest.py erzeugen    # Kriterium B
-uv run python 04_blindtest.py hoeren
+uv run python 04_blindtest.py erzeugen    # rendert beide Sprach-Tags
+uv run python 04_blindtest.py hoeren      # Kriterium B
+uv run python 04_blindtest.py brauchbar   # Kriterium B2
 uv run python 05_akzent.py erzeugen       # Kriterium D
 uv run python 05_akzent.py hoeren
 ```
