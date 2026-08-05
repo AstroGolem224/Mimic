@@ -31,6 +31,17 @@ MAX_WAITING = 4
 PAUSE_MS = int(os.environ.get("MIMIC_PAUSE_MS", "180"))  # Atempause zwischen Saetzen
 SOFT_LIMIT = 0.75      # ab hier rollt der weiche Anschlag ein
 
+# Gemessen am 2026-08-05: dots.tts liefert bei kurzen Saetzen gelegentlich die
+# volle Dauer zurueck, aber ohne Sprache darin -- 2 von 14 Laeufen mit "Wer
+# kommt mit?" (14 Zeichen), unabhaengig davon ob der Satz allein steht oder in
+# einer laengeren Aeusserung. Der Satz fehlt dann hoerbar. Die Spitze trennt
+# beide Faelle klar: gesprochene Takes lagen bei -12.1 dBFS und darueber (die
+# meisten bei -6.4, weil der weiche Anschlag sie dort haelt), stumme bei -31.5
+# und -35.1. -25 dBFS liegt mit Abstand dazwischen. RMS taugt dafuer nicht:
+# dort lagen die Faelle mit -32.3 gegen -36.9 zu dicht beieinander.
+STUMM_PEAK = int(32768 * 10 ** (-25.0 / 20))
+MAX_VERSUCHE = 2
+
 
 class WorkerRefusal(Exception):
     def __init__(self, reason: str, message: str):
@@ -109,6 +120,7 @@ class Engine:
         started = time.monotonic()
         queue_wait_ms = (started - job.submitted) * 1000
         samples = 0
+        wiederholungen = 0
         first_audio_at: float | None = None
         outcome, reason = "error", "worker_unavailable"
         profile = None
@@ -139,24 +151,36 @@ class Engine:
                         outcome = "cancelled"
                         return
                     samples += len(pause) // 2
-                generator = runtime.generate_stream(text=satz, language="en",
-                                                    prompt_audio_path=profile.wav_path,
-                                                    prompt_text=profile.prompt_text)
-                for chunk in generator:
-                    if job.cancelled.is_set():
-                        outcome = "cancelled"
-                        return
-                    if time.monotonic() - started > REQUEST_TIMEOUT:
-                        raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
-                    pcm = tensor_to_pcm(chunk, profile.gain)
-                    if first_audio_at is None:
-                        first_audio_at = time.monotonic()
-                    samples += len(pcm) // 2
-                    if not self.emit(job, "A", pcm):
-                        outcome = "cancelled"
-                        return
-                generator.close()
-                generator = None
+                # Ein stummer Take wird sofort nochmal erzeugt. Bewusst NACH dem
+                # Senden statt vorher zu puffern: Puffern wuerde den ersten Ton
+                # um die gesamte Erzeugungsdauer verzoegern und damit die
+                # gemessene TTFA (250 ms p95) zerstoeren. So kostet der
+                # Regelfall nichts, und im Fehlerfall hoert man eine kurze
+                # Luecke statt eines fehlenden Satzes.
+                for versuch in range(MAX_VERSUCHE):
+                    spitze = 0
+                    generator = runtime.generate_stream(text=satz, language="en",
+                                                        prompt_audio_path=profile.wav_path,
+                                                        prompt_text=profile.prompt_text)
+                    for chunk in generator:
+                        if job.cancelled.is_set():
+                            outcome = "cancelled"
+                            return
+                        if time.monotonic() - started > REQUEST_TIMEOUT:
+                            raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
+                        pcm = tensor_to_pcm(chunk, profile.gain)
+                        if first_audio_at is None:
+                            first_audio_at = time.monotonic()
+                        spitze = max(spitze, peak_int16(pcm))
+                        samples += len(pcm) // 2
+                        if not self.emit(job, "A", pcm):
+                            outcome = "cancelled"
+                            return
+                    generator.close()
+                    generator = None
+                    if spitze >= STUMM_PEAK:
+                        break
+                    wiederholungen += 1
             self.emit(job, "E", json.dumps({"status": "ok", "samples": samples},
                                             separators=(",", ":")).encode())
             outcome, reason = "ok", ""
@@ -202,7 +226,8 @@ class Engine:
                       "ttfa_ms": round((first_audio_at - started) * 1000, 1) if first_audio_at else 0,
                       "audio_s": round(audio_s, 3), "rtf": round(elapsed / audio_s, 4) if audio_s else 0,
                       "outcome": outcome, "queue_wait_ms": round(queue_wait_ms, 1),
-                      "vram_peak_mib": peak_vram_mib(), "rss_peak_mib": round(rss_mib, 1)}
+                      "vram_peak_mib": peak_vram_mib(), "rss_peak_mib": round(rss_mib, 1),
+                      "stumme_takes": wiederholungen}
             if reason:
                 fields["reason"] = reason
             print(" ".join(f"{key}={value}" for key, value in fields.items()), flush=True)
@@ -275,6 +300,14 @@ def peak_vram_mib() -> int:
         return int(torch.cuda.max_memory_allocated() // (1024 * 1024))
     except Exception:
         return 0
+
+
+def peak_int16(pcm: bytes) -> int:
+    """Groesste Amplitude im Block -- das Kriterium fuer einen stummen Take."""
+    import array
+    werte = array.array("h")
+    werte.frombytes(pcm)
+    return max((abs(wert) for wert in werte), default=0)
 
 
 def tensor_to_pcm(chunk, gain: float = 1.0) -> bytes:

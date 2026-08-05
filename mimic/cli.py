@@ -8,12 +8,13 @@ import json
 import os
 import subprocess
 import sys
+import textwrap
 import wave
 from pathlib import Path
 
 from .frontend import UnixHTTPConnection, frontend_socket_path
 from .protocol import read_frame
-from .voices import VoiceError, close_voice, default_voices_dir, load_voice
+from .voices import VOICE_RE, VoiceError, close_voice, default_voices_dir, load_voice
 
 
 def request(method: str, path: str, body: dict | None = None) -> http.client.HTTPResponse:
@@ -61,8 +62,13 @@ def say(args: argparse.Namespace) -> int:
             output.setsampwidth(2)
             output.setframerate(head["sample_rate"])
         else:
-            player = subprocess.Popen(["pw-cat", "--playback", "--rate", str(head["sample_rate"]),
-                                       "--channels", str(head["channels"]), "--format", "s16"],
+            # "-" und --raw sind beide Pflicht: ohne "-" beendet sich pw-cat mit
+            # "filename or - argument missing", ohne --raw sucht es in dem Strom
+            # einen Container ("Format not recognised"). Wir schicken nackte PCM.
+            # Beides endete beim Schreiben in EPIPE.
+            player = subprocess.Popen(["pw-cat", "--playback", "--raw",
+                                       "--rate", str(head["sample_rate"]),
+                                       "--channels", str(head["channels"]), "--format", "s16", "-"],
                                       stdin=subprocess.PIPE, bufsize=0)
         while True:
             kind, payload = read_frame(response)
@@ -136,6 +142,127 @@ def voices(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _aufnehmen(ziel: Path) -> None:
+    """pw-record bis Enter. Kein Timeout -- der Sprecher entscheidet, wann fertig."""
+    input("    [Enter] = Aufnahme START ")
+    recorder = subprocess.Popen(
+        ["pw-record", "--rate", "48000", "--channels", "1", "--format", "s16", str(ziel)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        input("    ...laeuft. [Enter] = STOPP ")
+    finally:
+        recorder.terminate()
+        recorder.wait(timeout=5)
+
+
+def _dauer(pfad: Path) -> float:
+    with wave.open(str(pfad), "rb") as handle:
+        rate = handle.getframerate()
+        return handle.getnframes() / rate if rate else 0.0
+
+
+def profil_anlegen(profil: Path) -> None:
+    profil.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    profil.mkdir(mode=0o700, exist_ok=True)
+    profil.chmod(0o700)
+
+
+def speichern(profil: Path, aufnahme: Path, text: str) -> None:
+    """Legt ref.wav/ref.txt mit den Rechten an, die der Dienst verlangt.
+
+    load_voice lehnt alles ab, was nicht 0700/0600 ist -- hier ist die einzige
+    Stelle, die das Profil schreibt, also wird es hier auch richtig gesetzt.
+    `aufnahme` muss im selben Verzeichnis liegen: os.replace kann nicht ueber
+    Dateisystemgrenzen, und /tmp ist hier tmpfs waehrend ~ auf btrfs liegt.
+    """
+    profil_anlegen(profil)
+    ziel = profil / "ref.wav"
+    os.replace(aufnahme, ziel)
+    ziel.chmod(0o600)
+    transkript = profil / "ref.txt"
+    transkript.write_text(" ".join(text.split()) + "\n", encoding="utf-8")
+    transkript.chmod(0o600)
+
+
+def record(args: argparse.Namespace) -> int:
+    from .charaktere import CHARAKTERE
+
+    name = args.voice
+    if not VOICE_RE.fullmatch(name):
+        print("unknown_voice: Name nur a-z, 0-9, _ und -, max. 32 Zeichen", file=sys.stderr)
+        return 1
+    charakter = CHARAKTERE.get(name)
+    text = args.text or (charakter.text if charakter else None)
+    if not text:
+        print(f"invalid_voice_profile: kein Referenztext fuer {name!r} -- --text angeben "
+              f"oder einen bekannten Charakter nehmen: {', '.join(sorted(CHARAKTERE))}",
+              file=sys.stderr)
+        return 1
+
+    root = default_voices_dir()
+    profil = root / name
+    if (profil / "ref.wav").exists() and not args.force:
+        print(f"invalid_voice_profile: {name!r} existiert schon -- --force zum Ueberschreiben",
+              file=sys.stderr)
+        return 1
+
+    print(f"\n{'=' * 72}\nSTIMME  {name}")
+    if charakter:
+        print(f"\nRegie:\n  {charakter.regie}")
+    print("\nText:")
+    print(textwrap.fill(" ".join(text.split()), 68, initial_indent="  » ", subsequent_indent="    "))
+    print("\n  Ruhiger Raum, ~20 cm Abstand, am Stueck durchsprechen. Ziel 10 s.\n")
+
+    # Direkt ins Profilverzeichnis: os.replace muss auf demselben Dateisystem
+    # bleiben, sonst EXDEV. Die .tmp raeumt der finally-Zweig weg.
+    profil_anlegen(profil)
+    aufnahme = profil / "ref.wav.tmp"
+    try:
+        while True:
+            _aufnehmen(aufnahme)
+            aufnahme.chmod(0o600)
+            dauer = _dauer(aufnahme)
+            print(f"    {dauer:.1f} s aufgenommen, spiele ab...")
+            wiedergabe = subprocess.run(["pw-cat", "--playback", str(aufnahme)],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if wiedergabe.returncode != 0:
+                print(f"    Wiedergabe fehlgeschlagen: "
+                      f"{wiedergabe.stderr.decode(errors='replace').strip()}")
+            if not 3 <= dauer <= 60:
+                print(f"    {dauer:.1f} s liegt ausserhalb 3-60 s -- der Dienst wuerde das "
+                      f"Profil ablehnen. Nochmal.")
+                continue
+            if not 8 <= dauer <= 15:
+                # Nicht hart ablehnen: der Dienst nimmt 3-60 s. Aber ausserhalb
+                # 8-15 s wird es unerprobt -- 30 s ergaben hoerbar schlechtere
+                # Klone mit abgeschnittenen Saetzen.
+                print(f"    Hinweis: {dauer:.1f} s weicht vom Ziel 10 s ab.")
+            wahl = input("    [Enter] behalten  [n] nochmal  [a] abbrechen: ").strip().lower()
+            if wahl == "n":
+                continue
+            if wahl == "a":
+                return 1
+            break
+        speichern(profil, aufnahme, text)
+    except (OSError, wave.Error, subprocess.SubprocessError) as exc:
+        print(f"invalid_voice_profile: Aufnahme fehlgeschlagen: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        aufnahme.unlink(missing_ok=True)
+        if not any(profil.iterdir()):   # Abbruch soll keine Bauruine hinterlassen
+            profil.rmdir()
+
+    try:
+        profile = load_voice(name, root)
+    except VoiceError as exc:
+        print(f"{exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+    close_voice(profile)
+    print(f"\n  {profil}/ref.wav\n  {profil}/ref.txt\n"
+          f"  Probe:  mimic say \"Test\" --voice {name}")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="mimic")
     commands = result.add_subparsers(required=True)
@@ -149,6 +276,11 @@ def parser() -> argparse.ArgumentParser:
     status_parser.set_defaults(function=status)
     voices_parser = commands.add_parser("voices")
     voices_parser.set_defaults(function=voices)
+    record_parser = commands.add_parser("record")
+    record_parser.add_argument("voice")
+    record_parser.add_argument("--text", help="eigener Referenztext statt des Charaktertexts")
+    record_parser.add_argument("--force", action="store_true", help="bestehendes Profil ersetzen")
+    record_parser.set_defaults(function=record)
     return result
 
 

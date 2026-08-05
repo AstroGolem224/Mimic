@@ -338,3 +338,40 @@ class TextAndLevelTests(unittest.TestCase):
             wav.writeframes(bytes(96_000))
         # Ohne Deckel wuerde eine stumme Referenz das Rauschen hochziehen.
         self.assertEqual(1.0, voices._reference_gain(str(pfad)))
+
+    def test_13_record_schreibt_ladbares_profil(self):
+        # Aufnahme selbst braucht Hardware; geprueft wird der Schreibpfad, denn
+        # dort entstehen die Rechte, an denen load_voice sonst scheitert.
+        import math
+        from mimic import cli
+        from mimic.charaktere import CHARAKTERE
+        from mimic.voices import close_voice, load_voice
+        arbeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        root = arbeit / "voices"
+        aufnahme = arbeit / "aufnahme.wav"
+        rate = 48_000
+        with wave.open(str(aufnahme), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(rate)
+            wav.writeframes(array.array(
+                "h", [int(9000 * math.sin(i * 0.05)) for i in range(rate * 5)]).tobytes())
+        text = CHARAKTERE["matthias_krieger"].text
+        cli.speichern(root / "matthias_krieger", aufnahme, text)
+        self.assertEqual(0o700, os.stat(root / "matthias_krieger").st_mode & 0o777)
+        self.assertEqual(0o600, os.stat(root / "matthias_krieger" / "ref.wav").st_mode & 0o777)
+        profil = load_voice("matthias_krieger", root)
+        self.assertEqual(" ".join(text.split()), profil.prompt_text)
+        close_voice(profil)
+
+    def test_14_stumme_takes_werden_von_gesprochenen_getrennt(self):
+        # Die Schwelle entscheidet, ob ein Satz nochmal erzeugt wird. Zu hoch
+        # und jeder Satz kommt doppelt, zu tief und der stumme Take bleibt.
+        # Die Werte sind gemessene Spitzen aus je einem echten Lauf.
+        from mimic.worker import STUMM_PEAK, peak_int16
+        def block(dbfs):
+            spitze = int(32768 * 10 ** (dbfs / 20))
+            return array.array("h", [spitze, -spitze, 0, 0]).tobytes()
+        for dbfs in (-6.4, -12.1):      # gesprochen
+            self.assertGreaterEqual(peak_int16(block(dbfs)), STUMM_PEAK, f"{dbfs} dBFS")
+        for dbfs in (-31.5, -35.1):     # stumm
+            self.assertLess(peak_int16(block(dbfs)), STUMM_PEAK, f"{dbfs} dBFS")
+        self.assertEqual(0, peak_int16(b""))

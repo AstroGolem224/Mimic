@@ -61,7 +61,12 @@ def _reference_gain(wav_path: str) -> float:
 
 
 _SATZENDE = re.compile(r"(?<=[.!?…])[\"')\]]*\s+")
-MIN_SATZ_ZEICHEN = 12
+# 20, nicht 12. Gemessen am 2026-08-05: ein Satz mit 14 Zeichen kam in 4 von 22
+# Generierungen ohne Sprache zurueck, Saetze mit 19 bis 21 Zeichen in 0 von 24.
+# Der Worker faengt den Rest per Wiederholung ab (worker.STUMM_PEAK), aber die
+# kostet dort hoerbare Totzeit -- billiger ist, den kurzen Satz an seinen
+# Nachbarn zu haengen. Preis: an solchen Stellen entfaellt die Atempause.
+MIN_SATZ_ZEICHEN = 20
 
 
 def split_sentences(text: str) -> list[str]:
