@@ -1,0 +1,26 @@
+{
+  "_hinweis": [
+    "Wortweise Ersetzung vor der Synthese, Wortgrenzen und Grossschreibung am",
+    "Wortanfang werden beachtet. Gedacht gegen das Fehlerbild aus Kriterium B:",
+    "Anglizismen mit deutscher Beugung, die Mimic anders spricht als Matthias.",
+    "",
+    "NUR EINTRAGEN, WAS GEHOERT WURDE. Geraten hilft nicht: 'main' -> 'mane'",
+    "klang falsch (deutsch gelesen 'MAH-ne'), 'mayn' trifft. Das Sprach-Tag ist",
+    "en, englische Schreibweisen funktionieren also besser als deutsche.",
+    "",
+    "Pruefen: mimic say \"... WORT ...\" -o a.wav, mit mehreren Schreibweisen,",
+    "dann hoeren und die Gewinnerin nach ~/.local/share/mimic/pronunciation.json"
+  ],
+  "_geprueft": {
+    "main": "mayn"
+  },
+  "_kandidaten_ungeprueft": {
+    "gemerged": "gemördschd",
+    "gepusht": "gepuhschd",
+    "committet": "kommittet",
+    "deployment": "diploiment",
+    "staging": "steidsching",
+    "cache": "kaesch",
+    "queue": "kju"
+  }
+}

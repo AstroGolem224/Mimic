@@ -4,6 +4,7 @@ import http.client
 import json
 import os
 import socket
+import array
 import tempfile
 import threading
 import time
@@ -292,3 +293,48 @@ class Phase1Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TextAndLevelTests(unittest.TestCase):
+    """Die zwei Stellen der Ausgabeaufbereitung, die still falsch sein koennen."""
+
+    def test_10_kurze_fragmente_werden_nicht_allein_synthetisiert(self):
+        from mimic.voices import MIN_SATZ_ZEICHEN, split_sentences
+        # Phase 0: dots.tts halluziniert bei Fragmenten ohne Satzkontext
+        # ("ähhh gemerdscht"). Jedes Stueck muss also Satzlaenge haben --
+        # ausser es gibt nur eines.
+        for text in ("Ja. Das ist ein vollstaendiger Satz mit genug Inhalt.",
+                     "Ein vollstaendiger Satz mit Inhalt. Ok. Nein.",
+                     "Wirklich? Ja! Und zwar sofort, ohne Wenn und Aber."):
+            teile = split_sentences(text)
+            self.assertTrue(teile, text)
+            if len(teile) > 1:
+                for teil in teile:
+                    self.assertGreaterEqual(len(teil), MIN_SATZ_ZEICHEN, f"{teil!r} aus {text!r}")
+            # Nichts darf verlorengehen.
+            self.assertEqual(sorted(text.split()), sorted(" ".join(teile).split()))
+
+    def test_11_verstaerkung_hebt_referenz_auf_zielpegel(self):
+        import math
+        import wave
+        from mimic import voices
+        pfad = Path(self.enterContext(tempfile.TemporaryDirectory())) / "leise.wav"
+        rate, dauer = 48_000, 1.0
+        leise = [int(3000 * math.sin(i * 0.05)) for i in range(int(rate * dauer))]
+        with wave.open(str(pfad), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(rate)
+            wav.writeframes(array.array("h", leise).tobytes())
+        gain = voices._reference_gain(str(pfad))
+        ist = math.sqrt(sum(float(v) * v for v in leise) / len(leise)) / 32768
+        self.assertAlmostEqual(20 * math.log10(ist * gain), voices.ZIEL_RMS_DBFS, places=1)
+        self.assertLessEqual(gain, voices.MAX_GAIN)
+
+    def test_12_stille_referenz_erzeugt_keine_verstaerkung(self):
+        import wave
+        from mimic import voices
+        pfad = Path(self.enterContext(tempfile.TemporaryDirectory())) / "stille.wav"
+        with wave.open(str(pfad), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(48_000)
+            wav.writeframes(bytes(96_000))
+        # Ohne Deckel wuerde eine stumme Referenz das Rauschen hochziehen.
+        self.assertEqual(1.0, voices._reference_gain(str(pfad)))

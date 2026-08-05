@@ -29,6 +29,7 @@ IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
 MAX_WAITING = 4
 PAUSE_MS = int(os.environ.get("MIMIC_PAUSE_MS", "180"))  # Atempause zwischen Saetzen
+SOFT_LIMIT = 0.75      # ab hier rollt der weiche Anschlag ein
 
 
 class WorkerRefusal(Exception):
@@ -285,6 +286,15 @@ def tensor_to_pcm(chunk, gain: float = 1.0) -> bytes:
     audio = chunk.detach().squeeze().to(device="cpu", dtype=torch.float32)
     if gain != 1.0:
         audio = audio * gain
+        # Weicher Anschlag statt hartem clamp. Unterhalb der Schwelle bleibt das
+        # Signal unangetastet, darueber wird es per tanh eingerollt -- sonst
+        # klaenge der lautere Zielpegel nach Uebersteuerung statt nach laut.
+        laut = audio.abs()
+        ueber = laut > SOFT_LIMIT
+        if bool(ueber.any()):
+            rest = 1.0 - SOFT_LIMIT
+            gerollt = SOFT_LIMIT + rest * torch.tanh((laut - SOFT_LIMIT) / rest)
+            audio = torch.where(ueber, torch.sign(audio) * gerollt, audio)
     return (audio.clamp(-1, 1) * 32767).to(torch.int16).numpy().astype("<i2", copy=False).tobytes()
 
 

@@ -35,7 +35,10 @@ class VoiceProfile:
 # dBFS RMS. Leise ist also die Quelle, nicht das Modell. Deshalb wird die
 # Verstaerkung je Stimme EINMAL aus der Referenz abgeleitet statt pro Aeusserung
 # normalisiert: das ist streamingtauglich und pumpt nicht zwischen Chunks.
-ZIEL_RMS_DBFS = -23.0
+# -18 statt -23: bei -23 blieb es hoerbar zu leise. Weiter aufdrehen geht nur
+# mit Begrenzer, weil der Peak dann schon bei -1.9 dBFS lag -- reine Verstaerkung
+# wuerde clippen. Siehe den weichen Anschlag in worker.tensor_to_pcm.
+ZIEL_RMS_DBFS = -18.0
 MAX_GAIN = 8.0          # Obergrenze, damit eine fast stumme Referenz nicht Rauschen hochzieht
 
 
