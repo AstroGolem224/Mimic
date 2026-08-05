@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Mimic
+GenericName=Voice-Cloning-TTS
+Comment=Skript mit mehreren Stimmen sprechen und als WAV speichern
+Exec=mimic gui
+Icon=audio-input-microphone
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupNotify=true

@@ -263,6 +263,13 @@ def record(args: argparse.Namespace) -> int:
     return 0
 
 
+def gui(_args: argparse.Namespace) -> int:
+    # Erst hier importieren: tkinter zieht Tcl/Tk nach, und die reine CLI
+    # soll das nicht bezahlen.
+    from .gui import main as gui_main
+    return gui_main()
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="mimic")
     commands = result.add_subparsers(required=True)
@@ -276,6 +283,8 @@ def parser() -> argparse.ArgumentParser:
     status_parser.set_defaults(function=status)
     voices_parser = commands.add_parser("voices")
     voices_parser.set_defaults(function=voices)
+    gui_parser = commands.add_parser("gui")
+    gui_parser.set_defaults(function=gui)
     record_parser = commands.add_parser("record")
     record_parser.add_argument("voice")
     record_parser.add_argument("--text", help="eigener Referenztext statt des Charaktertexts")

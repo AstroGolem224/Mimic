@@ -20,6 +20,7 @@ install -Dm644 systemd/mimic-worker.service ~/.config/systemd/user/mimic-worker.
 systemctl --user daemon-reload
 systemctl --user enable --now mimic.socket mimic-worker.socket
 
+uv run mimic gui
 uv run mimic record matthias_krieger
 uv run mimic say "Hallo" --voice matthias --mode mf
 uv run mimic say "Hallo" -o hallo.wav
@@ -46,6 +47,26 @@ Sätze ab. 10–15 s ist auch der einzige gemessene Bereich — die Phase-0-Refe
 | `matthias_krieger` | tief, langsam, jedes Wort steht für sich |
 | `matthias_magier` | leise, beweglich, Tempo schwankt mit dem Denken |
 | `matthias_dark_lord` | ruhig und gleichmäßig, Drohung im Inhalt statt in der Lautstärke |
+
+## Fenster
+
+`mimic gui` zeigt links die ladbaren Stimmen und rechts ein Skriptfeld. Eine
+Zeile je Einsatz, `#stimme: "Text"` setzt den Sprecher, eine Zeile ohne Präfix
+erbt ihn von der Zeile darüber, `//` ist ein Kommentar. Doppelklick auf eine
+Stimme fügt den Kopf ein. **Abspielen** streamt alles durch ein einziges
+`pw-cat`, **Als WAV speichern** sammelt dieselben Blöcke und schreibt eine
+Datei. **Stopp** killt `pw-cat` und schließt die Verbindung — der Worker sieht
+den Abbruch und hört auf zu rechnen (`outcome=cancelled` im Log). Die Auswahl
+**Modus** schaltet zwischen `mf` (Realtime, Vorgabe) und `soar` (Batch, besser
+für gespeicherte Dateien). tkinter aus der Standardbibliothek, keine
+zusätzliche Abhängigkeit.
+
+Starter für die Arbeitsfläche:
+
+```bash
+install -Dm755 systemd/mimic.desktop ~/.local/share/applications/mimic.desktop
+ln -sfn ~/.local/share/applications/mimic.desktop "$(xdg-user-dir DESKTOP)/mimic.desktop"
+```
 
 Der GPU-freie Nachweis läuft mit `bash tests/run.sh`; die destruktiven echten
 Eindämmungsproben sind separat über `bash tests/run.sh --gpu` erreichbar.

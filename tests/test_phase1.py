@@ -375,3 +375,21 @@ class TextAndLevelTests(unittest.TestCase):
         for dbfs in (-31.5, -35.1):     # stumm
             self.assertLess(peak_int16(block(dbfs)), STUMM_PEAK, f"{dbfs} dBFS")
         self.assertEqual(0, peak_int16(b""))
+
+    def test_15_skript_zerlegung(self):
+        from mimic.gui import Einsatz, parse_skript
+        quelle = ('// Notiz\n'
+                  '#matthias_krieger: "Der Turm steht offen."\n'
+                  '\n'
+                  'Weiter spricht der Krieger.\n'
+                  '#matthias_magier: Weisst du, was das bedeutet?\n')
+        self.assertEqual([
+            Einsatz("matthias_krieger", "Der Turm steht offen."),
+            Einsatz("matthias_krieger", "Weiter spricht der Krieger."),
+            Einsatz("matthias_magier", "Weisst du, was das bedeutet?"),
+        ], parse_skript(quelle, "matthias"))
+        # Ohne Kopf gilt die ausgewaehlte Stimme, und ein Doppelpunkt im Text
+        # darf keinen Sprecherwechsel ausloesen.
+        self.assertEqual([Einsatz("matthias", "Er sagte: komm herein.")],
+                         parse_skript("Er sagte: komm herein.", "matthias"))
+        self.assertEqual([], parse_skript("\n// nur Kommentar\n", "matthias"))
