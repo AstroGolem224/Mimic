@@ -24,7 +24,14 @@ Environment=NUMBA_CACHE_DIR=%t/mimic/numba
 # offline plus falscher Cache-Pfad ergibt "kein Snapshot gefunden".
 Environment=HF_HOME=%h/.cache/huggingface
 Restart=no
-MemoryHigh=3G
+# 6G, nicht 3G. Die 3 GiB stammten aus 08_ram.py, das OHNE Klonen gemessen hat
+# (Ruhezustand 2269 MiB). Im Dienst liegen die RSS-Spitzen bei 4.0-4.6 GiB,
+# weil Referenzaudio und Konditionierung dazukommen. Unterhalb der Spitze
+# drosselt der Kernel bei jeder Anfrage und reclaimt -- gemessen am 2026-08-05.
+# Erst 5G, aber auch dort noch 17970 Drosselereignisse (memory.events high) --
+# die RSS-Spitze liegt bei 5.05 GiB. MemoryMax bleibt 7G als harte Grenze,
+# die laut memory.events nie erreicht wird.
+MemoryHigh=6G
 MemoryMax=7G
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=yes

@@ -42,7 +42,7 @@ Plan, Glossar und ADRs: `~/Dokumente/UMBRA-Notes/DDs/Mimic/`
 | A | Blackwell, kein CPU-Fallback | GPU 63 %, VRAM +6222 MiB | ✅ |
 | B | Echt/Synthetisch ununterscheidbar (≤ 8/12) | 12/12 — Klon ist hörbar | ❌ |
 | B2 | Brauchbar als Matthias' Stimme (≥ 5/6) | `[EN]` 6/6, `[DE]` 5/6, Kontrolle 5/6 | ✅ |
-| C | TTFA p95 < 300 ms | 90.9 ms | ✅ |
+| C | TTFA p95 < 300 ms | 250.0 ms am Socket, mit Klonen (n=60) | ✅ |
 | D | Akzent-Leakage ≤ 2/10 | 1 Treffer | ✅ |
 | E | Kaltstart < 60 s | 7.1 s | ✅ |
 

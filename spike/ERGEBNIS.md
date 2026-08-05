@@ -13,9 +13,47 @@ Checkpoints auf feste HF-Revisionen gepinnt (`revisions.yaml`).
 | A | Blackwell, E2E-CUDA ohne CPU-Fallback | GPU arbeitet nachweislich | GPU-Auslastung 63 %, VRAM +6222 MiB | **PASS** |
 | B | Verblindete Echt/Synthetisch-Unterscheidung | ≤ 8/12 richtig | **12/12 richtig** | **FAIL** |
 | B2 | Brauchbarkeit als Matthias' Stimme | ≥ 5/6 Mimic-Proben | `[EN]` 6/6, `[DE]` 5/6, Kontrolle 5/6 | **PASS** |
-| C | TTFA p95, warm, n = 50 | < 300 ms | **90.9 ms** | **PASS** |
+| C | TTFA p95, warm, n = 50 | < 300 ms | 90.9 ms **ohne Klonen** — siehe Nachtrag | **PASS**¹ |
 | D | Akzent-Leakage gegen eigene Baseline | ≤ 2 Treffer von 10 | **1 Treffer** (`ak_09`) | **PASS** |
 | E | Kaltstart bis bedienbar | < 60 s | **7.1 s** | **PASS** |
+
+## Nachtrag 2026-08-05 — Kriterium C hat den falschen Pfad gemessen
+
+¹ Die 90.9 ms stammen aus `01_latenz.py`, und dieses Skript rief
+`generate_stream` **ohne `prompt_audio_path`** — also ohne Klonen. Gemessen wurde
+damit eine Konfiguration, die so nie ausgeliefert wird.
+
+Isoliert nachgemessen (n = 15, gleicher Runtime, gleicher Text):
+
+| | TTFA median |
+|---|---|
+| ohne `prompt_audio` — was C maß | 87.3 ms |
+| mit `prompt_audio` — was der Dienst tut | 184.5 ms |
+
+Und am fertigen Dienst, durch das Frontend über den Unix-Socket, Messpunkt beim
+Client (`tools/messreihe_ttfa.py`, n = 60, Modus `mf`):
+
+| | |
+|---|---|
+| min | 226.1 ms |
+| median | 239.5 ms |
+| **p95** | **250.0 ms** |
+| max | 253.5 ms |
+
+**Kriterium C hält auch auf dem echten Pfad** — 250 ms gegen 300 ms Budget, und die
+Verteilung ist eng. Die Zahl in der Tabelle oben bleibt als das stehen, was sie war:
+eine Messung am falschen Objekt.
+
+Aufschlüsselung der 250 ms: 87 ms Erzeugung, +97 ms Konditionierung aus der Referenz,
++~62 ms Frontend, Prozessgrenze und Rahmung. Der letzte Posten ist der Preis dafür,
+dass der Worker ein eigener Prozess ist — und der ist die Grundlage der
+Eindämmungszusage, also gut angelegt.
+
+Nebenbefund: eine frühere Einzelmessung am Dienst zeigte 419 ms. Sie ließ sich in
+der Reihe nicht reproduzieren. Wahrscheinliche Ursache war `MemoryHigh=3G`: der
+Worker erreicht real 5.9 GiB und wurde dadurch bei jeder Anfrage gedrosselt
+(`memory.events high` = 17970). Auf 6G angehoben ist die Drosselung weg (`high 0`) —
+die Latenz änderte das allerdings **nicht** messbar, das Reclaim war billig.
 
 ## Zu B und B2 — was wirklich passiert ist
 
@@ -102,7 +140,14 @@ Pfad stirbt bei 10 GB, der neue läuft unter 4 GB.
 
 - **Aussprache-Tabelle** für Anglizismen mit deutscher Beugung. Für MMC-Batch trivial
   (Text steht vorher fest), für dAImon eine kleine Ersetzungstabelle.
-- **`MemoryHigh`/`MemoryMax`** jetzt bezifferbar: ~2.3 GB Ruhe, ~5.5 GB Spitze.
 - **Leerlauffrist** — bestimmt, wie oft ein Kaltstart eintritt. Mit 7.1 s Kaltstart ist
   der Druck gering.
-- **RSS unter Last** wurde nur beim Laden gemessen, nicht bei paralleler Nutzung.
+- **RSS unter paralleler Nutzung** — bisher nur sequenziell gemessen.
+
+Erledigt seit Phase 0:
+
+- `MemoryHigh`/`MemoryMax` sind gesetzt und **an der Realität geeicht**, nicht an der
+  08_ram-Zahl: im Dienst liegt die Spitze bei 5.89 GiB, nicht bei den 2.3 GB Ruhezustand
+  ohne Klonen. `MemoryHigh=6G` (darunter drosselt der Kernel dauernd), `MemoryMax=7G`
+  (wird laut `memory.events` nie erreicht).
+- Die TTFA-Messreihe am Socket liegt vor, siehe Nachtrag oben.
