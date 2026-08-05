@@ -16,12 +16,13 @@ from __future__ import annotations
 import json
 import queue
 import subprocess
+import socket
 import threading
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from .cli import request
+from .cli import open_request, request
 from .protocol import read_frame
 from .voices import VoiceError, close_voice, default_voices_dir, load_voice
 
@@ -80,14 +81,100 @@ class Abgebrochen(Exception):
     """Der Nutzer hat Stopp gedrueckt."""
 
 
-def sprich(einsatz: Einsatz, mode: str, senke, abbruch: threading.Event | None = None) -> None:
+def _socket_von(quelle) -> socket.socket | None:
+    direkt = getattr(quelle, "sock", None)
+    if direkt is not None:
+        return direkt
+    raw = getattr(getattr(quelle, "fp", None), "raw", None)
+    return getattr(raw, "_sock", None)
+
+
+class AktiveVerbindung:
+    """Veroeffentlicht die GUI-Sitzung, bevor ein blockierendes Lesen beginnt."""
+
+    def __init__(self, abbruch: threading.Event) -> None:
+        self.abbruch = abbruch
+        self.lock = threading.Lock()
+        self.conn = None
+        self.response = None
+
+    def zuruecksetzen(self) -> None:
+        with self.lock:
+            self.conn = self.response = None
+
+    def anfrage(self, body: dict):
+        with self.lock:
+            if self.abbruch.is_set():
+                raise Abgebrochen
+        def publish(conn) -> None:
+            with self.lock:
+                if self.abbruch.is_set():
+                    conn.close()
+                    raise Abgebrochen
+                self.conn = conn
+        try:
+            conn = open_request("POST", "/speak", body, publish=publish,
+                                cancelled=self.abbruch.is_set)
+        except BaseException:
+            with self.lock:
+                conn = self.conn
+                self.conn = None
+            if conn is not None:
+                conn.close()
+            if self.abbruch.is_set():
+                raise Abgebrochen from None
+            raise
+        try:
+            response = conn.getresponse()
+        except BaseException:
+            if self.abbruch.is_set():
+                raise Abgebrochen from None
+            raise
+        with self.lock:
+            if self.conn is not conn or self.abbruch.is_set():
+                response.close()
+                conn.close()
+                raise Abgebrochen
+            self.response = response
+        return response
+
+    def schliessen(self) -> None:
+        with self.lock:
+            conn, response = self.conn, self.response
+            self.conn = self.response = None
+        if response is not None:
+            response.close()
+        if conn is not None:
+            conn.close()
+
+    def abbrechen(self) -> None:
+        self.abbruch.set()
+        with self.lock:
+            conn, response = self.conn, self.response
+            self.conn = self.response = None
+        for quelle in (response, conn):
+            sock = _socket_von(quelle)
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+        if response is not None:
+            response.close()
+        if conn is not None:
+            conn.close()
+
+
+def sprich(einsatz: Einsatz, mode: str, senke, abbruch: threading.Event | None = None,
+           aktive: AktiveVerbindung | None = None) -> None:
     """Holt einen Einsatz vom Dienst und schiebt jeden Block sofort in die Senke."""
-    antwort = request("POST", "/speak", {"text": einsatz.text, "voice": einsatz.stimme,
-                                         "mode": mode})
-    if antwort.status != 200:
-        fehler = json.loads(antwort.read())
-        raise RuntimeError(f"{fehler.get('reason')}: {fehler.get('message')}")
+    body = {"text": einsatz.text, "voice": einsatz.stimme, "mode": mode}
+    antwort = (aktive.anfrage(body) if aktive is not None
+               else request("POST", "/speak", body))
     try:
+        if antwort.status != 200:
+            fehler = json.loads(antwort.read())
+            raise RuntimeError(f"{fehler.get('reason')}: {fehler.get('message')}")
         art, nutzlast = read_frame(antwort)
         if art != "H":
             raise RuntimeError("Kopfrahmen fehlt")
@@ -107,9 +194,12 @@ def sprich(einsatz: Einsatz, mode: str, senke, abbruch: threading.Event | None =
                     raise RuntimeError(f"{ende.get('reason')}: {ende.get('message')}")
                 return
     finally:
-        verbindung = getattr(antwort, "_mimic_connection", None)
-        if verbindung is not None:
-            verbindung.close()
+        if aktive is not None:
+            aktive.schliessen()
+        else:
+            verbindung = getattr(antwort, "_mimic_connection", None)
+            if verbindung is not None:
+                verbindung.close()
 
 
 class Wiedergabe:
@@ -186,6 +276,7 @@ def main() -> int:
 
     meldungen: queue.Queue[tuple[str, str]] = queue.Queue()
     abbruch = threading.Event()
+    aktive = AktiveVerbindung(abbruch)
 
     wurzel = tk.Tk()
     wurzel.title("Mimic")
@@ -249,7 +340,7 @@ def main() -> int:
         try:
             for nummer, einsatz in enumerate(einsaetze, 1):
                 meldungen.put(("lauf", f"{nummer}/{len(einsaetze)}  {einsatz.stimme}  [{modus}]"))
-                sprich(einsatz, modus, senke, abbruch)
+                sprich(einsatz, modus, senke, abbruch, aktive)
                 if nummer < len(einsaetze):
                     senke.pause()
             if isinstance(senke, Sammler):
@@ -269,6 +360,7 @@ def main() -> int:
 
     def starten(ziel: Path | None) -> None:
         abbruch.clear()
+        aktive.zuruecksetzen()
         for knopf in (abspielen, speichern):
             knopf.state(["disabled"])
         stopp.state(["!disabled"])
@@ -284,7 +376,7 @@ def main() -> int:
     abspielen.pack(side="left")
     speichern = ttk.Button(knoepfe, text="Als WAV speichern", command=speichern_klick)
     speichern.pack(side="left", padx=6)
-    stopp = ttk.Button(knoepfe, text="Stopp", command=abbruch.set)
+    stopp = ttk.Button(knoepfe, text="Stopp", command=aktive.abbrechen)
     stopp.pack(side="left")
     stopp.state(["disabled"])
     ttk.Button(knoepfe, text="Stimmen neu lesen", command=stimmen_laden).pack(side="left", padx=6)

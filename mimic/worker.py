@@ -8,6 +8,7 @@ import os
 import queue
 import resource
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -25,6 +26,7 @@ REVISIONS = {
     "soar": ("dots-studio/dots.tts-soar", "e3520f75254d0020a0406db31c51a79d00d22d55"),
 }
 MIN_VRAM_MIB = int(os.environ.get("MIMIC_MIN_VRAM_MIB", "8000"))
+MODEL_VRAM_MIB = int(os.environ.get("MIMIC_MODEL_VRAM_MIB", "6222"))
 IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
 MAX_WAITING = 4
@@ -44,13 +46,18 @@ MAX_VERSUCHE = 2
 
 
 class WorkerRefusal(Exception):
-    def __init__(self, reason: str, message: str):
+    def __init__(self, reason: str, message: str, **details: object):
         super().__init__(message)
         self.reason, self.message = reason, message
+        self.details = details
 
 
 class FatalWorkerError(WorkerRefusal):
     """Der Modellzustand ist nicht mehr vertrauenswuerdig; Prozess muss enden."""
+
+
+class ModeSwitch(FatalWorkerError):
+    """Die Anfrage muss nach dem kontrollierten Prozessende einmal wiederholt werden."""
 
 
 @dataclass(order=True)
@@ -69,6 +76,8 @@ class Engine:
         self.jobs: queue.PriorityQueue[Job] = queue.PriorityQueue(MAX_WAITING)
         self.sequence = itertools.count()
         self.runtimes: dict[str, object] = {}
+        self.state = "cold"
+        self.state_lock = threading.Lock()
         self.started = time.monotonic()
         self.last_load_s: float | None = None
         self.mode: str | None = None
@@ -78,12 +87,18 @@ class Engine:
         self.write_status("kalt")
 
     def submit(self, request: dict) -> Job:
+        state_lock = getattr(self, "state_lock", None)
+        if state_lock is not None:
+            with state_lock:
+                if self.state == "loading":
+                    raise WorkerRefusal("cold", "Worker laedt bereits einen Modus")
         job = Job(0 if request["mode"] == "mf" else 1, next(self.sequence), request)
         try:
             self.jobs.put_nowait(job)
         except queue.Full:
             raise WorkerRefusal("busy", "Warteschlange ist voll") from None
-        self.write_status("warm" if self.runtimes else "kalt")
+        state = getattr(self, "state", "warm" if self.runtimes else "cold")
+        self.write_status("warm" if state == "warm" else "kalt")
         return job
 
     def emit(self, job: Job, kind: str, payload: bytes) -> bool:
@@ -103,19 +118,20 @@ class Engine:
             except Exception as exc:
                 reason = exc.reason if isinstance(exc, WorkerRefusal) else "worker_unavailable"
                 message = exc.message if isinstance(exc, WorkerRefusal) else f"Worker-Fehler: {exc}"
+                details = exc.details if isinstance(exc, WorkerRefusal) else {}
                 self.emit(job, "E", json.dumps({"status": "error", "reason": reason,
-                                                "message": message, "samples": 0},
+                                                "message": message, "samples": 0, **details},
                                                ensure_ascii=False, separators=(",", ":")).encode())
                 job.delivered.wait(1)
                 self.fatal.set()
                 wake_listener()
             finally:
                 self.jobs.task_done()
-                self.write_status("warm" if self.runtimes else "kalt")
+                self.write_status("warm" if self.state == "warm" else "kalt")
 
     def _execute(self, job: Job) -> None:
-        request_id = uuid.uuid4().hex
         request = job.request
+        request_id = uuid.uuid4().hex
         mode, voice = request["mode"], request["voice"]
         started = time.monotonic()
         queue_wait_ms = (started - job.submitted) * 1000
@@ -125,12 +141,25 @@ class Engine:
         outcome, reason = "error", "worker_unavailable"
         profile = None
         generator = None
-        cold = mode not in self.runtimes
+        cold = self.state != "warm"
         try:
             profile = load_voice(voice)
+            if self.state == "warm" and mode not in self.runtimes:
+                raise ModeSwitch("mode_restart", f"Moduswechsel zu {mode} braucht Worker-Neustart",
+                                 worker_pid=os.getpid())
             if cold:
+                with self.state_lock:
+                    self.state = "loading"
                 self.write_status("laedt", mode)
-                self.runtimes[mode] = self._load(mode)
+                try:
+                    runtime = self._load(mode)
+                except BaseException:
+                    with self.state_lock:
+                        self.state = "cold"
+                    raise
+                self.runtimes[mode] = runtime
+                with self.state_lock:
+                    self.state = "warm"
             runtime = self.runtimes[mode]
             self.mode = mode
             sample_rate = int(runtime.sample_rate)
@@ -139,7 +168,8 @@ class Engine:
             if not self.emit(job, "H", json.dumps(head, separators=(",", ":")).encode()):
                 outcome = "cancelled"
                 return
-            text = apply_pronunciation(request["text"])
+            text = (apply_pronunciation(request["text"])
+                    if request.get("aussprache", True) else request["text"])
             # Satzweise statt am Stueck: sonst haengen die Saetze ohne Atempause
             # aneinander. Die Zerlegung fasst kurze Bruchstuecke wieder zusammen
             # -- Fragmente ohne Satzkontext halluziniert das Modell voll.
@@ -151,14 +181,13 @@ class Engine:
                         outcome = "cancelled"
                         return
                     samples += len(pause) // 2
-                # Ein stummer Take wird sofort nochmal erzeugt. Bewusst NACH dem
-                # Senden statt vorher zu puffern: Puffern wuerde den ersten Ton
-                # um die gesamte Erzeugungsdauer verzoegern und damit die
-                # gemessene TTFA (250 ms p95) zerstoeren. So kostet der
-                # Regelfall nichts, und im Fehlerfall hoert man eine kurze
-                # Luecke statt eines fehlenden Satzes.
                 for versuch in range(MAX_VERSUCHE):
+                    if job.cancelled.is_set():
+                        outcome = "cancelled"
+                        return
                     spitze = 0
+                    anfang: list[bytes] = []
+                    hoerbar = False
                     generator = runtime.generate_stream(text=satz, language="en",
                                                         prompt_audio_path=profile.wav_path,
                                                         prompt_text=profile.prompt_text)
@@ -169,25 +198,35 @@ class Engine:
                         if time.monotonic() - started > REQUEST_TIMEOUT:
                             raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
                         pcm = tensor_to_pcm(chunk, profile.gain)
-                        if first_audio_at is None:
-                            first_audio_at = time.monotonic()
                         spitze = max(spitze, peak_int16(pcm))
+                        if not hoerbar:
+                            anfang.append(pcm)
+                            if spitze <= STUMM_PEAK:
+                                continue
+                            pcm = b"".join(anfang)
+                            anfang.clear()
+                            hoerbar = True
+                            if first_audio_at is None:
+                                first_audio_at = time.monotonic()
                         samples += len(pcm) // 2
                         if not self.emit(job, "A", pcm):
                             outcome = "cancelled"
                             return
                     generator.close()
                     generator = None
-                    if spitze >= STUMM_PEAK:
+                    if hoerbar:
                         break
                     wiederholungen += 1
+                else:
+                    raise WorkerRefusal("silent_audio", "zwei stumme Takes erzeugt")
             self.emit(job, "E", json.dumps({"status": "ok", "samples": samples},
                                             separators=(",", ":")).encode())
             outcome, reason = "ok", ""
         except FatalWorkerError as exc:
             reason = exc.reason
             self.emit(job, "E", json.dumps({"status": "error", "reason": exc.reason,
-                                             "message": exc.message, "samples": samples},
+                                             "message": exc.message, "samples": samples,
+                                             **exc.details},
                                             ensure_ascii=False, separators=(",", ":")).encode())
             job.delivered.wait(1)
             self.fatal.set()
@@ -195,7 +234,8 @@ class Engine:
         except WorkerRefusal as exc:
             reason = exc.reason
             self.emit(job, "E", json.dumps({"status": "error", "reason": exc.reason,
-                                             "message": exc.message, "samples": samples},
+                                             "message": exc.message, "samples": samples,
+                                             **exc.details},
                                             ensure_ascii=False, separators=(",", ":")).encode())
         except VoiceError as exc:
             reason = exc.reason
@@ -242,12 +282,12 @@ class Engine:
             # nebenher soar angefragt wird.
             raise WorkerRefusal("insufficient_vram",
                                 f"nur {free_mib} MiB VRAM frei, {MIN_VRAM_MIB} MiB erforderlich")
-        marker = os.environ.get("MIMIC_FAKE_LOAD_MARKER")
-        if marker:
-            Path(marker).touch()
         release = request_gpu_permission()
-        t0 = time.monotonic()
         try:
+            marker = os.environ.get("MIMIC_FAKE_LOAD_MARKER")
+            if marker:
+                Path(marker).touch()
+            t0 = time.monotonic()
             import torch
             from dots_tts.runtime import DotsTtsRuntime
             repo, revision = REVISIONS[mode]
@@ -331,29 +371,74 @@ def tensor_to_pcm(chunk, gain: float = 1.0) -> bytes:
     return (audio.clamp(-1, 1) * 32767).to(torch.int16).numpy().astype("<i2", copy=False).tobytes()
 
 
-def request_gpu_permission():
-    """dAImons Hub ist optional; jedes Protokoll- oder Socketproblem faellt offen."""
-    hub = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "daimon/gpu.sock"
-    sock = None
+def _hub_roundtrip(hub: Path, request: dict) -> dict:
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(1)
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(1)
         sock.connect(str(hub))
-        sock.sendall(b'{"action":"request","client":"mimic"}\n')
-        if not sock.recv(4096):
-            raise OSError("leere Hub-Antwort")
-    except Exception:
-        if sock is not None:
-            sock.close()
+    except OSError:
+        sock.close()
+        raise
+    try:
+        sock.sendall(json.dumps(request, separators=(",", ":")).encode() + b"\n")
+        with sock.makefile("rb") as stream:
+            raw = stream.readline(4097)
+    except OSError as exc:
+        raise WorkerRefusal("load_denied", "Hub-Antwort blieb aus",
+                            hub_reason="hub_io_error") from exc
+    finally:
+        sock.close()
+    if not raw:
+        raise WorkerRefusal("load_denied", "Hub antwortete leer", hub_reason="hub_empty")
+    try:
+        response = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise WorkerRefusal("load_denied", "Hub antwortete mit ungueltigem JSON",
+                            hub_reason="hub_invalid_json") from None
+    if not isinstance(response, dict) or response.get("v") != 1 or type(response.get("ok")) is not bool:
+        raise WorkerRefusal("load_denied", "Hub-Antwort hat ein fremdes Schema",
+                            hub_reason="hub_invalid_schema")
+    return response
+
+
+def request_gpu_permission():
+    """Nur ein nicht erreichbarer Hub faellt offen; Antworten werden streng geprueft."""
+    hub = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "daimon/gpu.sock"
+    try:
+        response = _hub_roundtrip(hub, {"v": 1, "art": "laden", "modell": "mimic",
+                                        "vram_mib": MODEL_VRAM_MIB})
+    except OSError:
         return lambda: None
+    except WorkerRefusal as exc:
+        print(f"hub=gpu outcome=denied hub_reason={exc.details.get('hub_reason')}",
+              file=sys.stderr, flush=True)
+        raise
+    if not response["ok"]:
+        reason = response.get("grund")
+        if reason not in {"vram", "fullscreen", "lade_sperre"}:
+            print("hub=gpu outcome=denied hub_reason=hub_invalid_schema",
+                  file=sys.stderr, flush=True)
+            raise WorkerRefusal("load_denied", "Hub-Antwort hat ein fremdes Schema",
+                                hub_reason="hub_invalid_schema")
+        raise WorkerRefusal("load_denied", f"Hub lehnt Laden ab: {reason}", hub_reason=reason)
+    token = response.get("sperre")
+    if not isinstance(token, str) or len(token) != 32 or any(c not in "0123456789abcdefABCDEF" for c in token):
+        print("hub=gpu outcome=denied hub_reason=hub_invalid_schema",
+              file=sys.stderr, flush=True)
+        raise WorkerRefusal("load_denied", "Hub-Antwort enthaelt keine gueltige Sperre",
+                            hub_reason="hub_invalid_schema")
 
     def release() -> None:
         try:
-            sock.sendall(b"fertig\n")
-        except OSError:
-            pass
-        finally:
-            sock.close()
+            answer = _hub_roundtrip(hub, {"v": 1, "art": "fertig", "sperre": token})
+            if answer.get("ok") is not True:
+                raise WorkerRefusal("load_denied", "Hub bestaetigte die Freigabe nicht",
+                                    hub_reason=str(answer.get("grund", "hub_invalid_schema")))
+        except (OSError, WorkerRefusal) as exc:
+            reason = (exc.details.get("hub_reason") if isinstance(exc, WorkerRefusal)
+                      else "hub_unreachable")
+            print(f"hub=gpu outcome=release_failed hub_reason={reason}",
+                  file=sys.stderr, flush=True)
     return release
 
 
@@ -395,7 +480,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
             self._error(400, "bad_request", "ungueltige interne Anfrage")
             return
         except WorkerRefusal as exc:
-            self._error(429, exc.reason, exc.message)
+            status = 503 if exc.reason in {"cold", "load_denied"} else 429
+            self._error(status, exc.reason, exc.message)
             return
         self.send_response(200)
         self.send_header("Content-Type", "application/vnd.mimic.frames")

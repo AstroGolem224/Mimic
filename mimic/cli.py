@@ -17,12 +17,20 @@ from .protocol import read_frame
 from .voices import VOICE_RE, VoiceError, close_voice, default_voices_dir, load_voice
 
 
-def request(method: str, path: str, body: dict | None = None) -> http.client.HTTPResponse:
-    conn = UnixHTTPConnection(frontend_socket_path(), 125)
+def open_request(method: str, path: str, body: dict | None = None, *,
+                 publish=None, cancelled=None) -> UnixHTTPConnection:
+    conn = UnixHTTPConnection(frontend_socket_path(), 125, cancelled=cancelled)
+    if publish is not None:
+        publish(conn)
     payload = None if body is None else json.dumps(body, ensure_ascii=False).encode()
     headers = {} if payload is None else {"Content-Type": "application/json",
                                           "Content-Length": str(len(payload))}
     conn.request(method, path, payload, headers)
+    return conn
+
+
+def request(method: str, path: str, body: dict | None = None) -> http.client.HTTPResponse:
+    conn = open_request(method, path, body)
     response = conn.getresponse()
     response._mimic_connection = conn  # type: ignore[attr-defined]
     return response

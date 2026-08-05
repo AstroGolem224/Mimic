@@ -181,7 +181,14 @@ def apply_pronunciation(text: str, path: Path | None = None) -> str:
     if not isinstance(raw, dict):
         return text
     for source, replacement in raw.items():
-        if not isinstance(source, str) or not source or not isinstance(replacement, str):
+        if (not isinstance(source, str) or not source or not isinstance(replacement, str)
+                or not replacement):
+            continue
+        # Der Filter ist nur der zweite Riegel fuer Hub-freie Aufrufer: selbst
+        # reine Woerter koennen den Sinn aendern. Das ist nicht theoretisch --
+        # Kriterium B erkannte den Klon 12/12-mal an der Aussprache einzelner Woerter.
+        # Darum schaltet der Hub-Pfad die Tabelle zusaetzlich vollstaendig aus.
+        if not all(zeichen.isalpha() or zeichen == " " for zeichen in source + replacement):
             continue
         pattern = re.compile(rf"(?<!\w){re.escape(source)}(?!\w)", re.IGNORECASE)
         def replace(match: re.Match[str]) -> str:

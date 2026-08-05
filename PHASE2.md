@@ -34,6 +34,17 @@ am 2026-08-05 durch Codex' Review gefunden und von Hand am Code bestätigt worde
    Drei Fälle getrennt: Hub nicht erreichbar → fail open (Mimic darf nicht von dAImon
    abhängen, MMC-Batch läuft auch ohne). Hub sagt nein → **abbrechen**. Antwort
    unverständlich → abbrechen und laut ins Journal.
+
+   **Bekannte Folge, beim Bau am 2026-08-05 aufgetaucht:** stirbt der Worker hart
+   (`SIGKILL`, cgroup-OOM), kommt er nicht mehr zum `fertig` — und seine Sperre steht bis
+   `GPU_FRIST_S` (120 s). Mimic ist in diesem Fenster nicht bedienbar und antwortet
+   `load_denied` / `lade_sperre`. Das ist **kein Mimic-Fehler**: dAImons eigene Worker
+   haben dieselbe Eigenschaft, und die Frist ist der dafür vorgesehene Auffangmechanismus.
+   Für Mimic wiegt sie aber schwerer — dAImons Worker laden in 293–419 ms, Mimic in
+   4–9 s, das Fenster ist also rund zwanzigmal größer.
+   Gehört in den dAImon-Integrationstask, nicht hierher: der Hub könnte tote Halter
+   einsammeln, wenn der `laden`-Aufruf die PID mitschickt. Das ist eine Änderung an
+   dAImon und wird dort entschieden.
 2. **Die Aussprache-Tabelle umgeht den Hub-Validator.** `voices.apply_pronunciation`
    ersetzt beliebigen Text nach der Freigabe. DESIGN §8.3 setzt den Validator bewusst in
    den Hub, „sonst wäre er umgehbar, sobald ein anderer Produzent Text an die Ausgabe

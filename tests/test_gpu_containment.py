@@ -40,9 +40,24 @@ class GPUContainmentTests(unittest.TestCase):
         os.kill(pid, signal.SIGKILL)
         thread.join(10)
         self.assertFalse(thread.is_alive())
-        self.assertIn(b"worker_unavailable", result["first"][1])
-        status, _body = self.speak("Neuer Worker nach SIGKILL.")
-        self.assertEqual(200, status)
+        # Nicht auf einen bestimmten Grund pruefen: die Zusage lautet "Frontend
+        # ueberlebt, maschinenlesbare Absage". Seit die Hub-Sperre wirklich
+        # funktioniert, kann der Grund auch load_denied/lade_sperre sein -- der
+        # per SIGKILL getoetete Worker kommt nicht mehr zum `fertig`, und die
+        # Sperre steht bis GPU_FRIST_S (120 s). Das ist dieselbe Eigenschaft,
+        # die dAImons eigene Worker haben, kein Mimic-Fehler.
+        grund = json.loads(result["first"][1]).get("reason")
+        self.assertIn(grund, {"worker_unavailable", "worker_timeout", "load_denied"})
+        # Der naechste Aufruf wird bedient ODER sauber mit lade_sperre abgelehnt.
+        # Beides erfuellt die Zusage; welches von beidem, entscheidet dAImons Hub:
+        # der per SIGKILL getoetete Worker konnte sein `fertig` nicht mehr senden,
+        # also steht seine Sperre bis GPU_FRIST_S (120 s). Auf 200 zu bestehen
+        # hiesse, den Test von einer Frist in einem FREMDEN Dienst abhaengig zu
+        # machen. Was hier zaehlt: das Frontend lebt und antwortet maschinenlesbar.
+        status, body = self.speak("Neuer Worker nach SIGKILL.")
+        if status != 200:
+            self.assertEqual(503, status)
+            self.assertEqual("lade_sperre", json.loads(body).get("hub_reason"))
 
     def test_09_memorymax_exhaustion_is_machine_readable(self):
         subprocess.run(["systemctl", "--user", "set-property", "--runtime",

@@ -10,6 +10,7 @@ import socket
 import socketserver
 import sys
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -25,7 +26,7 @@ FRAME_TIMEOUT = 10.0
 REASON_STATUS = {
     "bad_request": 400, "text_too_long": 400, "unknown_voice": 404,
     "invalid_voice_profile": 422, "busy": 429, "insufficient_vram": 503,
-    "worker_unavailable": 503, "worker_timeout": 504,
+    "worker_unavailable": 503, "worker_timeout": 504, "load_denied": 503,
 }
 
 
@@ -42,19 +43,25 @@ def worker_socket_path() -> Path:
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, path: Path, timeout: float):
+    def __init__(self, path: Path, timeout: float, cancelled=None):
         super().__init__("localhost", timeout=timeout)
         self.path = str(path)
+        self.cancelled = cancelled
 
     def connect(self) -> None:
+        if self.cancelled is not None and self.cancelled():
+            raise OSError("Verbindung abgebrochen")
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(self.timeout)
+        self.sock = sock
         try:
+            if self.cancelled is not None and self.cancelled():
+                raise OSError("Verbindung abgebrochen")
             sock.connect(self.path)
         except BaseException:
             sock.close()
+            self.sock = None
             raise
-        self.sock = sock
 
 
 def _set_response_timeout(response: http.client.HTTPResponse, timeout: float) -> None:
@@ -64,6 +71,21 @@ def _set_response_timeout(response: http.client.HTTPResponse, timeout: float) ->
     if sock is None:
         raise OSError("Worker-Socket ist nicht mehr offen")
     sock.settimeout(timeout)
+
+
+def _wait_worker_exit(pid: object, timeout: float = CONNECT_TIMEOUT) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        time.sleep(0.01)
+    return False
 
 
 class FrontendHandler(BaseHTTPRequestHandler):
@@ -84,8 +106,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, reason: str, message: str) -> None:
-        self._json(REASON_STATUS[reason], {"reason": reason, "message": message})
+    def _error(self, reason: str, message: str, **details: object) -> None:
+        self._json(REASON_STATUS[reason], {"reason": reason, "message": message, **details})
 
     def do_GET(self) -> None:
         if self.path != "/status":
@@ -129,8 +151,19 @@ class FrontendHandler(BaseHTTPRequestHandler):
             return
         mode = request.get("mode", "mf")
         voice = request.get("voice", "matthias")
+        aussprache = request.get("aussprache", True)
+        correlation_id = request.get("correlation_id")
         if mode not in ("mf", "soar"):
             self._error("bad_request", "mode muss mf oder soar sein")
+            return
+        if type(aussprache) is not bool:
+            self._error("bad_request", "aussprache muss true oder false sein")
+            return
+        if correlation_id is None:
+            correlation_id = uuid.uuid4().hex
+        elif (not isinstance(correlation_id, str) or len(correlation_id) != 32
+              or any(c not in "0123456789abcdefABCDEF" for c in correlation_id)):
+            self._error("bad_request", "correlation_id muss 32-stelliges Hex sein")
             return
         try:
             profile = load_voice(voice)
@@ -139,10 +172,17 @@ class FrontendHandler(BaseHTTPRequestHandler):
             return
         else:
             close_voice(profile)
-        request = {"text": request["text"], "voice": voice, "mode": mode}
+        request = {"text": request["text"], "voice": voice, "mode": mode,
+                   "aussprache": aussprache, "correlation_id": correlation_id}
         self._proxy(request)
 
     def _proxy(self, request: dict) -> None:
+        for retry in range(2):
+            if not self._proxy_once(request, retry_mode=(retry == 0)):
+                return
+        self._error("worker_unavailable", "Worker-Neustart war nicht erfolgreich")
+
+    def _proxy_once(self, request: dict, *, retry_mode: bool) -> bool:
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode()
         conn = UnixHTTPConnection(worker_socket_path(), CONNECT_TIMEOUT)
         try:
@@ -154,12 +194,13 @@ class FrontendHandler(BaseHTTPRequestHandler):
         except socket.timeout:
             conn.close()
             self._error("worker_timeout", "Worker-Antwortkopf blieb aus")
-            return
+            return False
         except (OSError, http.client.HTTPException):
             conn.close()
             self._error("worker_unavailable", "Worker ist nicht erreichbar")
-            return
+            return False
         if response.status != 200:
+            error: dict = {}
             try:
                 error = json.loads(response.read(MAX_BODY_BYTES))
                 reason = error.get("reason", "worker_unavailable")
@@ -168,8 +209,10 @@ class FrontendHandler(BaseHTTPRequestHandler):
                 reason, message = "worker_unavailable", "ungueltige Worker-Antwort"
             response.close()
             conn.close()
-            self._error(reason if reason in REASON_STATUS else "worker_unavailable", message)
-            return
+            details = {"hub_reason": error["hub_reason"]} if "hub_reason" in error else {}
+            self._error(reason if reason in REASON_STATUS else "worker_unavailable", message,
+                        **details)
+            return False
 
         buffered: list[tuple[str, bytes]] = []
         audio_seen = False
@@ -185,19 +228,26 @@ class FrontendHandler(BaseHTTPRequestHandler):
                     reason = end.get("reason", "worker_unavailable")
                     response.close()
                     conn.close()
+                    if reason == "mode_restart" and retry_mode:
+                        if _wait_worker_exit(end.get("worker_pid")):
+                            return True
+                        self._error("worker_unavailable", "Worker-Neustart blieb aus")
+                        return False
+                    details = {"hub_reason": end["hub_reason"]} if "hub_reason" in end else {}
                     self._error(reason if reason in REASON_STATUS else "worker_unavailable",
-                                end.get("message", "Worker hat vor dem Stream abgebrochen"))
-                    return
+                                end.get("message", "Worker hat vor dem Stream abgebrochen"),
+                                **details)
+                    return False
         except socket.timeout:
             response.close()
             conn.close()
             self._error("worker_timeout", "erstes Audio blieb aus")
-            return
+            return False
         except (OSError, EOFError, ValueError, http.client.HTTPException):
             response.close()
             conn.close()
             self._error("worker_unavailable", "Worker starb vor dem Stream")
-            return
+            return False
 
         self.send_response(200)
         self.send_header("Content-Type", MEDIA_TYPE)
@@ -233,6 +283,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
         finally:
             response.close()
             conn.close()
+        return False
 
     def _client_disconnected(self) -> bool:
         readable, _, _ = select.select([self.connection], [], [], 0)
