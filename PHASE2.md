@@ -1,5 +1,5 @@
 # Plan: Mimic Phase 2 — dAImon-Anbindung
-_Rev 7, 2026-08-05, nach Codex-Runde 6. Begriffe nach
+_Rev 8, 2026-08-05, nach Codex-Runde 7. Begriffe nach
 `~/Dokumente/UMBRA-Notes/DDs/Mimic/CONTEXT.md`._
 
 ## Goal
@@ -72,10 +72,28 @@ Takes und Charakterstimmen, `4cacd90` GUI). Zwei davon machen Teile dieses Plans
    RAM — `MemoryMax` ist **7G**. Bisher fiel das nicht auf, weil nur ein Modus benutzt
    wurde. Mit der GUI (nutzt `soar`) und dem geplanten `/warm(mf)` lädt Mimic den zweiten
    daneben und der Worker stirbt.
-   Fix: **ein residenter Modus.** Vor dem Laden eines anderen wird der bisherige geräumt,
-   und der Moduswechsel wird unter der echten cgroup abgenommen — `soar` → `/warm(mf)` und
-   `mf` → GUI-`soar`. Das korrigiert auch eine Aussage in `ERGEBNIS.md`, die nur für VRAM
-   galt und für RAM nie.
+   **Gemessen am 2026-08-05, weil Vermutung hier nicht reicht:**
+
+   | | RSS | VRAM frei |
+   |---|---|---|
+   | Start | 806 MiB | 30140 |
+   | `mf` geladen | 2138 MiB | 19592 |
+   | nach `del` + `empty_cache()` | **2139 MiB** | 30006 |
+   | nach `malloc_trim` | 2118 MiB | 30004 |
+
+   **VRAM kommt vollständig zurück, CPU-RSS praktisch nichts.** In-Process-Räumen löst
+   das Problem also **nicht**. Fix deshalb: **ein residenter Modus, und der Wechsel ist
+   ein kontrollierter Worker-Neustart** — der Eigentümer beendet sich (Phase 1s
+   Prozessende, das RAM und VRAM nachweislich freigibt), die Socket-Aktivierung startet
+   ihn neu, die auslösende Anfrage wird **einmal** wiederholt. Kein Räumen im Prozess.
+   Damit trägt Phase 1s Entwurf ausgerechnet aus dem Grund, den ich in Phase 0 als
+   „falsch begründet" korrigiert hatte: für VRAM war er das, für RSS nicht.
+   Zustandsmaschine explizit, Mutation nur durch den Eigentümer:
+   `warm(alt) → beendet sich → cold → loading(neu) → warm(neu) | cold(Fehler)`.
+   Scheitert `_load(neu)` an Hub, VRAM oder CUDA, ist der Zustand `cold` — nicht ein
+   halb geräumter Zwischenstand. Anfragen für den alten Modus während `loading` bekommen
+   `503 cold` wie alle anderen; ein wartender Warmwunsch wird verworfen, nicht
+   übernommen.
 2c. **Der GUI-Stopp erreicht die Verbindung nicht.** `gui.py` hält sie im Synthesethread,
    der Tk-Rückruf setzt nur ein Event. Währenddessen hängt `getresponse()` oder
    `read_frame()`, der Socket ist unerreichbar und der Worker rechnet weiter — dasselbe
@@ -256,7 +274,8 @@ dass der echte Worker den Hub fragt oder `aussprache:false` befolgt:
 |---|---|
 | **dAImon-Doppel** — zählt Anfragen, erzwingt Absage, Verzögerung, Tod im Stream | Routing, Fristen, Rückfall: P2-A, P2-B, P2-C, P2-E(a), P2-H, P2-I, P2-J |
 | **echter Mimic, Stub-Runtime, Fake-Hub** — echter Worker- und Frontendcode, Modell durch steuerbare Attrappe ersetzt | Protokoll, Sperre, Aussprache, **und Abbruch**: P2-E(b), P2-G, **P2-D1, P2-D2**, P2-K, Moduswechsel aus 2b. D1 liest das echte Mimic-Journal, D2 beobachtet Worker-Cancel, `next()` und `emit()` — ein Doppel kann beides nicht. |
-| **echtes warmes Modell** | nur P2-F |
+| **echtes warmes Modell** | P2-F |
+| **echte Runtimes unter `MemoryMax=7G`** — beide Modi, echte cgroup | der Moduswechsel aus 2b und P2-B. Ein Stub kann weder RSS noch die cgroup-Grenze messen; genau dort liegt aber das Problem. |
 
 **Vor dem ersten Lauf eingefroren:** Korpus, Lastzustand, Warmzustand, Perzentil-Methode
 und Schwellen. Reißt ein Kriterium, ist das eine **neue Planrevision** — keine nachträgliche
@@ -265,7 +284,7 @@ Begründung innerhalb derselben Abnahme.
 | # | Kriterium | Bestanden wenn |
 |---|---|---|
 | P2-A | Auswahl greift | Grenzfälle exakt: **79 Zeichen → sherpa, 80 → Mimic** (bei Schwelle 80), plus ein Lauf mit abweichend konfigurierter Schwelle. Beide Journal-Zeilen vorhanden. |
-| P2-B | Kalt wartet nicht | Bei kaltem Mimic beginnt Ton in < 400 ms — `require_warm` liefert sofort `cold`, die 500-ms-Gesamtfrist greift gar nicht. `/warm` ist danach angestoßen. n ≥ 20. |
+| P2-B | Kalt wartet nicht | **Gegen den echten Worker aus dem Zustand „Prozess existiert nicht"**, nicht gegen das Doppel — sonst bliebe der Torch-Import vor `submit()` (0.69–0.75 s, Schritt 3) unentdeckt. Vor jedem Lauf wird PID-Abwesenheit und echte Socket-Aktivierung nachgewiesen. Bei kaltem Mimic beginnt Ton in < 400 ms — `require_warm` liefert sofort `cold`, die 500-ms-Gesamtfrist greift gar nicht. `/warm` ist danach angestoßen. n ≥ 20. |
 | P2-C | Ausfall unsichtbar, auch langsam | Fünf Fälle, je mit Frist: (a) Dienst gestoppt, (b) Socket da, niemand horcht, (c) `SIGKILL` mitten im Stream, (d) Mimic lebt, verzögert den ersten `A` über die Gesamtfrist, (e) Mimic lebt, stockt im Stream über den Rahmenabstand. In a/b/d spricht dAImon **vollständig** mit sherpa, Ton binnen 700 ms. In c/e endet der Satz still. In **allen** Fällen wird die nächste Äußerung binnen 700 ms bedient. Je Fall ein maschinenlesbarer Grund. |
 | P2-D1 | Abbruch bei laufender Wiedergabe | Neue Äußerung während laufender Mimic-Äußerung: alte Wiedergabe endet in **< 100 ms**, Mimic-Journal zeigt `outcome=cancelled`. |
 | P2-D2 | Abbruch **vor** dem ersten Rahmen | Dort gibt es keine Wiedergabe, die enden könnte — also eigene Frist: das Cancel-Flag erreicht den Worker in **< 300 ms**. Gemessen wird **ab beobachtetem Abbruch**: es beginnt **kein neuer `next()`-Aufruf** mehr — auch nicht der eines
@@ -275,6 +294,8 @@ heute ohne erneute Cancel-Prüfung; ein Testfall erzwingt einen stummen ersten T
 | P2-F | TTFA im Budget | Mimic-Pfad p95 **< 300 ms**, gemessen bis zum ersten **hörbaren** Sample (Amplitude über `STUMM_PEAK`), nicht bis zum ersten PCM-Byte — seit `f3a26bb` sind das nicht mehr dasselbe. n ≥ 30, eingefrorener Korpus, warmer Dienst, Maschine ohne Fremdlast. Kein erhöhtes Budget: die 250 ms enthalten Frontend, Socket und Rahmung bereits. |
 | P2-G | Sperre wirkt und gibt frei | (a) Hub verweigert → Mimic lädt **nicht**, meldet `load_denied` mit `hub_reason`, je einmal für `vram`, `fullscreen`, `lade_sperre`. (b) Hub nicht erreichbar → Mimic lädt (fail open). (c) **Erfolgreiches Laden → `fertig` bestätigt → ein zweiter Lader bekommt sofort eine neue Sperre**, nicht `lade_sperre`. Ohne (c) bliebe eine kaputte Freigabe unentdeckt, bis die 120-s-Frist sie zudeckt. (d) **Kaputte Hub-Antwort** — leer, ungültiges JSON, schemafremd: jeweils **kein** Ladeversuch, eigener Diagnosegrund. Schritt 1 verlangt hier fail-closed; ohne (d) wäre das unabgenommen. |
 | P2-H | Marke ist generationssicher | Deterministischer A/B-Lauf: A wird abgebrochen, B meldet `beginnt`, **dann** trifft As verspätetes `gesprochen` ein. Erwartung: B bleibt aktive Marke, `tts_active` bleibt `true`. Ohne diesen Test kann eine Umsetzung ein Feld hinzufügen, ohne das falsche Löschen zu verhindern. |
+| P2-L | Stumme Takes brechen die Engine-Wahl nicht | Zwei deterministische Stub-Fälle: (a) erster Take stumm, zweiter hörbar → der Konsument bekommt den ersten `A` **erst** mit hörbarem Audio, und der Satzanfang fehlt nicht; (b) beide Takes stumm → **kein** `A`, Fehlschlag **vor** HTTP 200. Dazu eine Obergrenze für die Zeit bis zum ersten hörbaren Sample. Ohne (a)/(b) ist Schritt 2a behauptet, nicht belegt. |
+| P2-M | GUI-Stopp greift in jeder Phase | Stopp (a) vor `getresponse()`, (b) während blockiertem `read_frame()`, (c) unmittelbar **vor** Veröffentlichung der Sitzung — im letzten Fall darf der Synthesethread danach **keinen** neuen Socket mehr öffnen. Je Fall: Socket geschlossen, Worker-Cancel binnen Frist, kein übriger Thread. D1/D2 prüfen dAImon, nicht die GUI. |
 | P2-K | Warmlauf wirkt wirklich | Zwei getrennte Zweige, nicht einer: **Erfolg** — kalt → sherpa spricht fristgerecht → `/warm` wird binnen 30 s `warm` → die **nächste** lange Äußerung ist `engine=mimic`. **Fehlschlag** — `/warm` scheitert sichtbar → die nächste Äußerung geht fristgerecht an sherpa, mit korreliertem Diagnosegrund. (Rev 5 verlangte in beiden Fällen `engine=mimic`, was nach einem Fehlschlag gerade nicht zugesagt ist.) Gegenfall: ein `/warm`, das nie antwortet, verändert die sherpa-TTFA **nicht** und erzeugt höchstens **einen** Hintergrundaufruf. P2-B beweist nur, dass ein Wunsch angestoßen wurde — ein Eigentümer, der den Condition-Wakeup verliert, käme damit durch. |
 | P2-J | Hängendes Mimic blockiert den Start nicht | `/status` wird angenommen, aber nie beantwortet. Erwartung: dAImons Startprüfung endet binnen 300 ms, der Mimic-Pfad wird deaktiviert und protokolliert, `daimon-tts` startet fertig, und sherpa spricht danach in seinem Budget. Die Sandbox-Abnahme in Schritt 19 deckt nur „Mimic nicht installiert" — der schlimmere Fall ist ein Dienst, der da ist und schweigt. |
 | P2-I | Terminalpfade räumen auf | Nach **jedem** Ende — `E:error`, EOF, Rahmenfrist, lokaler Abbruch, Erfolg — gilt: keine offene Mimic-Sitzung, kein verwaister `pw-cat`, kein laufender Leser-Thread, und **die beendete Generation besitzt keine aktive Marke mehr**. `tts_active=false` nur dann, wenn **keine neuere Generation spricht** — sonst widerspräche P2-I dem Fall aus P2-H, wo B gerade redet, während A verspätet endet. Abschluss idempotent und generationsgebunden. |
@@ -282,7 +303,9 @@ heute ohne erneute Cancel-Prüfung; ein Testfall erzwingt einen stummen ersten T
 P2-C, P2-D1, P2-D2, P2-G, P2-H und P2-I tragen Invariante α, die Serialisierung und die
 Aufräumzusage. Ohne sie keine Abnahme.
 
-**Korrelations-ID:** kanonisches Hex, 32 Zeichen, nichts anderes wird angenommen. Ein
+**Korrelations-ID:** ist sie vorhanden, muss sie 32-stelliges Hex sein — sonst
+abgelehnt. Fehlt sie, erzeugt das Frontend eine (Rückwärtskompatibilität für CLI und GUI,
+Schritt 2d). Ein
 freier String könnte über Leerzeichen oder Zeilenumbruch die `key=value`-Journalzeilen
 zerlegen. Jedem angenommenen Warmwunsch wird genau eine ID zugeordnet.
 

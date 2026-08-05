@@ -440,3 +440,85 @@ Nicht beanstandet und damit bestaetigt: die Viererwarteschlange wird von einer e
 GUI nicht geflutet (sie sendet seriell), `mimic record` erzeugt keinen zweiten
 Modell-Eigentuemer, und die 300-ms-Grenze aus P2-F bleibt durch die gemessenen 250 ms
 gedeckt.
+
+## Round 7 — Codex
+
+Der Kernplan ist baubar und muss nicht zerlegt werden. Vier lokale Blocker bleiben jedoch; insbesondere Schritt 2b ist noch keine belastbare Implementierungsanweisung.
+
+| Round‑6-Finding | Status in Rev 7 |
+|---|---|
+| 1. Socket-aktivierter Kaltstart | Nicht vollständig adressiert |
+| 2. D1/D2 falscher Prüfstand | Adressiert |
+| 3. Cancel vor Silent-Retry | Adressiert |
+| 4. Erster Frame versus hörbarer Ton | Teilweise adressiert |
+| 5. GUI-Stopp | Mechanismus beschrieben, Abnahme fehlt |
+| 6. Schema-Kompatibilität | Adressiert, kleine Wortlautkollision |
+| 7. Zwei residente Modi | Problem erkannt, Lösung noch unbewiesen |
+| 8. P2-K-Widerspruch | Adressiert |
+
+### Blocker
+
+1. **Round‑6-Finding 1 wurde faktisch nicht eingearbeitet.** P2-B ist unverändert und weiterhin dem dAImon-Doppel zugeordnet; weder ein fehlender Worker-PID noch echte Socket-Aktivierung wird verlangt. Damit kann der alte Torch-Import vor `submit()` unentdeckt bleiben.  
+Fix: P2-B zusätzlich mit echtem Worker aus Zustand „Prozess existiert nicht“ ausführen und vor jedem Lauf PID-Abwesenheit sowie Socket-Aktivierung nachweisen.
+
+2. **Schritt 2b ist hinsichtlich Serialisierung baubar, hinsichtlich Speicherfreigabe aber nur eine Hoffnung.** Der einzige Owner kann den alten Runtime nach Abschluss von `_execute()` sicher entfernen: Währenddessen läuft keine zweite Synthese, wartende Jobs besitzen keinen Runtime-Verweis, und bereits gepufferte Audioframes brauchen das Modell nicht mehr. Ein bloßes `self.runtimes.clear()` beweist jedoch nicht, dass rund 5–10 GiB CPU-RSS tatsächlich an die cgroup zurückgehen; Phase 1 wählte gerade den Prozessausgang als robuste Freigabe. Außerdem ordnet die Prüftabelle den Moduswechsel dem **Stub-Runtime-Prüfstand** zu, der das RAM-Problem unmöglich messen kann.  
+Fix: Einen vierten Prüfstand mit echten `mf`-/`soar`-Runtimes unter `MemoryMax=7G` festlegen und vorab entscheiden: gemessen erfolgreiche In-Process-Freigabe (`pop`, Referenzen beseitigen, GC/CUDA-Cache) oder kontrollierter Worker-Neustart mit definiertem Request-Retry.
+
+3. **Der Moduswechsel hat noch keine vollständige Zustandsmaschine.** Nicht definiert sind Zustand und Rückfall, wenn der alte Runtime bereits entfernt wurde und `_load(neu)` anschließend an Hub, VRAM oder CUDA scheitert; ebenso fehlen Zusagen für während `loading` eintreffende alte/neue Modi und einen wartenden Warmwunsch.  
+Fix: Übergang explizit als `warm(old) → unloading → cold → loading(new) → warm(new)|cold(error)` definieren, Runtime-Mutation ausschließlich dem Owner erlauben und Request-/Warm-Verhalten für jeden Zustand testen.
+
+4. **Schritt 2a beweist noch nicht seine zentrale Zusage.** P2-D2 erzwingt nur Cancel zwischen Silent-Takes; P2-F ist eine gewöhnliche Messreihe. Kein Kriterium erzwingt „erster Take stumm, zweiter hörbar“ oder „beide stumm, kein `A`, Fehler vor HTTP 200“. Außerdem ist offen, ob zurückgehaltene stille Anfangsframes später ausgespielt werden—dann kann der erste `A` weiterhin mit längerer Stille beginnen—oder verworfen werden, was den Satzanfang beschneiden kann.  
+Fix: Zwei deterministische Stub-Fälle ergänzen und festlegen, wie der stille Präfix behandelt sowie die Zeit bis zur tatsächlichen hörbaren Ausgabe begrenzt wird.
+
+5. **Schritt 2c hat keine falsifizierbare Abnahme und lässt eine Publish/Cancel-Race offen.** Drückt der Nutzer Stopp unmittelbar vor Veröffentlichung der Verbindung, darf der Synthesethread nicht anschließend einen neuen Socket öffnen und blockieren; D1/D2 prüfen dAImon, nicht die GUI.  
+Fix: Eigenes GUI-Kriterium für Stopp vor `getresponse()`, während blockiertem `read_frame()` und unmittelbar vor Session-Publikation ergänzen; jeweils Socket geschlossen, Worker-Cancel binnen Frist und kein Synthesethread übrig.
+
+### Nachziehbar, kein Architekturblocker
+
+Die Korrelations-ID-Regel widerspricht dem neuen Schema wörtlich: Schritt 2d erlaubt eine fehlende ID, während [PHASE2.md](/home/itiger013/Dokumente/Github/Mimic/PHASE2.md:285) sagt, „nichts anderes wird angenommen“. Die beabsichtigte Semantik ist trotzdem klar.  
+Fix: Formulieren: „Eine vorhandene ID muss 32-stelliges Hex sein; fehlt sie, erzeugt das Frontend eine.“
+
+P2-K ist jetzt widerspruchsfrei, D1/D2 sind dem richtigen Codepfad zugeordnet, der Silent-Retry-Cancel ist prüfbar, und die CLI-/GUI-Defaults erhalten den bestehenden Vertrag. Matthias kann daher sagen: Die Architektur trägt, aber Runtime-Wechsel und drei fehlende Abnahmeschilde müssen vor Baubeginn präzisiert werden.
+
+VERDICT: REVISE
+### Claude's response — Round 7, und Abschluss der Schleife
+
+Alle fuenf Blocker plus der nachziehbare Punkt eingearbeitet. Codex' eigene Einordnung
+ist die Antwort, um die ich gebeten hatte: "Die Architektur traegt, aber Runtime-Wechsel
+und drei fehlende Abnahmeschilde muessen vor Baubeginn praezisiert werden."
+
+**Blocker 2 war messbar, nicht verhandelbar -- also gemessen:**
+
+|  | RSS | VRAM frei |
+|---|---|---|
+| Start | 806 MiB | 30140 |
+| mf geladen | 2138 MiB | 19592 |
+| nach del + empty_cache() | 2139 MiB | 30006 |
+| nach malloc_trim | 2118 MiB | 30004 |
+
+VRAM kommt vollstaendig zurueck, CPU-RSS praktisch nichts. Mein "ein residenter Modus,
+Wechsel raeumt" war damit widerlegt, bevor es gebaut wurde. Der Moduswechsel ist jetzt
+ein kontrollierter Worker-Neustart mit einmaliger Wiederholung der ausloesenden Anfrage,
+plus explizite Zustandsmaschine warm(alt) -> beendet sich -> cold -> loading(neu) ->
+warm(neu) | cold(Fehler).
+
+Bemerkenswert: damit traegt Phase 1s Prozessende-Entwurf ausgerechnet aus dem Grund, den
+ich in Phase 0 als "falsch begruendet" korrigiert hatte. Fuer VRAM war er es -- fuer RSS
+nicht. Das ist die dritte VRAM/RAM-Verwechslung in diesem Projekt, und die erste, die
+Codex gefunden hat statt ich.
+
+Blocker 1: P2-B war tatsaechlich nicht angepasst -- ich hatte den Torch-Import-Fix in
+Schritt 3 geschrieben und den zugehoerigen Test vergessen. Laeuft jetzt gegen den echten
+Worker aus "Prozess existiert nicht", mit Nachweis von PID-Abwesenheit und
+Socket-Aktivierung. Vierter Pruefstand ergaenzt: echte Runtimes unter MemoryMax=7G, weil
+ein Stub weder RSS noch die cgroup-Grenze messen kann.
+
+Blocker 4 und 5 als eigene Kriterien: P2-L (stummer erster Take, beide stumm) und P2-M
+(GUI-Stopp in drei Phasen, inklusive der Publish/Cancel-Race). Korrelations-ID-Regel
+entwidersprucht.
+
+**Schleife endet hier.** Sieben Runden, 67 Findings, keines abgelehnt:
+20 / 16 / 10 / 5 / 3 / 8 / 6. Der Ausschlag in Runde 6 war der Nachholeffekt der
+Parallelarbeit. Kein APPROVED -- die Fixes aus Runde 7 sind wieder ungelesen, und das
+wird nicht als Konvergenz ausgegeben. Codex' Urteil "Architektur traegt" ist das
+belastbarste Ergebnis, das diese Schleife liefern kann.
