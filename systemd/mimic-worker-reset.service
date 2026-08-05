@@ -1,0 +1,17 @@
+[Unit]
+Description=Mimic worker socket nach trigger-limit-hit wieder scharf schalten
+# Stirbt der Worker, bevor er die Verbindung annimmt (etwa OOM beim Laden),
+# bleibt diese in der Backlog-Queue liegen und triggert die Socket-Unit sofort
+# erneut -- aus einer Anfrage wird eine Schleife, bis systemd mit
+# 'trigger-limit-hit' abriegelt. Das Limit ist richtig; ohne es brennt die
+# Schleife CPU. Falsch waere nur, dass Mimic danach dauerhaft unerreichbar
+# bleibt, bis jemand von Hand reset-failed ruft.
+# Beobachtet am 2026-08-05 beim Eindaemmungstest (tests/run.sh --gpu).
+
+[Service]
+Type=oneshot
+# Kurz warten: bei einer echten Fehlkonfiguration soll das hier nicht im
+# Sekundentakt mitdrehen, sondern im Journal als wiederkehrend sichtbar sein.
+ExecStartPre=/usr/bin/sleep 5
+ExecStart=/usr/bin/systemctl --user reset-failed mimic-worker.socket mimic-worker.service
+ExecStartPost=/usr/bin/systemctl --user start mimic-worker.socket

@@ -1,5 +1,15 @@
 [Unit]
 Description=Mimic GPU worker
+# Der Worker beendet sich planmaessig staendig (Leerlauf-Exit ist der Weg, auf
+# dem VRAM und RAM zuverlaessig zurueckkommen). Mit systemds Vorgabe von fuenf
+# Starts je zehn Sekunden reisst er das Limit und systemd nimmt dann die
+# SOCKET-Unit mit ins Aus -- Mimic ist danach dauerhaft tot, bis jemand von
+# Hand reset-failed ruft. Beobachtet am 2026-08-05 beim Eindaemmungstest.
+# Ungefaehrlich, weil Restart=no gilt: Starts kommen nur von Verbindungen,
+# also vom Client, nicht von systemd in einer Schleife.
+StartLimitIntervalSec=0
+# StartLimitIntervalSec gehoert in [Unit]; in [Service] wird es stillschweigend
+# ignoriert ("Unknown key ... ignoring") -- geprueft mit systemd-analyze verify.
 Requires=mimic-worker.socket
 After=mimic-worker.socket
 
@@ -7,6 +17,12 @@ After=mimic-worker.socket
 Type=simple
 ExecStart=%h/.local/bin/mimic-worker
 Environment=HF_HUB_OFFLINE=1
+# numba (ueber librosa) legt seinen JIT-Cache sonst neben die Quelldateien --
+# unter ProtectHome=read-only scheitert der Worker daran beim ersten Laden.
+Environment=NUMBA_CACHE_DIR=%t/mimic/numba
+# Explizit, damit ein gesetztes XDG_CACHE_HOME die Checkpoints nicht verlegt:
+# offline plus falscher Cache-Pfad ergibt "kein Snapshot gefunden".
+Environment=HF_HOME=%h/.cache/huggingface
 Restart=no
 MemoryHigh=3G
 MemoryMax=7G

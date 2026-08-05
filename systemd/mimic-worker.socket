@@ -1,5 +1,11 @@
 [Unit]
 Description=Mimic GPU worker socket
+# Auch hier noetig, nicht nur im Service: faellt der getriggerte Dienst zu oft,
+# geht die SOCKET-Unit mit in den Zustand failed ('service-start-limit-hit') und
+# Mimic ist dauerhaft unerreichbar. Der Worker beendet sich planmaessig staendig,
+# also ist haeufiges Starten hier der Normalfall und kein Fehlersignal.
+StartLimitIntervalSec=0
+OnFailure=mimic-worker-reset.service
 
 [Socket]
 ListenStream=%t/mimic/mimic-worker.socket

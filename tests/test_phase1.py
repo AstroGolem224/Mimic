@@ -122,11 +122,21 @@ class Phase1Tests(unittest.TestCase):
         create_voice(cls.voices)
         cls.front_socket = cls.root / "frontend.socket"
         cls.worker_socket = cls.root / "worker.socket"
+        # Umgebung und Fristen werden global veraendert -- beides muss in
+        # tearDownClass zurueck. Sonst erben spaetere Suites im selben Prozess
+        # den Temp-Socket, ein falsches XDG_RUNTIME_DIR (womit `systemctl --user`
+        # den Bus nicht mehr findet) und eine 0.1-s-Frist, gegen die kein echtes
+        # Modell laden kann. Genau daran sind die GPU-Tests zuerst gescheitert.
+        cls.saved_env = {key: os.environ.get(key) for key in
+                         ("MIMIC_VOICES_DIR", "MIMIC_SOCKET", "MIMIC_WORKER_SOCKET",
+                          "XDG_RUNTIME_DIR")}
         os.environ["MIMIC_VOICES_DIR"] = str(cls.voices)
         os.environ["MIMIC_SOCKET"] = str(cls.front_socket)
         os.environ["MIMIC_WORKER_SOCKET"] = str(cls.worker_socket)
         os.environ["XDG_RUNTIME_DIR"] = str(cls.root)
         from mimic import frontend
+        cls.saved_timeouts = {name: getattr(frontend, name) for name in
+                              ("FIRST_AUDIO_TIMEOUT", "HEADER_TIMEOUT", "FRAME_TIMEOUT")}
         frontend.FIRST_AUDIO_TIMEOUT = 0.1
         frontend.HEADER_TIMEOUT = 0.1
         frontend.FRAME_TIMEOUT = 0.2
@@ -142,6 +152,13 @@ class Phase1Tests(unittest.TestCase):
         cls.server.server_close()
         cls.stub.close()
         cls.temp.cleanup()
+        for name, value in cls.saved_timeouts.items():
+            setattr(cls.frontend_module, name, value)
+        for key, value in cls.saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def post(self, value: dict | bytes):
         body = value if isinstance(value, bytes) else json.dumps(value).encode()
