@@ -17,7 +17,8 @@ from pathlib import Path
 
 from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_path
 from .protocol import finish_chunks, write_chunk, encode_frame
-from .voices import VoiceError, apply_pronunciation, close_voice, load_voice
+from .voices import (VoiceError, apply_pronunciation, close_voice, load_voice,
+                     split_sentences)
 
 REVISIONS = {
     "mf": ("dots-studio/dots.tts-mf", "25c53fb462e57087e52237daa5ea30df1c5cc328"),
@@ -27,6 +28,7 @@ MIN_VRAM_MIB = int(os.environ.get("MIMIC_MIN_VRAM_MIB", "8000"))
 IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
 MAX_WAITING = 4
+PAUSE_MS = int(os.environ.get("MIMIC_PAUSE_MS", "180"))  # Atempause zwischen Saetzen
 
 
 class WorkerRefusal(Exception):
@@ -125,22 +127,35 @@ class Engine:
                 outcome = "cancelled"
                 return
             text = apply_pronunciation(request["text"])
-            generator = runtime.generate_stream(text=text, language="en",
-                                                prompt_audio_path=profile.wav_path,
-                                                prompt_text=profile.prompt_text)
-            for chunk in generator:
-                if job.cancelled.is_set():
-                    outcome = "cancelled"
-                    return
-                if time.monotonic() - started > REQUEST_TIMEOUT:
-                    raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
-                pcm = tensor_to_pcm(chunk)
-                if first_audio_at is None:
-                    first_audio_at = time.monotonic()
-                samples += len(pcm) // 2
-                if not self.emit(job, "A", pcm):
-                    outcome = "cancelled"
-                    return
+            # Satzweise statt am Stueck: sonst haengen die Saetze ohne Atempause
+            # aneinander. Die Zerlegung fasst kurze Bruchstuecke wieder zusammen
+            # -- Fragmente ohne Satzkontext halluziniert das Modell voll.
+            saetze = split_sentences(text) or [text]
+            pause = bytes(int(sample_rate * PAUSE_MS / 1000) * 2)
+            for index, satz in enumerate(saetze):
+                if index:
+                    if not self.emit(job, "A", pause):
+                        outcome = "cancelled"
+                        return
+                    samples += len(pause) // 2
+                generator = runtime.generate_stream(text=satz, language="en",
+                                                    prompt_audio_path=profile.wav_path,
+                                                    prompt_text=profile.prompt_text)
+                for chunk in generator:
+                    if job.cancelled.is_set():
+                        outcome = "cancelled"
+                        return
+                    if time.monotonic() - started > REQUEST_TIMEOUT:
+                        raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
+                    pcm = tensor_to_pcm(chunk, profile.gain)
+                    if first_audio_at is None:
+                        first_audio_at = time.monotonic()
+                    samples += len(pcm) // 2
+                    if not self.emit(job, "A", pcm):
+                        outcome = "cancelled"
+                        return
+                generator.close()
+                generator = None
             self.emit(job, "E", json.dumps({"status": "ok", "samples": samples},
                                             separators=(",", ":")).encode())
             outcome, reason = "ok", ""
@@ -261,9 +276,15 @@ def peak_vram_mib() -> int:
         return 0
 
 
-def tensor_to_pcm(chunk) -> bytes:
+def tensor_to_pcm(chunk, gain: float = 1.0) -> bytes:
+    """Verstaerkung kommt aus dem Stimmprofil und ist je Stimme konstant --
+    deshalb hier ein Faktor und keine Normalisierung ueber die Aeusserung:
+    letztere ginge im Stream nicht, ohne zwischen Chunks zu pumpen. Das
+    clamp danach ist der Peak-Anschlag."""
     import torch
     audio = chunk.detach().squeeze().to(device="cpu", dtype=torch.float32)
+    if gain != 1.0:
+        audio = audio * gain
     return (audio.clamp(-1, 1) * 32767).to(torch.int16).numpy().astype("<i2", copy=False).tobytes()
 
 

@@ -27,6 +27,61 @@ class VoiceProfile:
     name: str
     wav_path: str
     prompt_text: str
+    gain: float = 1.0
+
+
+# Zielpegel der Ausgabe. Gemessen am 2026-08-05: Mimic liefert den Pegel der
+# Referenz getreu wieder -- Klon -29.6, Referenz -30.9, echte Aufnahmen -30.1
+# dBFS RMS. Leise ist also die Quelle, nicht das Modell. Deshalb wird die
+# Verstaerkung je Stimme EINMAL aus der Referenz abgeleitet statt pro Aeusserung
+# normalisiert: das ist streamingtauglich und pumpt nicht zwischen Chunks.
+ZIEL_RMS_DBFS = -23.0
+MAX_GAIN = 8.0          # Obergrenze, damit eine fast stumme Referenz nicht Rauschen hochzieht
+
+
+def _reference_gain(wav_path: str) -> float:
+    """Faktor, der die Referenz auf ZIEL_RMS_DBFS hebt."""
+    import array
+    import math
+    with wave.open(wav_path, "rb") as wav:
+        if wav.getsampwidth() != 2:
+            return 1.0
+        samples = array.array("h")
+        samples.frombytes(wav.readframes(wav.getnframes()))
+    if not samples:
+        return 1.0
+    quadratsumme = sum(float(value) * value for value in samples)
+    rms = math.sqrt(quadratsumme / len(samples)) / 32768.0
+    if rms <= 0:
+        return 1.0
+    return min(10 ** (ZIEL_RMS_DBFS / 20) / rms, MAX_GAIN)
+
+
+_SATZENDE = re.compile(r"(?<=[.!?…])[\"')\]]*\s+")
+MIN_SATZ_ZEICHEN = 12
+
+
+def split_sentences(text: str) -> list[str]:
+    """Zerlegt in Saetze, damit der Worker Pausen dazwischen setzen kann.
+
+    Sehr kurze Bruchstuecke werden bewusst wieder angehaengt: Phase 0 hat
+    gemessen, dass dots.tts bei Fragmenten ohne Satzkontext halluziniert
+    ("ähhh gemerdscht") und Inhalt verliert. Ganze Saetze sind unkritisch,
+    Zwei-Wort-Schnipsel nicht.
+    """
+    teile = [teil.strip() for teil in _SATZENDE.split(text.strip()) if teil.strip()]
+    if not teile:
+        return []
+    zusammengefasst: list[str] = []
+    for teil in teile:
+        if zusammengefasst and len(teil) < MIN_SATZ_ZEICHEN:
+            zusammengefasst[-1] = f"{zusammengefasst[-1]} {teil}"
+        else:
+            zusammengefasst.append(teil)
+    if len(zusammengefasst) > 1 and len(zusammengefasst[0]) < MIN_SATZ_ZEICHEN:
+        zusammengefasst[1] = f"{zusammengefasst[0]} {zusammengefasst[1]}"
+        zusammengefasst.pop(0)
+    return zusammengefasst
 
 
 def default_voices_dir() -> Path:
@@ -93,8 +148,9 @@ def load_voice(name: str, voices_dir: Path | None = None) -> VoiceProfile:
         if not 3 <= duration <= 60:
             raise VoiceError("invalid_voice_profile", "ref.wav muss 3 bis 60 Sekunden lang sein")
         # Der Pfad muss nach Rueckkehr noch existieren; dup uebernimmt die Lebenszeit.
+        gain = _reference_gain(wav_path)
         kept_fd = os.dup(wav_fd)
-        return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt)
+        return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain)
     finally:
         for fd in (txt_fd, wav_fd, profile_fd, root_fd):
             if fd is not None:
