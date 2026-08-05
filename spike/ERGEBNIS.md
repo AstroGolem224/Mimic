@@ -55,6 +55,45 @@ Worker erreicht real 5.9 GiB und wurde dadurch bei jeder Anfrage gedrosselt
 (`memory.events high` = 17970). Auf 6G angehoben ist die Drosselung weg (`high 0`) —
 die Latenz änderte das allerdings **nicht** messbar, das Reclaim war billig.
 
+## Nachtrag 2026-08-06 — Kriterium C fällt derzeit durch, Ursache offen
+
+Dasselbe Instrument (`tools/messreihe_ttfa.py`, n = 60, Modus `mf`), das am 2026-08-05
+p95 **250.0 ms** lieferte, liefert nach Phase 2a–2d und 2b:
+
+| | 2026-08-05 | 2026-08-06 |
+|---|---|---|
+| min | 226.1 ms | 229.4 ms |
+| median | 239.5 ms | 289.3 ms |
+| **p95** | **250.0 ms** | **585.0 ms** |
+| max | 253.5 ms | 667.1 ms |
+
+**Der Boden ist unverändert, nur der Schwanz ist explodiert.** Das ist das Muster von
+Konkurrenz oder Warteschlangeneffekten, nicht von einem langsamer gewordenen Modell.
+Kriterium C und P2-F sind damit **derzeit nicht erfüllt**.
+
+Vier Hypothesen geprüft und **alle vier widerlegt**:
+
+1. *Wiederholung stummer Takes* — in 36 Aufrufen `stumme_takes=0`, kein einziger.
+2. *Verschobener Messpunkt* (seit 2a-bis zählt der erste **hörbare** Rahmen) — nachgemessen:
+   der erste Rahmen enthält bereits Ton (Spitzen 18479, 27568, 2331 gegen `STUMM_PEAK`
+   1842). Erstes Byte und erster Ton fallen zusammen.
+3. *GPU-Drosselung* — `nvidia-smi -q -d PERFORMANCE`: kein einziger Grund aktiv.
+4. *Frontend / neuer Leser-Thread* — die Streuung steht schon in `ttfa_ms` des **Workers**,
+   also vor jeder Frontend-Beteiligung.
+
+Ebenfalls kein Trend über die Aufrufe: eine Rampenmessung über drei Kaltstart-Zyklen
+(`tools/messreihe_warmrampe.py`) zeigt Aufruf 1 im Median bei 295 ms, *niedriger* als die
+Aufrufe 2, 3 und 5. Es gibt kein Einschwingen — die Werte springen durchgehend.
+
+**Verbleibender Verdacht, unbelegt:** der Nebenläufigkeits-Umbau aus Phase 2b
+(Condition-Eigentümerschleife) oder ein Umgebungsfaktor, den ich nicht gefunden habe. Auf
+der GPU liegt ein zweiter Mieter (`qwen-tts-gui`, 6.4 GiB), der aber bei 1.4 % CPU nur
+Speicher hält.
+
+**Nächster Schritt, benannt statt geraten:** Bisect. Denselben Lauf gegen den Stand vor
+Phase 2b (`13a4830^`) in einem Worktree, gleiche Maschine, gleicher Korpus. Das trennt
+Code von Umgebung. Vorher keine Aussage darüber, ob P2-F erreichbar ist.
+
 ## Zu B und B2 — was wirklich passiert ist
 
 **B ist durchgefallen, maximal.** 12 von 12 Proben korrekt zugeordnet; per Zufall wäre das
