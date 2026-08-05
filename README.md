@@ -4,8 +4,32 @@ Self-hosted Voice-Cloning-TTS. Engine: [dots.tts](https://github.com/rednote-hil
 
 Zwei Konsumenten: **dAImon** (Charakterstufe, Streaming) und **MMC** (Sprachaufnahmen zur Bauzeit).
 
-**Stand: Phase 0 abgenommen (2026-08-05).** Der Dienst existiert noch nicht. `spike/` ist Wegwerfcode, der
-genau eine Frage beantwortet: taugt dots.tts auf einer RTX 5090 für diesen Zweck?
+**Stand: Phase 1 implementiert (2026-08-05).** Frontend und GPU-Worker werden getrennt
+über Unix-Sockets aktiviert. `spike/` bleibt unveränderter Wegwerfcode, der die
+gemessenen Betriebsentscheidungen dokumentiert.
+
+## Dienst und CLI
+
+```bash
+uv tool install --python 3.12 .
+install -d -m700 ~/.local/share/mimic/voices
+install -Dm644 systemd/mimic.socket ~/.config/systemd/user/mimic.socket
+install -Dm644 systemd/mimic.service ~/.config/systemd/user/mimic.service
+install -Dm644 systemd/mimic-worker.socket ~/.config/systemd/user/mimic-worker.socket
+install -Dm644 systemd/mimic-worker.service ~/.config/systemd/user/mimic-worker.service
+systemctl --user daemon-reload
+systemctl --user enable --now mimic.socket mimic-worker.socket
+
+uv run mimic say "Hallo" --voice matthias --mode mf
+uv run mimic say "Hallo" -o hallo.wav
+uv run mimic status
+uv run mimic voices
+```
+
+Stimmprofile liegen unter `~/.local/share/mimic/voices/<name>/` als `ref.wav`
+(48 kHz mono, 3–60 Sekunden) und wörtliches UTF-8-Transkript `ref.txt`.
+Der GPU-freie Nachweis läuft mit `bash tests/run.sh`; die destruktiven echten
+Eindämmungsproben sind separat über `bash tests/run.sh --gpu` erreichbar.
 
 Plan, Glossar und ADRs: `~/Dokumente/UMBRA-Notes/DDs/Mimic/`
 

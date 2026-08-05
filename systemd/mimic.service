@@ -1,0 +1,17 @@
+[Unit]
+Description=Mimic CPU frontend
+Requires=mimic.socket
+After=mimic.socket
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mimic-frontend
+Restart=no
+MemoryHigh=256M
+MemoryMax=512M
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/mimic/voices %t/mimic

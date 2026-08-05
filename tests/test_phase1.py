@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import socket
+import tempfile
+import threading
+import time
+import unittest
+import wave
+from pathlib import Path
+
+from mimic.protocol import encode_frame, finish_chunks, json_frame, read_frame, write_chunk
+
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path: Path, timeout: float = 2):
+        super().__init__("localhost", timeout=timeout)
+        self.path = str(path)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.path)
+
+
+class StubWorker:
+    def __init__(self, path: Path):
+        from http.server import BaseHTTPRequestHandler
+        from mimic.frontend import ThreadingUnixServer
+
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers["Content-Length"])
+                request = json.loads(self.rfile.read(length))
+                owner.requests.append(request)
+                text = request["text"]
+                if text == "busy":
+                    body = b'{"reason":"busy","message":"voll"}'
+                    self.send_response(429)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if text == "low-vram":
+                    body = b'{"reason":"insufficient_vram","message":"knapp"}'
+                    self.send_response(503)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.mimic.frames")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                if text == "timeout":
+                    time.sleep(0.35)
+                    return
+                head = {"v": 1, "sample_rate": 48000, "channels": 1, "format": "s16le",
+                        "request_id": "stub-id", "mode": request["mode"], "voice": request["voice"]}
+                try:
+                    write_chunk(self.wfile, json_frame("H", head))
+                    if text == "cancel":
+                        for number in range(100):
+                            owner.generated = number + 1
+                            write_chunk(self.wfile, encode_frame("A", b"\0\0" * 32))
+                            time.sleep(0.02)
+                    else:
+                        write_chunk(self.wfile, encode_frame("A", b"\0\0" * 64))
+                        write_chunk(self.wfile, json_frame("E", {"status": "ok", "samples": 64}))
+                        finish_chunks(self.wfile)
+                except (BrokenPipeError, ConnectionResetError):
+                    owner.cancelled.set()
+
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        self.server = ThreadingUnixServer(str(path), Handler)
+        self.requests = []
+        self.generated = 0
+        self.cancelled = threading.Event()
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def create_voice(root: Path, name: str = "matthias") -> Path:
+    directory = root / name
+    directory.mkdir(parents=True)
+    root.chmod(0o700)
+    directory.chmod(0o700)
+    with wave.open(str(directory / "ref.wav"), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(48_000)
+        output.writeframes(b"\0\0" * (48_000 * 3))
+    (directory / "ref.txt").write_text("Dies ist Matthias.", encoding="utf-8")
+    (directory / "ref.wav").chmod(0o600)
+    (directory / "ref.txt").chmod(0o600)
+    return directory
+
+
+class Phase1Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.temp.name)
+        cls.voices = cls.root / "voices"
+        create_voice(cls.voices)
+        cls.front_socket = cls.root / "frontend.socket"
+        cls.worker_socket = cls.root / "worker.socket"
+        os.environ["MIMIC_VOICES_DIR"] = str(cls.voices)
+        os.environ["MIMIC_SOCKET"] = str(cls.front_socket)
+        os.environ["MIMIC_WORKER_SOCKET"] = str(cls.worker_socket)
+        os.environ["XDG_RUNTIME_DIR"] = str(cls.root)
+        from mimic import frontend
+        frontend.FIRST_AUDIO_TIMEOUT = 0.1
+        frontend.HEADER_TIMEOUT = 0.1
+        frontend.FRAME_TIMEOUT = 0.2
+        cls.frontend_module = frontend
+        cls.stub = StubWorker(cls.worker_socket)
+        cls.server = frontend._server(frontend.FrontendHandler, cls.front_socket)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.stub.close()
+        cls.temp.cleanup()
+
+    def post(self, value: dict | bytes):
+        body = value if isinstance(value, bytes) else json.dumps(value).encode()
+        conn = UnixConnection(self.front_socket)
+        conn.request("POST", "/speak", body, {"Content-Length": str(len(body)),
+                                               "Content-Type": "application/json"})
+        return conn, conn.getresponse()
+
+    def assert_reason(self, value, status, reason):
+        conn, response = self.post(value)
+        self.assertEqual(status, response.status)
+        self.assertEqual(reason, json.loads(response.read())["reason"])
+        response.close()
+        conn.close()
+
+    def test_01_frontend_imports_no_torch(self):
+        import sys
+        self.assertNotIn("torch", sys.modules)
+
+    def test_02_protocol_contract(self):
+        conn, response = self.post({"text": "Hallo", "voice": "matthias", "mode": "mf"})
+        self.assertEqual(200, response.status)
+        frames = []
+        while True:
+            kind, payload = read_frame(response)
+            frames.append((kind, payload))
+            if kind == "E":
+                break
+        self.assertEqual(["H", "A", "E"], [kind for kind, _ in frames])
+        head = json.loads(frames[0][1])
+        self.assertEqual({"v", "sample_rate", "channels", "format", "request_id", "mode", "voice"},
+                         set(head))
+        self.assertEqual("ok", json.loads(frames[-1][1])["status"])
+        response.close()
+        conn.close()
+
+    def test_03_all_pre_stream_reasons(self):
+        self.assert_reason(b"{", 400, "bad_request")
+        self.assert_reason({"text": "x" * 1001}, 400, "text_too_long")
+        self.assert_reason({"text": "x", "voice": "missing"}, 404, "unknown_voice")
+        broken = self.voices / "broken"
+        broken.mkdir(exist_ok=True)
+        broken.chmod(0o700)
+        (broken / "ref.txt").write_text("x")
+        (broken / "ref.txt").chmod(0o600)
+        self.assert_reason({"text": "x", "voice": "broken"}, 422, "invalid_voice_profile")
+        self.assert_reason({"text": "busy"}, 429, "busy")
+        self.assert_reason({"text": "low-vram"}, 503, "insufficient_vram")
+        self.assert_reason({"text": "timeout"}, 504, "worker_timeout")
+        old = self.frontend_module.worker_socket_path
+        self.frontend_module.worker_socket_path = lambda: self.root / "does-not-exist"
+        try:
+            self.assert_reason({"text": "x"}, 503, "worker_unavailable")
+        finally:
+            self.frontend_module.worker_socket_path = old
+
+    def test_04_path_traversal_and_symlink(self):
+        before = len(self.stub.requests)
+        for voice in ("../matthias", "/etc", "has.dot", "A"):
+            self.assert_reason({"text": "x", "voice": voice}, 404, "unknown_voice")
+        evil = self.voices / "evil"
+        evil.mkdir(exist_ok=True)
+        evil.chmod(0o700)
+        (evil / "ref.wav").symlink_to(self.voices / "matthias/ref.wav")
+        (evil / "ref.txt").write_text("nicht lesen")
+        (evil / "ref.txt").chmod(0o600)
+        self.assert_reason({"text": "x", "voice": "evil"}, 422, "invalid_voice_profile")
+        self.assertEqual(before, len(self.stub.requests))
+
+    def test_05_limits_before_worker(self):
+        before = len(self.stub.requests)
+        self.assert_reason({"text": "x" * 1001}, 400, "text_too_long")
+        conn = UnixConnection(self.front_socket)
+        huge = b"x" * (64 * 1024 + 1)
+        conn.request("POST", "/speak", huge, {"Content-Length": str(len(huge))})
+        response = conn.getresponse()
+        self.assertEqual("bad_request", json.loads(response.read())["reason"])
+        response.close()
+        conn.close()
+        self.assertEqual(before, len(self.stub.requests))
+        self.assert_reason({"text": "busy"}, 429, "busy")
+
+        # Auch die echte Worker-Warteschlange lehnt den fuenften Wartenden ab,
+        # ohne einen Ladepfad zu betreten; mf wird vor bereits wartendem soar gezogen.
+        import itertools
+        import queue
+        from mimic import worker
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.jobs = queue.PriorityQueue(worker.MAX_WAITING)
+        engine.sequence = itertools.count()
+        engine.runtimes = {}
+        engine.write_status = lambda *_args: None
+        soar = engine.submit({"text": "x", "voice": "matthias", "mode": "soar"})
+        mf = engine.submit({"text": "x", "voice": "matthias", "mode": "mf"})
+        self.assertIs(mf, engine.jobs.get_nowait())
+        self.assertIs(soar, engine.jobs.get_nowait())
+        for _ in range(worker.MAX_WAITING):
+            engine.submit({"text": "x", "voice": "matthias", "mode": "soar"})
+        with self.assertRaises(worker.WorkerRefusal) as raised:
+            engine.submit({"text": "x", "voice": "matthias", "mode": "mf"})
+        self.assertEqual("busy", raised.exception.reason)
+
+    def test_06_disconnect_stops_generation(self):
+        self.stub.cancelled.clear()
+        conn, response = self.post({"text": "cancel"})
+        self.assertEqual("H", read_frame(response)[0])
+        self.assertEqual("A", read_frame(response)[0])
+        response.close()
+        conn.close()
+        self.assertTrue(self.stub.cancelled.wait(1.5))
+        stopped_at = self.stub.generated
+        time.sleep(0.1)
+        self.assertEqual(stopped_at, self.stub.generated)
+        self.assertLess(stopped_at, 100)
+
+    def test_07_vram_gate_prevents_load(self):
+        from mimic import worker
+        marker = self.root / "loaded"
+        os.environ["MIMIC_VRAM_FREE_MIB"] = "7999"
+        os.environ["MIMIC_FAKE_LOAD_MARKER"] = str(marker)
+        try:
+            engine = worker.Engine.__new__(worker.Engine)
+            with self.assertRaises(worker.WorkerRefusal) as raised:
+                engine._load("mf")
+            self.assertEqual("insufficient_vram", raised.exception.reason)
+            self.assertFalse(marker.exists())
+        finally:
+            os.environ.pop("MIMIC_VRAM_FREE_MIB", None)
+            os.environ.pop("MIMIC_FAKE_LOAD_MARKER", None)
+
+
+if __name__ == "__main__":
+    unittest.main()

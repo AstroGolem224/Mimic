@@ -1,0 +1,18 @@
+[Unit]
+Description=Mimic GPU worker
+Requires=mimic-worker.socket
+After=mimic-worker.socket
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mimic-worker
+Environment=HF_HUB_OFFLINE=1
+Restart=no
+MemoryHigh=3G
+MemoryMax=7G
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/mimic/voices %t/mimic

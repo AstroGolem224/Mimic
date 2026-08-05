@@ -1,0 +1,44 @@
+[project]
+name = "mimic-tts"
+version = "0.1.0"
+description = "Lokaler, socket-aktivierter Voice-Cloning-TTS-Dienst"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "dots-tts==0.2.1",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "transformers==4.57.0",
+    "librosa==0.11.0",
+    "soundfile==0.13.1",
+    "numpy==2.2.6",
+    "pydantic==2.12.5",
+    "pyyaml==6.0.3",
+    "safetensors==0.8.0rc0",
+]
+
+[project.scripts]
+mimic = "mimic.cli:main"
+mimic-frontend = "mimic.frontend:main"
+mimic-worker = "mimic.worker:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Ohne das findet hatchling nichts: das Projekt heisst mimic-tts, das Paket
+# aber mimic. Fehlt der Eintrag, scheitert schon `uv sync` -- und damit auch
+# die Entry-Points, auf die die systemd-Units zeigen.
+[tool.hatch.build.targets.wheel]
+packages = ["mimic"]
+
+[tool.uv]
+prerelease = "allow"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }

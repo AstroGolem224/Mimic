@@ -1,0 +1,9 @@
+[Unit]
+Description=Mimic GPU worker socket
+
+[Socket]
+ListenStream=%t/mimic/mimic-worker.socket
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+

@@ -93,11 +93,17 @@ def referenz() -> None:
           - durchsprechen, nicht Satz fuer Satz
           - ~10 s. Laenger bringt laut README nichts.
     """))
-    os.makedirs(STIMME, exist_ok=True)
+    # 0700/0600: der Dienst lehnt Profile mit weiteren Rechten ab (mimic/voices.py).
+    # Stimmklon-Material gehoert nicht world-readable ins Dateisystem.
+    os.makedirs(STIMME, mode=0o700, exist_ok=True)
+    os.chmod(STIMME, 0o700)
+    os.chmod(os.path.dirname(STIMME), 0o700)
     wav = f"{STIMME}/ref.wav"
     if eine("REFERENZ", text, wav):
         with open(f"{STIMME}/ref.txt", "w") as f:
             f.write(text + "\n")
+        os.chmod(wav, 0o600)
+        os.chmod(f"{STIMME}/ref.txt", 0o600)
         d = dauer_s(wav)
         print(f"\n  {wav}  ({d:.1f} s)")
         print(f"  {STIMME}/ref.txt")
