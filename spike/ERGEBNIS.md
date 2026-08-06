@@ -113,10 +113,56 @@ aktiv.
 leer (1694 MiB). Ein Prozess, der nur Speicher hält, sollte fremde Rechenzeit nicht
 verdoppeln — aber es ist der einzige benannte Unterschied, der übrig ist.
 
-**Nächster Schritt:** `qwen-tts-gui` beenden und dieselbe Reihe wiederholen. Das ist
-Matthias' Anwendung, also seine Entscheidung. Bis dahin gilt: **Kriterium C und P2-F sind
-auf dieser Maschine im aktuellen Zustand nicht erfüllt, und die Ursache liegt nicht im
-Mimic-Code.**
+### Fortsetzung — neun Hypothesen, neun Widerlegungen
+
+`qwen-tts-gui` beendet, Reihe wiederholt: **p95 950.2 ms, max 1752.8** — also **schlechter**
+statt besser. Auch dieser Verdacht ist tot.
+
+Was in allen Läufen stabil bleibt und was nicht:
+
+| | 05.08. | heute, alle Läufe |
+|---|---|---|
+| min | 226 ms | **228–232 ms** |
+| median | 240 ms | **256–289 ms** |
+| p95 | 250 ms | 512–950 ms |
+| max | 254 ms | 638–1753 ms |
+
+**Boden und Median sind praktisch unverändert. Nur der Schwanz ist neu.** Die Mehrheit der
+Aufrufe ist so schnell wie gestern; eine Minderheit ist zwei- bis siebenmal langsamer.
+
+Ein reproduzierbarer Zusammenhang **besteht** mit der Textlänge:
+
+| Zeichen | median | max |
+|---|---|---|
+| 7 | 319 ms | 1753 ms |
+| 14 | 357 ms | 1669 ms |
+| 24 | 402 ms | 1376 ms |
+| 63 | 245 ms | 327 ms |
+| 70 | 255 ms | 928 ms |
+| 100 | **241 ms** | 344 ms |
+
+Kurze Äußerungen sind langsamer und spitzer. Das erklärt den Schwanz aber **nicht
+vollständig**: mit einem Korpus aus ausschließlich langen Texten (≥ 89 Zeichen) bleibt p95
+bei 512 ms. Und es sind **nicht** die stummen Takes — im selben Lauf nur 4 Wiederholungen
+in 60 Aufrufen, verteilt über 7, 14, 106 und 125 Zeichen.
+
+**Neun geprüfte und widerlegte Hypothesen:** stumme Takes · verschobener Messpunkt ·
+GPU-Drosselung · Frontend und Leser-Thread · Phase-2b-Code · Phase-2a-Code (Bisect) ·
+GPU-Takt · zweiter GPU-Mieter · Verstärkungsberechnung je Anfrage.
+
+**Die Ursache des Schwanzes ist offen.** Was bleibt, liegt innerhalb von dots.tts, torch
+oder CUDA und ist ohne Profiling der Modellinnereien nicht zu greifen.
+
+**Ein echter Fund war trotzdem dabei:** `_reference_gain` lief bei **jeder** Anfrage über
+710 656 Samples in einer Python-Schleife — gemessen 22 ms, rund zehn Prozent der
+Basis-TTFA, für einen Wert, der sich nie ändert. Jetzt zwischengespeichert über
+(Gerät, Inode, Größe, mtime): erster Aufruf 22 ms, danach 0 ms.
+
+**Bewertung für den Plan:** Kriterium C ist im aktuellen Maschinenzustand nicht erfüllt,
+und zwar nachweislich nicht wegen einer Code-Änderung. Für den dAImon-Pfad ist das
+weniger dramatisch als die Zahl suggeriert — dessen Auswahlregel schickt Texte unter
+80 Zeichen ohnehin an die Vorgabestufe, und lange Texte liegen im Median bei 241–256 ms.
+Vor P2-F gehört die Reihe auf einer frisch gestarteten Maschine wiederholt.
 
 ## Zu B und B2 — was wirklich passiert ist
 

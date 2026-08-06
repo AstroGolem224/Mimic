@@ -42,8 +42,31 @@ ZIEL_RMS_DBFS = -18.0
 MAX_GAIN = 8.0          # Obergrenze, damit eine fast stumme Referenz nicht Rauschen hochzieht
 
 
+# Die Verstaerkung haengt nur an der Referenzdatei, aendert sich also nie --
+# aber sie wurde bei JEDER Anfrage neu berechnet: eine Python-Schleife ueber
+# 710 656 Samples, gemessen 22 ms. Bei einer Basis-TTFA von 230 ms sind das
+# rund zehn Prozent, die niemand braucht. Schluessel ist (Geraet, Inode,
+# Groesse, mtime_ns) statt des Pfades: der Pfad ist /proc/self/fd/N und damit
+# je Aufruf ein anderer, waehrend der Inode dieselbe Datei festhaelt.
+_GAIN_CACHE: dict[tuple, float] = {}
+
+
 def _reference_gain(wav_path: str) -> float:
-    """Faktor, der die Referenz auf ZIEL_RMS_DBFS hebt."""
+    """Faktor, der die Referenz auf ZIEL_RMS_DBFS hebt. Ergebnis wird gemerkt."""
+    try:
+        info = os.stat(wav_path)
+        schluessel = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    except OSError:
+        schluessel = None
+    if schluessel is not None and schluessel in _GAIN_CACHE:
+        return _GAIN_CACHE[schluessel]
+    wert = _reference_gain_berechnen(wav_path)
+    if schluessel is not None:
+        _GAIN_CACHE[schluessel] = wert
+    return wert
+
+
+def _reference_gain_berechnen(wav_path: str) -> float:
     import array
     import math
     with wave.open(wav_path, "rb") as wav:
