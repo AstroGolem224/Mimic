@@ -90,9 +90,33 @@ Aufrufe 2, 3 und 5. Es gibt kein Einschwingen — die Werte springen durchgehend
 der GPU liegt ein zweiter Mieter (`qwen-tts-gui`, 6.4 GiB), der aber bei 1.4 % CPU nur
 Speicher hält.
 
-**Nächster Schritt, benannt statt geraten:** Bisect. Denselben Lauf gegen den Stand vor
-Phase 2b (`13a4830^`) in einem Worktree, gleiche Maschine, gleicher Korpus. Das trennt
-Code von Umgebung. Vorher keine Aussage darüber, ob P2-F erreichbar ist.
+### Bisect am 2026-08-06 — der Code ist entlastet
+
+Drei Stände, gleiche Maschine, gleiches Instrument, gleicher Korpus, innerhalb einer
+Stunde gemessen. Die alten Stände liefen aus `git worktree` gegen dieselbe venv.
+
+| Stand | p95 heute | zum Vergleich |
+|---|---|---|
+| `be5c6ac` | **685.0 ms** (max 1494) | **derselbe Commit maß am 05.08. 250.0 ms** |
+| `d5f651e` (vor Phase 2b) | 576.3 ms | |
+| `HEAD` (mit Phase 2b) | 585.0 ms | |
+
+**Derselbe Commit, der gestern 250 ms lieferte, liefert heute 685.** Damit ist weder
+Phase 2b noch Phase 2a–2d die Ursache — die Änderung liegt in der Umgebung, nicht im Code.
+
+Zusätzlich ausgeschlossen: **GPU-Takt**. Während der Inferenz gemessen: 2865–2925 MHz von
+3105 max bei 94 % Auslastung, P-State P1. Die Karte boostet sauber, kein Throttle-Grund
+aktiv.
+
+**Was bleibt, unbelegt:** auf der GPU liegt seit heute ein zweiter Mieter
+(`qwen-tts-gui`, 6364 MiB resident, 1.4 % CPU). Gestern war die Karte bis auf den Desktop
+leer (1694 MiB). Ein Prozess, der nur Speicher hält, sollte fremde Rechenzeit nicht
+verdoppeln — aber es ist der einzige benannte Unterschied, der übrig ist.
+
+**Nächster Schritt:** `qwen-tts-gui` beenden und dieselbe Reihe wiederholen. Das ist
+Matthias' Anwendung, also seine Entscheidung. Bis dahin gilt: **Kriterium C und P2-F sind
+auf dieser Maschine im aktuellen Zustand nicht erfüllt, und die Ursache liegt nicht im
+Mimic-Code.**
 
 ## Zu B und B2 — was wirklich passiert ist
 
