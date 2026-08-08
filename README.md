@@ -100,6 +100,21 @@ install -Dm755 systemd/mimic.desktop ~/.local/share/applications/mimic.desktop
 ln -sfn ~/.local/share/applications/mimic.desktop "$(xdg-user-dir DESKTOP)/mimic.desktop"
 ```
 
+## Ansage
+
+Dritter Konsument, klein: `tools/ansage.py` hängt als Stop-Hook in Claude Code
+und lässt Mimic sagen, dass eine Aufgabe fertig ist — »Fertig.« plus die ersten
+Sätze der letzten Antwort, gekürzt auf einen sprechbaren Satz.
+`tools/kopfhoerer.sh` holt vorher den Bluetooth-Kopfhörer zurück und setzt ihn
+als Standardsenke. Beides scheitert lautlos, wenn der Dienst aus ist oder keine
+MAC hinterlegt wurde: ein Hook darf die Sitzung nicht aufhalten und erst recht
+nicht kaputtmachen. Einrichtung und Hörprobe: [tools/ANSAGE.md](tools/ANSAGE.md).
+
+```bash
+echo XX:XX:XX:XX:XX:XX > ~/.config/mimic/kopfhoerer
+tools/ansage.py --sagen "Fertig. Zwei Tests repariert, alles grün."
+```
+
 Der GPU-freie Nachweis läuft mit `bash tests/run.sh`; die destruktiven echten
 Eindämmungsproben sind separat über `bash tests/run.sh --gpu` erreichbar.
 
