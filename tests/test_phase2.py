@@ -246,6 +246,19 @@ class WorkerDefectTests(unittest.TestCase):
         self.assertEqual(quiet + loud, audio[0])
         self.assertGreater(worker.peak_int16(audio[0]), worker.STUMM_PEAK)
 
+    def test_langer_stiller_vorlauf_wird_bis_auf_einen_chunk_verworfen(self):
+        # Gemessen am 2026-08-08: das Modell erzeugt stochastisch bis zu 16
+        # stille Chunks (je ~154 ms) vor dem ersten Ton. Wer die mitsendet,
+        # laesst den Hoerer die Stille abspielen -- bis zu einer Sekunde nach
+        # dem ersten Rahmen. Ein Chunk bleibt als Luft fuer weiche Anlaute.
+        from mimic import worker
+
+        quiet = pcm(worker.STUMM_PEAK)
+        loud = pcm(worker.STUMM_PEAK + 1)
+        _engine, events = run_engine(StubRuntime([[quiet] * 4 + [loud]]), {})
+        audio = [payload for kind, payload in events if kind == "A"]
+        self.assertEqual(quiet + loud, audio[0])
+
     def test_zwei_stumme_takes_senden_keinen_audio_rahmen(self):
         from mimic import worker
 

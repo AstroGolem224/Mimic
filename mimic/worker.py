@@ -269,6 +269,11 @@ class Engine:
         samples = 0
         wiederholungen = 0
         first_audio_at: float | None = None
+        # Diagnose zum TTFA-Schwanz: erster Chunk ueberhaupt gegen ersten hoerbaren.
+        # Ohne die beiden Zahlen ist "Modell rechnet langsam" nicht von "Modell
+        # erzeugt stille Vorlaufchunks" zu unterscheiden.
+        first_chunk_at: float | None = None
+        praefix_chunks = 0
         outcome, reason = "error", "worker_unavailable"
         profile = None
         generator = None
@@ -329,13 +334,20 @@ class Engine:
                             return
                         if time.monotonic() - started > REQUEST_TIMEOUT:
                             raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
+                        if first_chunk_at is None:
+                            first_chunk_at = time.monotonic()
                         pcm = tensor_to_pcm(chunk, profile.gain)
                         spitze = max(spitze, peak_int16(pcm))
                         if not hoerbar:
                             anfang.append(pcm)
                             if spitze <= STUMM_PEAK:
                                 continue
-                            pcm = b"".join(anfang)
+                            # Nur der letzte stille Chunk bleibt als Luft fuer
+                            # weiche Anlaute. Der Rest wird verworfen: er kostet
+                            # den Hoerer bis zu einer Sekunde Stille nach dem
+                            # ersten Rahmen, ohne etwas zu tragen.
+                            praefix_chunks = len(anfang) - 1
+                            pcm = b"".join(anfang[-2:])
                             anfang.clear()
                             hoerbar = True
                             if first_audio_at is None:
@@ -399,7 +411,10 @@ class Engine:
                       "audio_s": round(audio_s, 3), "rtf": round(elapsed / audio_s, 4) if audio_s else 0,
                       "outcome": outcome, "queue_wait_ms": round(queue_wait_ms, 1),
                       "vram_peak_mib": peak_vram_mib(), "rss_peak_mib": round(rss_mib, 1),
-                      "stumme_takes": wiederholungen}
+                      "stumme_takes": wiederholungen,
+                      "erstchunk_ms": (round((first_chunk_at - started) * 1000, 1)
+                                       if first_chunk_at else 0),
+                      "praefix_chunks": praefix_chunks}
             if reason:
                 fields["reason"] = reason
             print(" ".join(f"{key}={value}" for key, value in fields.items()), flush=True)

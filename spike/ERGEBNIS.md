@@ -164,6 +164,76 @@ weniger dramatisch als die Zahl suggeriert — dessen Auswahlregel schickt Texte
 80 Zeichen ohnehin an die Vorgabestufe, und lange Texte liegen im Median bei 241–256 ms.
 Vor P2-F gehört die Reihe auf einer frisch gestarteten Maschine wiederholt.
 
+## Nachtrag 2026-08-08 — der Bisect hat dreimal dieselbe Datei gemessen
+
+Der Dienst lief nicht aus dem Repo. `systemd` startet
+`~/.local/bin/mimic-worker`, und das zeigt auf eine **nicht-editierbare
+`uv tool`-Kopie**, eingefroren am 05.08. um 22:21 — Stand `43d123d`. Der Bisect
+vom 06.08. startete drei Worktrees, sprach aber jedes Mal über denselben Socket
+mit demselben eingefrorenen Worker. Deshalb kamen 685 / 576 / 585 ms heraus:
+**gemessen wurde dreimal dieselbe Datei.** Die Entlastung des Codes war wertlos,
+und die 22 ms aus `57d6b0c` liefen im Dienst nie.
+
+Behoben, indem das installierte Paket ein Link aufs Repo ist:
+`~/.local/share/uv/tools/mimic-tts/.../site-packages/mimic -> Github/Mimic/mimic`.
+Die alte Kopie liegt daneben als `mimic.snapshot-43d123d`.
+
+### Die Ursache des Schwanzes: das Modell schweigt erst
+
+Zwei neue Journal-Felder trennen, was vorher zusammenfiel — `erstchunk_ms` (erster
+Chunk überhaupt) und `praefix_chunks` (davon stumm):
+
+| praefix_chunks | 0 | 2 | 3 | 6 |
+|---|---|---|---|---|
+| TTFA | 190 ms | 370 ms | 455 ms | 720 ms |
+
+`erstchunk_ms` liegt in **jedem** Fall bei 180–205 ms. Die Rechenleistung streut
+nicht. Die gesamte Streuung ist stochastisch erzeugte **führende Stille**: 0 bis 16
+Chunks à ~154 ms, unabhängig von Textlänge und Maschinenzustand. Damit war
+Hypothese 2 („verschobener Messpunkt", an einer Einzelprobe verworfen) von Anfang
+an die richtige — der Filter aus 2a-bis hat den Messpunkt vom ersten Byte auf den
+ersten Ton verschoben, und dazwischen liegt eben diese Stille.
+
+Auf frisch gebooteter Maschine, GPU bis auf den Desktop leer: p95 769 ms. Damit ist
+auch „Umgebung" widerlegt.
+
+### Zwei Hebel gemessen, einer trägt
+
+**Referenz-Stille abschneiden** (14.81 s → 13.47 s, Vorlauf 84 ms und Nachlauf
+1312 ms weg): Median **609 ms** statt 242 — deutlich **schlechter**. Widerlegt.
+
+**`language="de"` statt `en`** auf deutschem Text: p95 hörbar 1046 ms gegen 858 ms
+mit `en`. Kein Gewinn, und es stünde gegen den Blindtest aus Phase 0. Verworfen.
+
+**Stillen Vorlauf verwerfen statt mitsenden** — trägt. Bisher wurden die
+zurückgehaltenen stillen Chunks beim ersten hörbaren Rahmen alle mitgeschickt; der
+Hörer spielt sie ab und hört Sprache bis zu eine Sekunde nach Ankunft des Rahmens.
+Jetzt bleibt nur der letzte stille Chunk als Luft für weiche Anlaute.
+
+### Was P2-F wirklich misst — und was es sagt
+
+`tools/messreihe_ttfa.py` stoppte bei **Ankunft** des ersten Rahmens. P2-F verlangt
+das erste **hörbare Sample**. Führende Stille im Rahmen zählte also nicht mit. Das
+Instrument misst jetzt beides.
+
+Alle Zahlen n = 60, warmer Dienst, frisch gebootete Maschine, Korpus eingefroren:
+
+| | Ankunft p95 | **hörbar p95** | hörbar median | hörbar max |
+|---|---|---|---|---|
+| vorher (Vorlauf mitgesendet) | 803 ms | **1945 ms** | 378 ms | 3212 ms |
+| Vorlauf verworfen | 673 ms | **858 ms** | 293 ms | 2048 ms |
+| Vorlauf verworfen, `de` | 749 ms | 1046 ms | 412 ms | 1748 ms |
+
+Der Fix halbiert die tatsächliche Wartezeit auf Ton mehr als. **P2-F bleibt trotzdem
+gerissen**: 858 ms gegen 300 ms Budget. Die verbleibende Lücke ist reine Wartezeit
+auf ein Modell, das stochastisch bis zu 2.5 s Stille voranstellt — kein Pipeline-,
+Frontend- oder Maschinenproblem. Ohne Eingriff in dots.tts ist sie nicht zu
+schließen.
+
+Für den dAImon-Pfad heißt das: die Auswahlregel und der `sherpa`-Rückfall tragen die
+Alltagslast, nicht die 300 ms. Das gehört in eine Planrevision, nicht in eine
+nachträgliche Begründung innerhalb derselben Abnahme.
+
 ## Zu B und B2 — was wirklich passiert ist
 
 **B ist durchgefallen, maximal.** 12 von 12 Proben korrekt zugeordnet; per Zufall wäre das

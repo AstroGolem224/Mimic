@@ -18,6 +18,7 @@ Aufruf:  uv run --no-project --python 3.12 python tools/messreihe_ttfa.py [-n 60
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import random
 import statistics
@@ -30,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from mimic.frontend import UnixHTTPConnection, frontend_socket_path  # noqa: E402
 from mimic.protocol import read_frame  # noqa: E402
 
+STUMM_PEAK = int(32768 * 10 ** (-25.0 / 20))   # gleiche Schwelle wie der Worker
 MIN_FREI_MIB = 6000     # darunter nicht starten und nicht weitermessen
 SEED = 20260805
 
@@ -50,9 +52,27 @@ def perzentil(werte: list[float], p: float) -> float:
     return s[lo] + (s[hi] - s[lo]) * (k - lo)
 
 
-def eine_messung(text: str, mode: str) -> tuple[float, float, float]:
-    """(ttfa_s, gesamt_s, audio_s), gemessen beim Client."""
-    body = json.dumps({"text": text, "voice": "matthias", "mode": mode}).encode()
+STIMME = "matthias"
+
+
+def erster_lauter_index(pcm: bytes) -> int | None:
+    """Index des ersten Samples ueber STUMM_PEAK, oder None."""
+    werte = array.array("h")
+    werte.frombytes(pcm)
+    for i, wert in enumerate(werte):
+        if abs(wert) > STUMM_PEAK:
+            return i
+    return None
+
+
+def eine_messung(text: str, mode: str) -> tuple[float, float, float, float]:
+    """(ttfa_s, hoerbar_s, gesamt_s, audio_s), gemessen beim Client.
+
+    `hoerbar_s` ist die Zahl, die P2-F verlangt: wann der Hoerer Ton hoert.
+    Der Konsument spielt ab Ankunft des ersten Rahmens, also liegt Sample k
+    bei ttfa + k/48000 -- fuehrende Stille im Rahmen zaehlt mit.
+    """
+    body = json.dumps({"text": text, "voice": STIMME, "mode": mode}).encode()
     conn = UnixHTTPConnection(frontend_socket_path(), 180)
     t0 = time.perf_counter()
     conn.request("POST", "/speak", body, {"Content-Type": "application/json",
@@ -61,6 +81,7 @@ def eine_messung(text: str, mode: str) -> tuple[float, float, float]:
     if response.status != 200:
         raise RuntimeError(f"HTTP {response.status}: {response.read()[:200]!r}")
     ttfa = None
+    hoerbar = None
     samples = 0
     try:
         while True:
@@ -68,6 +89,10 @@ def eine_messung(text: str, mode: str) -> tuple[float, float, float]:
             if kind == "A":
                 if ttfa is None:
                     ttfa = time.perf_counter() - t0
+                if hoerbar is None:
+                    index = erster_lauter_index(payload)
+                    if index is not None:
+                        hoerbar = ttfa + (samples + index) / 48_000
                 samples += len(payload) // 2
             elif kind == "E":
                 ende = json.loads(payload)
@@ -77,14 +102,17 @@ def eine_messung(text: str, mode: str) -> tuple[float, float, float]:
     finally:
         response.close()
         conn.close()
-    return ttfa, time.perf_counter() - t0, samples / 48_000
+    return ttfa, hoerbar, time.perf_counter() - t0, samples / 48_000
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("-n", type=int, default=60)
     ap.add_argument("--mode", default="mf", choices=("mf", "soar"))
+    ap.add_argument("--voice", default="matthias")
     a = ap.parse_args()
+    global STIMME
+    STIMME = a.voice
 
     if frei_mib() < MIN_FREI_MIB:
         print(f"ABBRUCH: nur {frei_mib()} MiB frei, mindestens {MIN_FREI_MIB} noetig.")
@@ -113,14 +141,16 @@ def main() -> int:
         if frei_mib() < MIN_FREI_MIB:
             print(f"ABBRUCH bei {i}: nur noch {frei_mib()} MiB frei.")
             break
-        ttfa, gesamt, audio_s = eine_messung(text, a.mode)
+        ttfa, hoerbar, gesamt, audio_s = eine_messung(text, a.mode)
         roh.append({"i": i, "chars": len(text), "ttfa_s": ttfa,
-                    "gesamt_s": gesamt, "audio_s": audio_s,
+                    "hoerbar_s": hoerbar, "gesamt_s": gesamt, "audio_s": audio_s,
                     "rtf": gesamt / audio_s if audio_s else None})
         if i % 10 == 0:
             print(f"  {i}/{a.n}   frei {frei_mib()} MiB")
 
     ttfas = [r["ttfa_s"] for r in roh]
+    hoerbare = [r["hoerbar_s"] for r in roh if r["hoerbar_s"]]
+    p95_h = perzentil(hoerbare, 0.95)
     rtfs = [r["rtf"] for r in roh if r["rtf"]]
     p95 = perzentil(ttfas, 0.95)
     print(f"""
@@ -129,14 +159,19 @@ TTFA am Socket, mit Klonen, Modus {a.mode}, n={len(ttfas)}
   med  {statistics.median(ttfas)*1000:7.1f} ms
   p95  {p95*1000:7.1f} ms      (lineare Interpolation)
   max  {max(ttfas)*1000:7.1f} ms
+
+Bis zum ersten hoerbaren Sample -- das ist P2-F
+  med  {statistics.median(hoerbare)*1000:7.1f} ms
+  p95  {p95_h*1000:7.1f} ms
+  max  {max(hoerbare)*1000:7.1f} ms
 RTF med {statistics.median(rtfs):.4f}
 
-Kriterium C (p95 < 300 ms): {'PASS' if p95 < 0.300 else 'FAIL'}""")
+Kriterium C / P2-F (p95 hoerbar < 300 ms): {'PASS' if p95_h < 0.300 else 'FAIL'}""")
 
-    ziel = Path(__file__).resolve().parent.parent / f"out/messreihe_ttfa_{a.mode}.json"
+    ziel = Path(__file__).resolve().parent.parent / f"out/messreihe_ttfa_{a.mode}_{a.voice}.json"
     ziel.parent.mkdir(exist_ok=True)
     ziel.write_text(json.dumps({"n": len(ttfas), "mode": a.mode, "seed": SEED,
-                                "p95_s": p95, "median_s": statistics.median(ttfas),
+                                "p95_s": p95, "p95_hoerbar_s": p95_h, "median_s": statistics.median(ttfas),
                                 "rtf_median": statistics.median(rtfs), "roh": roh}, indent=1))
     print(f"Rohwerte: {ziel}")
     return 0
