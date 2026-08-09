@@ -675,20 +675,37 @@ class WorkerHandler(BaseHTTPRequestHandler):
 ENGINE: Engine
 
 
+def leerlauf_wache(server) -> threading.Event:
+    """Setzt das Ereignis genau dann, wenn `handle_request` ohne Verbindung endet.
+
+    `handle_request()` kehrt auch beim Verbindungseingang zurueck -- bei
+    ThreadingMixIn sogar sofort, weil der Handler in einem eigenen Thread laeuft.
+    Wer stattdessen die verstrichene Zeit misst, haelt eine Anfrage, die nach
+    langer Ruhe eintrifft, faelschlich fuer Leerlauf: sie wird angenommen,
+    dispatcht, und dann beendet die Schleife den Prozess. `daemon_threads` raeumt
+    den Handler-Thread dabei wortlos weg -- der Aufrufer sah "Worker starb vor dem
+    Stream", das Journal keinen Grund. Beobachtet am 2026-08-09, 290 s nach der
+    vorigen Verbindung.
+    """
+    leerlauf = threading.Event()
+    server.handle_timeout = leerlauf.set
+    return leerlauf
+
+
 def main() -> int:
     global ENGINE
     ENGINE = Engine()
     path = worker_socket_path()
     with _server(WorkerHandler, path) as server:
         server.timeout = IDLE_TIMEOUT
+        leerlauf = leerlauf_wache(server)
         # Ein Timeout am horchenden Socket beendet main direkt. Das ist absichtlich
         # kein Timer-Thread: erst der Prozessausgang gibt RAM und VRAM sicher frei.
         while True:
-            before = time.monotonic()
             server.handle_request()
             if ENGINE.fatal.is_set():
                 return 0
-            if time.monotonic() - before >= IDLE_TIMEOUT * 0.95:
+            if leerlauf.is_set():
                 return 0
 
 

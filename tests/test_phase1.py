@@ -507,3 +507,36 @@ class SetupTests(unittest.TestCase):
         zustaende = dict(install_units(quelle, ziel))
         self.assertEqual("ersetzt", zustaende[UNITS[0]])
         self.assertEqual("unveraendert", zustaende[UNITS[1]])
+
+
+class LeerlaufTests(unittest.TestCase):
+    """Der Leerlauf-Exit darf nur greifen, wenn wirklich niemand verbunden hat."""
+
+    def test_verbindung_ist_kein_leerlauf(self):
+        import socketserver
+
+        from mimic.frontend import _server
+        from mimic.worker import leerlauf_wache
+
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.recv(16)
+                self.request.sendall(b"da\n")
+
+        pfad = Path(self.enterContext(tempfile.TemporaryDirectory())) / "s.socket"
+        server = _server(Handler, pfad)
+        self.addCleanup(server.server_close)
+        server.timeout = 0.1
+        leerlauf = leerlauf_wache(server)
+
+        with socket.socket(socket.AF_UNIX) as client:
+            client.connect(str(pfad))
+            server.handle_request()
+            # Kehrt sofort zurueck, weil der Handler in einem eigenen Thread laeuft.
+            # Genau hier hielt die alte Zeitmessung eine spaete Anfrage fuer Leerlauf.
+            self.assertFalse(leerlauf.is_set())
+            client.sendall(b"hallo")
+            self.assertEqual(b"da\n", client.recv(16))
+
+        server.handle_request()
+        self.assertTrue(leerlauf.is_set())
