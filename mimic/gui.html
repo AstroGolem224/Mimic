@@ -634,7 +634,10 @@ Zeile ohne Kopf erbt den Sprecher von oben.
       </div>
     </div>
 
-    <audio id="kAudio" controls preload="none" style="display:none"></audio>
+    <!-- preload=metadata, nicht none: sonst steht die Laufzeit bis zum ersten
+         Druck auf Abspielen bei 0:00 / 0:00, und genau die Dauer will man nach
+         einer Aufnahme sofort sehen. -->
+    <audio id="kAudio" controls preload="metadata" style="display:none"></audio>
 
     <div class="reihe" id="kEntscheid" style="display:none;gap:7px">
       <button class="knopf" id="bBehalten">Behalten</button>
@@ -1082,9 +1085,15 @@ function pruefeName(){
   if(!gueltig){ hinweis.className = "hinweis schlimm";
     hinweis.textContent = "Nur Kleinbuchstaben, Ziffern, _ und -; Anfang alphanumerisch."; return; }
   const vorhanden = inventar.find(v => v.name === name);
-  if(vorhanden){
+  if(vorhanden && !vorhanden.ok){
+    // Ein defektes Profil ist meist der Rest eines abgebrochenen Versuchs.
+    // "existiert schon (? s)" waere hier die unbrauchbare Auskunft.
     hinweis.className = "hinweis warn";
-    hinweis.textContent = `${name} existiert schon (${vorhanden.dauer_s ?? "?"} s) — Aufnahme ` +
+    hinweis.textContent = `${name} liegt defekt vor (${vorhanden.grund}) — eine neue ` +
+      `Aufnahme ersetzt den Rest.`;
+  }else if(vorhanden){
+    hinweis.className = "hinweis warn";
+    hinweis.textContent = `${name} existiert schon (${vorhanden.dauer_s} s) — Aufnahme ` +
       `überschreibt die alte Referenz unwiderruflich.`;
   }else{
     hinweis.className = "hinweis gut";
