@@ -132,6 +132,86 @@ class Ansagetext(unittest.TestCase):
         self.assertEqual(ansage.ansagetext({"hook_event_name": "Notification"}), "Claude wartet.")
 
 
+class Einhaengen(unittest.TestCase):
+    """Fremde Einstellungen sind heilig -- hier darf nichts verlorengehen."""
+
+    def setUp(self):
+        self.pfad = Path(tempfile.mkdtemp()) / "settings.json"
+        self.programm = "/home/matthias/.local/bin/mimic-ansage"
+
+    def schreiben(self, inhalt: str) -> None:
+        self.pfad.write_text(inhalt, encoding="utf-8")
+
+    def gelesen(self) -> dict:
+        return json.loads(self.pfad.read_text(encoding="utf-8"))
+
+    def test_legt_datei_an(self):
+        code, meldung = ansage.einhaengen(self.pfad, self.programm)
+        self.assertEqual(code, 0, meldung)
+        haken = self.gelesen()["hooks"]
+        self.assertEqual(list(haken), ["Stop", "Notification"])
+        self.assertIn("mimic-ansage", haken["Stop"][0]["hooks"][0]["command"])
+
+    def test_erhaelt_fremde_einstellungen(self):
+        self.schreiben(json.dumps({
+            "permissions": {"allow": ["Bash(uv run:*)"]},
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+                {"type": "command", "command": "pruefen.sh"}]}]},
+        }))
+        code, meldung = ansage.einhaengen(self.pfad, self.programm)
+        self.assertEqual(code, 0, meldung)
+        wert = self.gelesen()
+        self.assertEqual(wert["permissions"], {"allow": ["Bash(uv run:*)"]})
+        self.assertEqual(wert["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "pruefen.sh")
+        self.assertIn("Stop", wert["hooks"])
+
+    def test_haengt_an_bestehende_stop_haken_an(self):
+        self.schreiben(json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": "sonstwas.sh"}]}]}}))
+        ansage.einhaengen(self.pfad, self.programm)
+        stop = self.gelesen()["hooks"]["Stop"]
+        self.assertEqual(len(stop), 2)
+        self.assertEqual(stop[0]["hooks"][0]["command"], "sonstwas.sh")
+
+    def test_zweimal_einhaengen_ergibt_einen_eintrag(self):
+        ansage.einhaengen(self.pfad, self.programm)
+        code, meldung = ansage.einhaengen(self.pfad, self.programm)
+        self.assertEqual(code, 0)
+        self.assertIn("schon eingehaengt", meldung)
+        self.assertEqual(len(self.gelesen()["hooks"]["Stop"]), 1)
+
+    def test_erkennt_sich_nach_pfadwechsel_wieder(self):
+        ansage.einhaengen(self.pfad, "/alt/mimic-ansage")
+        ansage.einhaengen(self.pfad, "/ganz/woanders/mimic-ansage")
+        self.assertEqual(len(self.gelesen()["hooks"]["Stop"]), 1)
+
+    def test_kaputtes_json_wird_nicht_angefasst(self):
+        self.schreiben("{das ist kaputt")
+        code, meldung = ansage.einhaengen(self.pfad, self.programm)
+        self.assertEqual(code, 1)
+        self.assertIn("kein gueltiges JSON", meldung)
+        self.assertEqual(self.pfad.read_text(encoding="utf-8"), "{das ist kaputt")
+
+    def test_unerwartete_struktur_wird_abgelehnt(self):
+        self.schreiben(json.dumps({"hooks": {"Stop": "nein"}}))
+        code, meldung = ansage.einhaengen(self.pfad, self.programm)
+        self.assertEqual(code, 1)
+        self.assertIn("keine Liste", meldung)
+
+    def test_sicherung_bei_bestehender_datei(self):
+        vorher = json.dumps({"model": "opus"})
+        self.schreiben(vorher)
+        ansage.einhaengen(self.pfad, self.programm)
+        sicherung = self.pfad.with_suffix(".json.vor-ansage")
+        self.assertEqual(sicherung.read_text(encoding="utf-8").strip(), vorher)
+
+    def test_leere_datei(self):
+        self.schreiben("")
+        code, _ = ansage.einhaengen(self.pfad, self.programm)
+        self.assertEqual(code, 0)
+        self.assertIn("Stop", self.gelesen()["hooks"])
+
+
 class AlsHook(unittest.TestCase):
     """Der Vertrag mit Claude Code: liest stdin, endet in 0, sagt nichts weiter."""
 

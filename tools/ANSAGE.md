@@ -4,14 +4,36 @@ Wenn Claude Code eine Aufgabe abschließt, spricht Mimic das Ergebnis über den
 Bluetooth-Kopfhörer — »Fertig.« plus die ersten Sätze der letzten Antwort. Der
 Kopfhörer wird dabei bei Bedarf selbst zurückgeholt.
 
-Diese Datei ist die Übergabe: alles bis auf Pairing und Hörprobe ist gebaut,
-der Rest steht unten als Ablauf. Alles Weitere braucht die Hardware und läuft
-deshalb erst am PC.
+## Einrichten
+
+```bash
+tools/einrichten.sh
+```
+
+Das installiert nach `~/.local/bin`, hinterlegt die MAC, hängt den Hook in
+`~/.claude/settings.json` ein und macht die Hörprobe. Zweimal aufrufen ist
+gefahrlos — jeder Schritt prüft erst, ob er nötig ist. `--nur-repo` lässt den
+globalen Hook weg, dann gilt die Ansage nur im Mimic-Repo.
+
+Einen Schritt macht das Skript **nicht**: koppeln. Der ist einmalig, interaktiv
+und braucht den PIN-Dialog.
+
+```bash
+bluetoothctl
+  scan on
+  pair  XX:XX:XX:XX:XX:XX
+  trust XX:XX:XX:XX:XX:XX      # ohne trust scheitert jedes spätere connect
+  quit
+```
+
+Ist noch nichts gekoppelt, sagt `einrichten.sh` genau das und bricht ab. Danach
+nochmal aufrufen.
 
 ## Teile
 
 | Datei | Aufgabe |
 |---|---|
+| `tools/einrichten.sh` | Installiert, hinterlegt, hängt ein, probt. |
 | `tools/ansage.py` | Hook. Liest das Transkript, kürzt, ruft `mimic say`. |
 | `tools/kopfhoerer.sh` | Verbindet den Kopfhörer und setzt die Standardsenke. |
 | `.claude/settings.json` | Verdrahtung für dieses Repo (`Stop` und `Notification`). |
@@ -23,71 +45,43 @@ MAC nicht eingetragen: jeder Pfad endet in 0 und schweigt. Eine Sperre in
 `$XDG_RUNTIME_DIR/mimic-ansage.lock` verhindert, dass zwei Sitzungen
 gleichzeitig sprechen; wer sie nicht bekommt, schweigt.
 
-## Einrichtung am PC
+## Von Hand, Schritt für Schritt
 
-**1. Kopfhörer einmalig koppeln.** Interaktiv, macht das Skript bewusst nicht:
-
-```bash
-bluetoothctl
-  scan on
-  pair XX:XX:XX:XX:XX:XX
-  trust XX:XX:XX:XX:XX:XX      # ohne trust scheitert jedes spätere connect
-  quit
-```
-
-**2. MAC hinterlegen.**
+Falls `einrichten.sh` irgendwo hängen bleibt — dasselbe einzeln:
 
 ```bash
+# MAC hinterlegen; ohne MAC listet kopfhoerer.sh die gekoppelten Geräte
 mkdir -p ~/.config/mimic
 echo XX:XX:XX:XX:XX:XX > ~/.config/mimic/kopfhoerer
-tools/kopfhoerer.sh              # ohne MAC listet es die gekoppelten Geräte
-```
 
-**3. Verbindung prüfen.** Zweimal aufrufen — der zweite Lauf muss sofort
-zurückkommen, weil schon verbunden ist:
-
-```bash
+# Verbindung prüfen. Der zweite Lauf muss sofort zurückkommen.
 tools/kopfhoerer.sh
 tools/kopfhoerer.sh --status
-```
 
-**4. Text prüfen, ohne zu sprechen.** `--vorschau` zeigt genau den Satz, der
-später aus dem Kopfhörer kommt:
-
-```bash
+# Text prüfen, ohne zu sprechen: genau der Satz, der später zu hören ist
 echo '{"hook_event_name":"Stop","transcript_path":"'"$(ls -t ~/.claude/projects/*/*.jsonl | head -1)"'"}' \
   | python3 tools/ansage.py --vorschau
-```
 
-**5. Hörprobe.** Braucht den laufenden Dienst (`systemctl --user status mimic.socket`):
-
-```bash
+# Hörprobe; braucht den laufenden Dienst
 tools/ansage.py --sagen "Fertig. Zwei Tests repariert, alles grün."
-```
 
-**6. Hook scharf schalten.** Für dieses Repo liegt `.claude/settings.json`
-schon da — Claude Code neu starten oder `/hooks` aufrufen, damit es geladen
-wird. Für **alle** Projekte gehört derselbe Block nach
-`~/.claude/settings.json`, dann aber mit festem Pfad statt
-`$CLAUDE_PROJECT_DIR`:
-
-```bash
+# Installieren und global einhängen
 install -Dm755 tools/ansage.py     ~/.local/bin/mimic-ansage
 install -Dm755 tools/kopfhoerer.sh ~/.local/bin/kopfhoerer.sh
+python3 ~/.local/bin/mimic-ansage --einhaengen
 ```
 
-```json
-{
-  "hooks": {
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "python3 $HOME/.local/bin/mimic-ansage", "timeout": 10 } ] }
-    ]
-  }
-}
-```
+`--einhaengen` führt zusammen, statt zu überschreiben: bestehende Einstellungen
+bleiben, eine Sicherung landet als `settings.json.vor-ansage` daneben, und
+zweimal einhängen ergibt trotzdem nur einen Eintrag. Kaputtes JSON lehnt es ab,
+statt die Datei zu ersetzen. Ein Pfad als Argument nimmt eine andere Datei als
+`~/.claude/settings.json`.
 
-`kopfhoerer.sh` muss dabei neben `mimic-ansage` liegen — der Hook sucht es im
-eigenen Verzeichnis.
+`kopfhoerer.sh` muss neben `mimic-ansage` liegen — der Hook sucht es im eigenen
+Verzeichnis, nicht im PATH.
+
+Für dieses Repo liegt `.claude/settings.json` schon dabei. Claude Code neu
+starten, dann zeigt `/hooks`, was aktiv ist.
 
 ## Stellschrauben
 
