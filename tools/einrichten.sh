@@ -123,6 +123,15 @@ if [ -x "$MIMIC" ]; then
     # muss das, als Hook -- und schwiege bei totem Worker einfach. Hier ist die
     # eine Stelle, an der Schweigen die falsche Antwort waere.
     if "$MIMIC" status >/dev/null; then
+        # Ein Profil, das es nicht gibt, laesst den Hook stumm bleiben -- und
+        # zwar genauso stumm wie ein toter Dienst. Also hier nachsehen.
+        STIMME="$(python3 "$ZIEL/mimic-ansage" --stimme)"
+        if "$MIMIC" voices | grep -qx "$STIMME"; then
+            echo "   Stimme: $STIMME"
+        else
+            warnen "Stimmprofil '$STIMME' fehlt -- der Hook bliebe stumm."
+            warnen "  mimic record $STIMME     (oder MIMIC_ANSAGE_STIMME setzen)"
+        fi
         printf "   Probesatz sprechen? [Enter] ja, [n] nein: "
         read -r antwort || antwort="n"
         if [ "$antwort" != "n" ]; then

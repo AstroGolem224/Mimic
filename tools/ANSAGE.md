@@ -87,7 +87,7 @@ starten, dann zeigt `/hooks`, was aktiv ist.
 
 | Variable | Wirkung |
 |---|---|
-| `MIMIC_ANSAGE_STIMME` | Stimmprofil, Vorgabe `matthias`. `matthias_dark_lord` geht auch. |
+| `MIMIC_ANSAGE_STIMME` | Stimmprofil, Vorgabe `matthias_krieger`. Jedes Profil aus `mimic voices` geht. |
 | `MIMIC_ANSAGE_STILL=1` | Schweigt, ohne den Hook auszubauen. Für lange Sitzungen am Schreibtisch. |
 | `KOPFHOERER_MAC` | Überschreibt `~/.config/mimic/kopfhoerer`. |
 
@@ -97,8 +97,6 @@ raus — sonst liest die Stimme den Anfang eines Diffs vor.
 
 ## Was noch offen ist
 
-- **Stimme wählen.** Vorgabe ist `matthias`. Ob `matthias_dark_lord` für
-  Fertigmeldungen besser trägt, entscheidet das Ohr, nicht der Code.
 - **`Notification` behalten oder nicht.** Der Hook meldet auch, wenn Claude auf
   eine Freigabe wartet. Nützlich mit Kopfhörer auf, nervig ohne — der Block ist
   einzeln aus `settings.json` entfernbar.

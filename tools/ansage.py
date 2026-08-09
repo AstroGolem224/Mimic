@@ -30,7 +30,7 @@ Aufruf von Hand:
     tools/ansage.py --vorschau < h.json  # zeigt nur den Satz, spricht nicht
 
 Stellschrauben ueber die Umgebung:
-    MIMIC_ANSAGE_STIMME   Stimmprofil (Vorgabe: matthias)
+    MIMIC_ANSAGE_STIMME   Stimmprofil (Vorgabe: matthias_krieger)
     MIMIC_ANSAGE_STILL=1  schaltet die Ansage ab, ohne den Hook auszubauen
 """
 
@@ -55,8 +55,11 @@ FERTIG = "Fertig."
 OHNE_INHALT = "Fertig. Keine Zusammenfassung im Transkript."
 
 
+VORGABE_STIMME = "matthias_krieger"     # tief, langsam, jedes Wort steht fuer sich
+
+
 def stimme() -> str:
-    return os.environ.get("MIMIC_ANSAGE_STIMME", "matthias").strip() or "matthias"
+    return os.environ.get("MIMIC_ANSAGE_STIMME", VORGABE_STIMME).strip() or VORGABE_STIMME
 
 
 # ---------------------------------------------------------------- Text bauen
@@ -351,7 +354,13 @@ def main(argv: list[str] | None = None) -> int:
     zerleger.add_argument("--einhaengen", nargs="?", const="", metavar="SETTINGS_JSON",
                           help="Hook in eine settings.json eintragen "
                                "(Vorgabe: ~/.claude/settings.json)")
+    zerleger.add_argument("--stimme", action="store_true",
+                          help="das wirksame Stimmprofil ausgeben")
     args = zerleger.parse_args(argv)
+
+    if args.stimme:
+        print(stimme())
+        return 0
 
     if args.einhaengen is not None:
         ziel = Path(args.einhaengen) if args.einhaengen else Path.home() / ".claude/settings.json"
