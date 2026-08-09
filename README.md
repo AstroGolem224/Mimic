@@ -111,8 +111,7 @@ MAC hinterlegt wurde: ein Hook darf die Sitzung nicht aufhalten und erst recht
 nicht kaputtmachen. Einrichtung und Hörprobe: [tools/ANSAGE.md](tools/ANSAGE.md).
 
 ```bash
-echo XX:XX:XX:XX:XX:XX > ~/.config/mimic/kopfhoerer
-tools/ansage.py --sagen "Fertig. Zwei Tests repariert, alles grün."
+tools/einrichten.sh     # installiert, hinterlegt die MAC, hängt den Hook ein, probt
 ```
 
 Der GPU-freie Nachweis läuft mit `bash tests/run.sh`; die destruktiven echten

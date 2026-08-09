@@ -234,6 +234,88 @@ def sprechen(text: str) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ Einhaengen
+
+EREIGNISSE = ("Stop", "Notification")
+
+
+def hook_eintrag(programm: str) -> dict:
+    return {"type": "command", "command": f'python3 "{programm}"', "timeout": 10}
+
+
+def _schon_da(gruppen, programm: str) -> bool:
+    """Erkennt den eigenen Eintrag wieder -- auch nach einem Pfadwechsel.
+
+    Gesucht wird nach dem Dateinamen, nicht nach dem ganzen Befehl: wer das
+    Skript spaeter verschiebt und neu einhaengt, soll keinen zweiten Eintrag
+    bekommen, sondern gar keinen -- doppelt eingehaengt spraeche Mimic zweimal.
+    """
+    marke = Path(programm).name
+    for gruppe in gruppen if isinstance(gruppen, list) else []:
+        for haken in (gruppe or {}).get("hooks", []) if isinstance(gruppe, dict) else []:
+            if isinstance(haken, dict) and marke in str(haken.get("command", "")):
+                return True
+    return False
+
+
+def einhaengen(pfad: Path, programm: str) -> tuple[int, str]:
+    """Den Hook in eine settings.json eintragen, ohne den Rest anzufassen.
+
+    Zusammenfuehren statt ueberschreiben: in ~/.claude/settings.json steht
+    typischerweise schon etwas, und eine verlorene Berechtigungsliste waere ein
+    teurer Preis fuer eine Ansage. Kaputtes JSON wird darum nicht geraderueckt,
+    sondern abgelehnt -- lieber gar nicht einhaengen als die Datei ersetzen.
+    """
+    try:
+        roh = pfad.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        roh = ""
+    except OSError as fehler:
+        return 1, f"{pfad} nicht lesbar: {fehler}"
+
+    if roh:
+        try:
+            einstellungen = json.loads(roh)
+        except (json.JSONDecodeError, ValueError) as fehler:
+            return 1, f"{pfad} ist kein gueltiges JSON ({fehler}) -- nichts geaendert."
+        if not isinstance(einstellungen, dict):
+            return 1, f"{pfad} enthaelt kein Objekt -- nichts geaendert."
+    else:
+        einstellungen = {}
+
+    haken = einstellungen.setdefault("hooks", {})
+    if not isinstance(haken, dict):
+        return 1, f'{pfad}: "hooks" ist kein Objekt -- nichts geaendert.'
+
+    ergaenzt = []
+    for ereignis in EREIGNISSE:
+        gruppen = haken.setdefault(ereignis, [])
+        if not isinstance(gruppen, list):
+            return 1, f'{pfad}: "hooks.{ereignis}" ist keine Liste -- nichts geaendert.'
+        if _schon_da(gruppen, programm):
+            continue
+        gruppen.append({"hooks": [hook_eintrag(programm)]})
+        ergaenzt.append(ereignis)
+
+    if not ergaenzt:
+        return 0, f"{pfad}: schon eingehaengt, nichts zu tun."
+
+    if roh:
+        sicherung = pfad.with_suffix(pfad.suffix + ".vor-ansage")
+        try:
+            sicherung.write_text(roh + "\n", encoding="utf-8")
+        except OSError as fehler:
+            return 1, f"Sicherung {sicherung} nicht schreibbar: {fehler}"
+
+    try:
+        pfad.parent.mkdir(parents=True, exist_ok=True)
+        pfad.write_text(json.dumps(einstellungen, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+    except OSError as fehler:
+        return 1, f"{pfad} nicht schreibbar: {fehler}"
+    return 0, f"{pfad}: {' und '.join(ergaenzt)} eingehaengt."
+
+
 def abkoppeln(text: str) -> None:
     """Dasselbe Skript als eigenstaendige Sitzung starten und sofort zurueckkehren."""
     try:
@@ -266,7 +348,16 @@ def main(argv: list[str] | None = None) -> int:
                           help="diesen Text im Vordergrund sprechen (auch der abgekoppelte Pfad)")
     zerleger.add_argument("--vorschau", action="store_true",
                           help="Satz aus dem Hook-JSON nur ausgeben, nicht sprechen")
+    zerleger.add_argument("--einhaengen", nargs="?", const="", metavar="SETTINGS_JSON",
+                          help="Hook in eine settings.json eintragen "
+                               "(Vorgabe: ~/.claude/settings.json)")
     args = zerleger.parse_args(argv)
+
+    if args.einhaengen is not None:
+        ziel = Path(args.einhaengen) if args.einhaengen else Path.home() / ".claude/settings.json"
+        code, meldung = einhaengen(ziel, str(Path(__file__).resolve()))
+        print(meldung, file=sys.stderr if code else sys.stdout)
+        return code
 
     if args.sagen is not None:
         return sprechen(args.sagen)
@@ -288,5 +379,8 @@ if __name__ == "__main__":
         raise
     except Exception:
         # Letzte Leitplanke: ein Hook, der stolpert, darf trotzdem nicht die
-        # Sitzung mit einem Fehler bewerfen.
+        # Sitzung mit einem Fehler bewerfen. Von Hand aufgerufen gilt das
+        # Gegenteil -- wer einhaengt, muss sehen, wenn es schiefgeht.
+        if len(sys.argv) > 1:
+            raise
         raise SystemExit(0)
