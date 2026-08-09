@@ -485,3 +485,25 @@ class StimmEinstellungenTests(unittest.TestCase):
         (root / "matthias" / "settings.json").chmod(0o644)
         with self.assertRaises(VoiceError):
             load_voice("matthias", root)
+
+
+class SetupTests(unittest.TestCase):
+    """install_units ist der einzige Teil von `mimic setup`, der ohne systemd laeuft."""
+
+    def test_neu_ersetzt_unveraendert(self):
+        from mimic.cli import UNITS, install_units, unit_quelle
+
+        quelle = unit_quelle()
+        assert quelle is not None, "systemd/ muss im Repo liegen"
+        ziel = Path(self.enterContext(tempfile.TemporaryDirectory())) / "user"
+
+        self.assertEqual({"neu"}, {zustand for _, zustand in install_units(quelle, ziel)})
+        self.assertEqual({"unveraendert"}, {zustand for _, zustand in install_units(quelle, ziel)})
+        for name in UNITS:
+            self.assertEqual((quelle / name).read_bytes(), (ziel / name).read_bytes())
+            self.assertEqual(0o644, (ziel / name).stat().st_mode & 0o777)
+
+        (ziel / UNITS[0]).write_bytes(b"veraltet\n")
+        zustaende = dict(install_units(quelle, ziel))
+        self.assertEqual("ersetzt", zustaende[UNITS[0]])
+        self.assertEqual("unveraendert", zustaende[UNITS[1]])

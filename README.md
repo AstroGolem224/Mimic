@@ -12,13 +12,7 @@ gemessenen Betriebsentscheidungen dokumentiert.
 
 ```bash
 uv tool install --python 3.12 .
-install -d -m700 ~/.local/share/mimic/voices
-install -Dm644 systemd/mimic.socket ~/.config/systemd/user/mimic.socket
-install -Dm644 systemd/mimic.service ~/.config/systemd/user/mimic.service
-install -Dm644 systemd/mimic-worker.socket ~/.config/systemd/user/mimic-worker.socket
-install -Dm644 systemd/mimic-worker.service ~/.config/systemd/user/mimic-worker.service
-systemctl --user daemon-reload
-systemctl --user enable --now mimic.socket mimic-worker.socket
+mimic setup
 
 uv run mimic gui
 uv run mimic record matthias_krieger
@@ -27,6 +21,13 @@ uv run mimic say "Hallo" -o hallo.wav
 uv run mimic status
 uv run mimic voices
 ```
+
+`mimic setup` legt den Stimmenordner an, installiert die fünf Unit-Dateien aus
+`systemd/` (`mimic-worker-reset.service` gehört dazu — `mimic-worker.socket`
+verweist per `OnFailure` darauf), schaltet die Sockets scharf und prüft am Ende,
+ob der Dienst antwortet. Zweimal aufrufen ist gefahrlos; geänderte Units werden
+ersetzt und die Sockets dann neu gestartet. Der Befehl braucht das
+Repo-Verzeichnis, weil die Unit-Dateien dort liegen.
 
 Stimmprofile liegen unter `~/.local/share/mimic/voices/<name>/` als `ref.wav`
 (48 kHz mono, 3–60 Sekunden) und wörtliches UTF-8-Transkript `ref.txt`.

@@ -271,6 +271,87 @@ def record(args: argparse.Namespace) -> int:
     return 0
 
 
+# mimic-worker.socket hat OnFailure=mimic-worker-reset.service -- die Reset-Unit
+# muss also mit, sonst laeuft der Auffangmechanismus ins Leere.
+UNITS = ("mimic.socket", "mimic.service",
+         "mimic-worker.socket", "mimic-worker.service", "mimic-worker-reset.service")
+
+
+def unit_quelle() -> Path | None:
+    """Das systemd/-Verzeichnis des Repos -- neben dem Paket oder unter cwd."""
+    for kandidat in (Path(__file__).resolve().parent.parent / "systemd", Path.cwd() / "systemd"):
+        if all((kandidat / name).is_file() for name in UNITS):
+            return kandidat
+    return None
+
+
+def install_units(quelle: Path, ziel: Path) -> list[tuple[str, str]]:
+    ziel.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ergebnis = []
+    for name in UNITS:
+        inhalt = (quelle / name).read_bytes()
+        pfad = ziel / name
+        alt = pfad.read_bytes() if pfad.exists() else None
+        if alt == inhalt:
+            ergebnis.append((name, "unveraendert"))
+            continue
+        pfad.write_bytes(inhalt)
+        pfad.chmod(0o644)
+        ergebnis.append((name, "ersetzt" if alt is not None else "neu"))
+    return ergebnis
+
+
+def _systemctl(*argumente: str) -> int:
+    lauf = subprocess.run(["systemctl", "--user", *argumente], capture_output=True, text=True)
+    if lauf.returncode != 0:
+        print(f"systemctl {' '.join(argumente)}: {lauf.stderr.strip()}", file=sys.stderr)
+    return lauf.returncode
+
+
+def setup(_args: argparse.Namespace) -> int:
+    quelle = unit_quelle()
+    if quelle is None:
+        print("systemd/ nicht gefunden -- mimic setup im Repo-Verzeichnis aufrufen",
+              file=sys.stderr)
+        return 1
+    # Die Units zeigen fest auf %h/.local/bin. Fehlen die Entry-Points, wuerde
+    # enable --now klaglos durchlaufen und erst die erste Anfrage scheitern.
+    fehlend = [name for name in ("mimic-frontend", "mimic-worker")
+               if not (Path.home() / ".local" / "bin" / name).exists()]
+    if fehlend:
+        print(f"{', '.join(fehlend)} fehlt in ~/.local/bin -- dorthin zeigen die Units.\n"
+              f"  uv tool install --python 3.12 {quelle.parent}", file=sys.stderr)
+        return 1
+
+    stimmen = default_voices_dir()
+    stimmen.mkdir(mode=0o700, parents=True, exist_ok=True)
+    stimmen.chmod(0o700)
+    print(f"  stimmen      {stimmen}")
+
+    zustaende = install_units(quelle, Path.home() / ".config" / "systemd" / "user")
+    for name, zustand in zustaende:
+        print(f"  {zustand:12} {name}")
+
+    if _systemctl("daemon-reload"):
+        return 1
+    if _systemctl("enable", "--now", "mimic.socket", "mimic-worker.socket"):
+        return 1
+    # enable --now uebernimmt geaenderten Inhalt an einer schon laufenden Socket-Unit
+    # nicht -- sonst horcht weiter die alte Fassung.
+    if any(zustand == "ersetzt" for _, zustand in zustaende):
+        if _systemctl("restart", "mimic.socket", "mimic-worker.socket"):
+            return 1
+
+    try:
+        response = request("GET", "/status")
+        erreichbar = response.status == 200
+        response.read()
+    except OSError:
+        erreichbar = False
+    print(f"  dienst       {'erreichbar' if erreichbar else 'NICHT erreichbar'}")
+    return 0 if erreichbar else 1
+
+
 def gui(_args: argparse.Namespace) -> int:
     # Erst hier importieren: das GUI zieht http.server und den Browserstart
     # nach, und die reine CLI soll das nicht bezahlen.
@@ -291,6 +372,8 @@ def parser() -> argparse.ArgumentParser:
     status_parser.set_defaults(function=status)
     voices_parser = commands.add_parser("voices")
     voices_parser.set_defaults(function=voices)
+    setup_parser = commands.add_parser("setup")
+    setup_parser.set_defaults(function=setup)
     gui_parser = commands.add_parser("gui")
     gui_parser.set_defaults(function=gui)
     record_parser = commands.add_parser("record")
