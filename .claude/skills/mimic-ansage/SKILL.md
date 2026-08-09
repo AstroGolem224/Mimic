@@ -99,6 +99,7 @@ ist heimtückischer als es klingt. Profile und ihre Duktus stehen in
 | Ganz stumm, Hook bleibt | `MIMIC_ANSAGE_STILL=1` in der Umgebung |
 | Keine Meldung bei Freigabe-Nachfragen | `Notification`-Block aus `~/.claude/settings.json` raus |
 | Kürzere Ansagen | `GRENZE` in `tools/ansage.py` runter, dann neu einrichten |
+| Längere Ansagen | `GRENZE` hoch. Bricht die Ansage mitten im Gedanken ab, ist eher `MINDEST` die Stellschraube — siehe `tools/ANSAGE.md` |
 | Ganz weg | beide Blöcke aus `settings.json`, `~/.local/bin/mimic-ansage` löschen |
 
 Wenn jemand sagt, die Ansage "nervt" oder "redet zu viel", frag nach, welches

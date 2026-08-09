@@ -90,11 +90,39 @@ class Zusammenfassen(unittest.TestCase):
 
     def test_tabellen_und_trennlinien(self):
         text = "Stand:\n| A | B |\n|---|---|\n| 1 | 2 |\n---\nPasst."
-        self.assertEqual(ansage.zusammenfassen(text), "Stand: Passt.")
+        self.assertEqual(ansage.zusammenfassen(text), "Passt.")
 
     def test_pfadzeile_faellt_weg(self):
-        self.assertEqual(ansage.zusammenfassen("Geaendert:\nmimic/cli.py\nLaeuft."),
-                         "Geaendert: Laeuft.")
+        self.assertEqual(ansage.zusammenfassen("Geaendert:\nmimic/cli.py\nLaeuft."), "Laeuft.")
+
+    def test_ankuendigung_ins_leere_faellt_weg(self):
+        """"Am PC:" kuendigt den Codeblock an, der oben schon weggefallen ist."""
+        text = "Erledigt. Am PC:\n```bash\ngit pull\n```\nDanach laeuft es."
+        self.assertEqual(ansage.zusammenfassen(text), "Erledigt. Danach laeuft es.")
+
+    def test_doppelpunkt_trennt_keinen_satz(self):
+        """Einleitung und Aussage gehoeren zusammen, sonst endet die Ansage am Anlauf."""
+        text = "Der Grund ist simpel: der Dienst lief nicht."
+        self.assertEqual(ansage.zusammenfassen(text), text)
+
+    def test_url_wird_nicht_buchstabiert(self):
+        text = "Skill steht: https://github.com/AstroGolem224/Mimic/pull/2 ist offen."
+        ergebnis = ansage.zusammenfassen(text)
+        self.assertNotIn("http", ergebnis)
+        self.assertNotIn("github", ergebnis)
+        self.assertIn("ist offen", ergebnis)
+
+    def test_langer_zweiter_satz_wird_angeschnitten_statt_verschluckt(self):
+        """Der eigentliche Defekt: kurzer Auftakt, lange Aussage, nur der Auftakt kam an."""
+        lang = "Der Kern der Sache ist ziemlich verwickelt " + "und geht noch weiter " * 30
+        ergebnis = ansage.zusammenfassen(f"Gemerged. {lang}.")
+        self.assertTrue(ergebnis.startswith("Gemerged. Der Kern der Sache"), ergebnis)
+        self.assertTrue(ergebnis.endswith("..."), ergebnis)
+        self.assertLessEqual(len(ergebnis), ansage.GRENZE + 4)
+
+    def test_kurzer_auftakt_plus_passender_satz_bleibt_ganz(self):
+        text = "Gemerged. Lokales main nachgezogen, Arbeitsverzeichnis sauber."
+        self.assertEqual(ansage.zusammenfassen(text), text)
 
     def test_kuerzt_an_der_satzgrenze(self):
         text = " ".join(f"Satz nummer {n} steht hier." for n in range(50))
