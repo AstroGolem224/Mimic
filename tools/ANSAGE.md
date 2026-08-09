@@ -91,9 +91,21 @@ starten, dann zeigt `/hooks`, was aktiv ist.
 | `MIMIC_ANSAGE_STILL=1` | Schweigt, ohne den Hook auszubauen. Für lange Sitzungen am Schreibtisch. |
 | `KOPFHOERER_MAC` | Überschreibt `~/.config/mimic/kopfhoerer`. |
 
-Länge der Ansage: `GRENZE` in `tools/ansage.py`, aktuell 240 Zeichen. Gekürzt
-wird an der Satzgrenze, Codeblöcke, Tabellen und Dateipfade fliegen vorher
-raus — sonst liest die Stimme den Anfang eines Diffs vor.
+Länge der Ansage: `GRENZE` in `tools/ansage.py`, aktuell 420 Zeichen. Gekürzt
+wird an der Satzgrenze; Codeblöcke, Tabellen, URLs und Dateipfade fliegen
+vorher raus — sonst liest die Stimme den Anfang eines Diffs vor oder
+buchstabiert eine GitHub-Adresse.
+
+Zwei Regeln halten die Ansage bei vollständigen Gedanken, statt sie am Budget
+abzuschneiden:
+
+- Passt der nächste Satz nicht mehr, wird er nur dann fallengelassen, wenn
+  vorher schon `MINDEST` Zeichen Substanz gesprochen wurden. Sonst wird er
+  angeschnitten — ein kurzer Auftakt wie »Gemerged.« gefolgt von Stille wäre
+  keine Meldung.
+- Ein Doppelpunkt beendet keinen Satz. Zeilen, die auf einen Doppelpunkt
+  enden, kündigen fast immer den Codeblock oder die Tabelle an, die schon
+  weggefallen ist; von ihnen bleibt nur, was davor an fertigem Satz stand.
 
 ## Was noch offen ist
 

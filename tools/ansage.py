@@ -46,7 +46,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-GRENZE = 240            # Zeichen; darueber wird die Ansage zum Vortrag
+GRENZE = 420            # Zeichen; darueber wird die Ansage zum Vortrag
+MINDEST = 150           # darunter lieber anschneiden als abbrechen
 TAIL_BYTES = 1 << 20    # so weit wird ins Transkript zurueckgelesen
 KOPFHOERER_FRIST_S = 20
 SPRECH_FRIST_S = 180
@@ -122,21 +123,32 @@ def letzte_antwort(pfad: Path) -> str:
 
 _CODEBLOCK = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_URL = re.compile(r"<?https?://\S+>?")
 _AUSZEICHNUNG = re.compile(r"[`*_#>]+")
 _AUFZAEHLUNG = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _PFADARTIG = re.compile(r"^\S+/\S+$")
-_SATZENDE = re.compile(r"(?<=[.!?:])\s+")
+# Doppelpunkt beendet hier bewusst KEINEN Satz: "Der Kern ist der:" und was
+# danach kommt gehoeren zusammen, und als eigener Satz gezaehlt wuerde die
+# Einleitung zum letzten, was der Nutzer hoert.
+_SATZENDE = re.compile(r"(?<=[.!?])\s+")
+_RANDZEICHEN = " ·—–-|,;:"
+
+
+def _kappen(text: str, grenze: int) -> str:
+    return text[:grenze].rsplit(" ", 1)[0] + " ..."
 
 
 def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     """Aus einer Markdown-Antwort einen sprechbaren Satz machen.
 
-    Gesprochen wird nur Prosa. Codebloecke, Tabellen und Trennlinien liest
-    keine Stimme sinnvoll vor, also fallen sie weg, bevor gekuerzt wird --
-    sonst besteht die Ansage aus dem Anfang eines Diffs.
+    Gesprochen wird nur Prosa. Codebloecke, Tabellen, URLs und Trennlinien
+    liest keine Stimme sinnvoll vor, also fallen sie weg, bevor gekuerzt wird
+    -- sonst besteht die Ansage aus dem Anfang eines Diffs oder aus einer
+    buchstabierten GitHub-Adresse.
     """
     text = _CODEBLOCK.sub(" ", text)
     text = _LINK.sub(r"\1", text)
+    text = _URL.sub(" ", text)
 
     saetze: list[str] = []
     for zeile in text.splitlines():
@@ -147,9 +159,21 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
             continue            # Tabellenzeile oder Trennlinie
         zeile = _AUFZAEHLUNG.sub("", zeile)
         zeile = _AUSZEICHNUNG.sub("", zeile).strip()
+        # Ein Doppelpunkt am Zeilenende kuendigt etwas an -- fast immer den
+        # Codeblock, die Tabelle oder die Liste, die oben schon weggefallen
+        # ist. Gesprochen bliebe davon ein Anlauf ins Leere. Weg faellt aber
+        # nur die Ankuendigung, nicht die ganze Zeile: "Erledigt. Am PC:"
+        # traegt einen fertigen Satz und erst danach den Anlauf.
+        # Vor dem rstrip pruefen, das den Doppelpunkt sonst wegnaehme.
+        if zeile.endswith(":"):
+            schnitt = max(zeile.rfind(zeichen) for zeichen in ".!?")
+            if schnitt < 0:
+                continue
+            zeile = zeile[:schnitt + 1]
+        zeile = zeile.rstrip(_RANDZEICHEN)
         if not zeile or _PFADARTIG.match(zeile):
             continue
-        saetze.append(zeile if zeile[-1] in ".!?:" else zeile + ".")
+        saetze.append(zeile if zeile[-1] in ".!?" else zeile + ".")
 
     fluss = " ".join(" ".join(saetze).split())
     if not fluss:
@@ -159,14 +183,19 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
 
     ergebnis = ""
     for satz in _SATZENDE.split(fluss):
-        laenge = len(satz) if not ergebnis else len(ergebnis) + 1 + len(satz)
-        if laenge > grenze:
+        kandidat = f"{ergebnis} {satz}".strip()
+        if len(kandidat) <= grenze:
+            ergebnis = kandidat
+            continue
+        # Der Satz passt nicht mehr. Ihn einfach fallenzulassen ist nur dann
+        # richtig, wenn vorher schon etwas Substanzielles gesagt wurde. Sonst
+        # hoert der Nutzer einen Anlauf ohne Aussage -- "Gemerged." und Stille,
+        # waehrend die eigentliche Meldung im naechsten, langen Satz steckt.
+        # Dann lieber angeschnitten sprechen als gar nicht.
+        if len(ergebnis) >= MINDEST:
             break
-        ergebnis = f"{ergebnis} {satz}".strip()
-    if not ergebnis:
-        # Schon der erste Satz sprengt die Grenze -- dann hart an der letzten
-        # Wortgrenze kappen, sonst wuerde die Ansage zum Vortrag.
-        ergebnis = fluss[:grenze].rsplit(" ", 1)[0] + " ..."
+        ergebnis = _kappen(kandidat, grenze)
+        break
     return ergebnis
 
 
