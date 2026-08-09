@@ -427,3 +427,61 @@ class TextAndLevelTests(unittest.TestCase):
         self.assertEqual([Einsatz("matthias", "Er sagte: komm herein.")],
                          parse_skript("Er sagte: komm herein.", "matthias"))
         self.assertEqual([], parse_skript("\n// nur Kommentar\n", "matthias"))
+
+
+class StimmEinstellungenTests(unittest.TestCase):
+    """`settings.json` im Profil: Sprach-Tag und speaker_scale je Stimme.
+
+    Beides gehoert an die Stimme und nicht an die Anfrage: eine englische
+    Referenz braucht bei deutschem Text einen niedrigeren `speaker_scale`,
+    und das kann kein Aufrufer wissen. Gemessen am 2026-08-09 gegen die
+    n0rd0m-Referenz -- 1.5 war britisch bis zur Unverstaendlichkeit, 0.8 traegt.
+    """
+
+    def einstellungen(self, root: Path, name: str, inhalt: str) -> None:
+        pfad = root / name / "settings.json"
+        pfad.write_text(inhalt, encoding="utf-8")
+        pfad.chmod(0o600)
+
+    def test_ohne_datei_gelten_die_vorgaben(self):
+        from mimic.voices import DEFAULT_SCALE, DEFAULT_SPRACHE, close_voice, load_voice
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        create_voice(root)
+        profil = load_voice("matthias", root)
+        self.assertEqual(DEFAULT_SPRACHE, profil.language)
+        self.assertEqual(DEFAULT_SCALE, profil.speaker_scale)
+        close_voice(profil)
+
+    def test_werte_aus_der_datei_gewinnen(self):
+        from mimic.voices import close_voice, load_voice
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        create_voice(root, "n0rd0m")
+        self.einstellungen(root, "n0rd0m", '{"language": "de", "speaker_scale": 0.8}')
+        profil = load_voice("n0rd0m", root)
+        self.assertEqual("de", profil.language)
+        self.assertEqual(0.8, profil.speaker_scale)
+        close_voice(profil)
+
+    def test_unbrauchbare_werte_werden_abgewiesen(self):
+        from mimic.voices import VoiceError, load_voice
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        create_voice(root)
+        # Ein stiller Rueckfall auf die Vorgabe waere schlimmer als der Fehler:
+        # die Stimme klaenge falsch und niemand wuesste warum.
+        for inhalt in ('{"language": "klingonisch"}', '{"speaker_scale": 0}',
+                       '{"speaker_scale": 99}', '{"speaker_scale": "laut"}',
+                       'kein json', '[]'):
+            with self.subTest(inhalt=inhalt):
+                self.einstellungen(root, "matthias", inhalt)
+                with self.assertRaises(VoiceError) as fall:
+                    load_voice("matthias", root)
+                self.assertEqual("invalid_voice_profile", fall.exception.reason)
+
+    def test_falsche_rechte_werden_abgewiesen(self):
+        from mimic.voices import VoiceError, load_voice
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        create_voice(root)
+        self.einstellungen(root, "matthias", '{"language": "de"}')
+        (root / "matthias" / "settings.json").chmod(0o644)
+        with self.assertRaises(VoiceError):
+            load_voice("matthias", root)

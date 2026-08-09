@@ -13,6 +13,18 @@ from pathlib import Path
 VOICE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 MAX_WAV_BYTES = 10 * 1024 * 1024
 MAX_TEXT_BYTES = 4 * 1024
+MAX_SETTINGS_BYTES = 4 * 1024
+
+# Phase 0 hat `en` als Vorgabe gemessen, auch fuer deutschen Text -- mit `de`
+# bekommen englische Fachbegriffe deutsche Phonetik. Das gilt fuer eine
+# DEUTSCHE Referenz. Bei einer englischen entscheidet nicht mehr der Tag,
+# sondern `speaker_scale`: 1.5 traegt den Akzent der Referenz voll ins Deutsche.
+DEFAULT_SPRACHE = "en"
+DEFAULT_SCALE = 1.5
+SPRACHEN = frozenset({"de", "en"})
+# Grenzen, keine Empfehlung. Unter 0.5 loest sich die Stimme von der Referenz,
+# ueber 2.0 kippt sie ins Uebersteuerte -- beides gemessen am 2026-08-09.
+SCALE_MIN, SCALE_MAX = 0.5, 2.0
 
 
 class VoiceError(Exception):
@@ -28,6 +40,8 @@ class VoiceProfile:
     wav_path: str
     prompt_text: str
     gain: float = 1.0
+    language: str = DEFAULT_SPRACHE
+    speaker_scale: float = DEFAULT_SCALE
 
 
 # Zielpegel der Ausgabe. Gemessen am 2026-08-05: Mimic liefert den Pegel der
@@ -130,6 +144,43 @@ def _regular_fd(fd: int, label: str, max_bytes: int) -> os.stat_result:
     return info
 
 
+def _read_settings(profile_fd: int) -> tuple[str, float]:
+    """`settings.json` im Profil, optional. Fehlt sie, gelten die Vorgaben.
+
+    Kein stiller Rueckfall bei kaputtem Inhalt: eine Stimme, die wegen eines
+    Tippfehlers ploetzlich anders klingt, ist teurer zu finden als ein Fehler
+    beim Laden.
+    """
+    try:
+        fd = os.open("settings.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=profile_fd)
+    except FileNotFoundError:
+        return DEFAULT_SPRACHE, DEFAULT_SCALE
+    except OSError as exc:
+        raise VoiceError("invalid_voice_profile",
+                         f"settings.json ist unlesbar: {exc.strerror}") from None
+    try:
+        info = _regular_fd(fd, "settings.json", MAX_SETTINGS_BYTES)
+        try:
+            roh = json.loads(os.read(fd, info.st_size + 1).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise VoiceError("invalid_voice_profile", "settings.json ist kein gueltiges JSON")
+    finally:
+        os.close(fd)
+    if not isinstance(roh, dict):
+        raise VoiceError("invalid_voice_profile", "settings.json muss ein Objekt sein")
+    sprache = roh.get("language", DEFAULT_SPRACHE)
+    if sprache not in SPRACHEN:
+        raise VoiceError("invalid_voice_profile",
+                         f"language muss eines von {sorted(SPRACHEN)} sein")
+    scale = roh.get("speaker_scale", DEFAULT_SCALE)
+    # bool ist in Python ein int -- `true` waere sonst 1.0 und damit gueltig.
+    if type(scale) not in (int, float) or not SCALE_MIN <= scale <= SCALE_MAX:
+        raise VoiceError("invalid_voice_profile",
+                         f"speaker_scale muss zwischen {SCALE_MIN} und {SCALE_MAX} liegen")
+    return sprache, float(scale)
+
+
 def load_voice(name: str, voices_dir: Path | None = None) -> VoiceProfile:
     if not isinstance(name, str) or not VOICE_RE.fullmatch(name):
         raise VoiceError("unknown_voice", "ungueltiger Stimmname")
@@ -180,8 +231,9 @@ def load_voice(name: str, voices_dir: Path | None = None) -> VoiceProfile:
             raise VoiceError("invalid_voice_profile", "ref.wav muss 3 bis 60 Sekunden lang sein")
         # Der Pfad muss nach Rueckkehr noch existieren; dup uebernimmt die Lebenszeit.
         gain = _reference_gain(wav_path)
+        sprache, scale = _read_settings(profile_fd)
         kept_fd = os.dup(wav_fd)
-        return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain)
+        return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain, sprache, scale)
     finally:
         for fd in (txt_fd, wav_fd, profile_fd, root_fd):
             if fd is not None:

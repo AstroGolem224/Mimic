@@ -240,7 +240,10 @@ class Engine:
         profile = None
         try:
             profile = load_voice(voice)
-            for _ in runtime.generate_stream(text="Warmlauf.", language="en",
+            # Dieselben Werte wie im Ernstfall: ein Warmlauf mit anderer Sprache
+            # oder anderem speaker_scale waermt einen Pfad, der so nie laeuft.
+            for _ in runtime.generate_stream(text="Warmlauf.", language=profile.language,
+                                             speaker_scale=profile.speaker_scale,
                                              prompt_audio_path=profile.wav_path,
                                              prompt_text=profile.prompt_text):
                 break          # der erste Chunk genuegt, der JIT ist damit durch
@@ -316,7 +319,8 @@ class Engine:
                     spitze = 0
                     anfang: list[bytes] = []
                     hoerbar = False
-                    generator = runtime.generate_stream(text=satz, language="en",
+                    generator = runtime.generate_stream(text=satz, language=profile.language,
+                                                        speaker_scale=profile.speaker_scale,
                                                         prompt_audio_path=profile.wav_path,
                                                         prompt_text=profile.prompt_text)
                     for chunk in generator:
