@@ -9,10 +9,12 @@ bleibt der Handprobe in tools/ANSAGE.md ueberlassen.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -130,6 +132,20 @@ class Ansagetext(unittest.TestCase):
 
     def test_notification_ohne_meldung(self):
         self.assertEqual(ansage.ansagetext({"hook_event_name": "Notification"}), "Claude wartet.")
+
+
+class Stimme(unittest.TestCase):
+    def test_vorgabe(self):
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ansage.stimme(), "matthias_krieger")
+
+    def test_umgebung_sticht(self):
+        with unittest.mock.patch.dict(os.environ, {"MIMIC_ANSAGE_STIMME": "matthias_magier"}):
+            self.assertEqual(ansage.stimme(), "matthias_magier")
+
+    def test_leere_umgebung_faellt_auf_die_vorgabe_zurueck(self):
+        with unittest.mock.patch.dict(os.environ, {"MIMIC_ANSAGE_STIMME": "  "}):
+            self.assertEqual(ansage.stimme(), "matthias_krieger")
 
 
 class Einhaengen(unittest.TestCase):
