@@ -108,6 +108,16 @@ raus — sonst liest die Stimme den Anfang eines Diffs vor.
 
 ## Fehlersuche
 
+Zuerst die Kette durchgehen lassen — sie hat sechs Glieder, und jedes bricht
+sie vollständig und lautlos:
+
+```bash
+.claude/skills/mimic-ansage/scripts/pruefen.sh
+```
+
+Dasselbe Wissen als Skill für Claude Code: `.claude/skills/mimic-ansage/`.
+
+
 | Symptom | Ursache |
 |---|---|
 | Nichts passiert | Hook nicht geladen — `/hooks` in Claude Code zeigt, was aktiv ist. |
