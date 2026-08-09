@@ -309,13 +309,13 @@ Begründung innerhalb derselben Abnahme.
 |---|---|---|
 | P2-A | Auswahl greift | Grenzfälle exakt: **79 Zeichen → sherpa, 80 → Mimic** (bei Schwelle 80), plus ein Lauf mit abweichend konfigurierter Schwelle. Beide Journal-Zeilen vorhanden. |
 | P2-B | Kalt wartet nicht | **Gegen den echten Worker aus dem Zustand „Prozess existiert nicht"**, nicht gegen das Doppel — sonst bliebe der Torch-Import vor `submit()` (0.69–0.75 s, Schritt 3) unentdeckt. Vor jedem Lauf wird PID-Abwesenheit und echte Socket-Aktivierung nachgewiesen. Bei kaltem Mimic beginnt Ton in < 400 ms — `require_warm` liefert sofort `cold`, die 500-ms-Gesamtfrist greift gar nicht. `/warm` ist danach angestoßen. n ≥ 20. |
-| P2-C | Ausfall unsichtbar, auch langsam | Fünf Fälle, je mit Frist: (a) Dienst gestoppt, (b) Socket da, niemand horcht, (c) `SIGKILL` mitten im Stream, (d) Mimic lebt, verzögert den ersten `A` über die Gesamtfrist, (e) Mimic lebt, stockt im Stream über den Rahmenabstand. In a/b/d spricht dAImon **vollständig** mit sherpa, Ton binnen 700 ms. In c/e endet der Satz still. In **allen** Fällen wird die nächste Äußerung binnen 700 ms bedient. Je Fall ein maschinenlesbarer Grund. |
+| P2-C | Ausfall unsichtbar, auch langsam | Fünf Fälle, je mit Frist: (a) Dienst gestoppt, (b) Socket da, niemand horcht, (c) `SIGKILL` mitten im Stream, (d) Mimic lebt, verzögert den ersten `A` über die Gesamtfrist, (e) Mimic lebt, stockt im Stream über den Rahmenabstand. In a/b/d spricht dAImon **vollständig** mit sherpa, Ton binnen **800 ms** (Rev 9: die 700 waren Arithmetik ohne Rechnung — 500 ms Mimic-Frist plus gemessene 206 ms sherpa-TTFA passen nicht hinein). In c/e endet der Satz still. In **allen** Fällen wird die nächste Äußerung binnen 800 ms bedient. Je Fall ein maschinenlesbarer Grund. |
 | P2-D1 | Abbruch bei laufender Wiedergabe | Neue Äußerung während laufender Mimic-Äußerung: alte Wiedergabe endet in **< 100 ms**, Mimic-Journal zeigt `outcome=cancelled`. |
 | P2-D2 | Abbruch **vor** dem ersten Rahmen | Dort gibt es keine Wiedergabe, die enden könnte — also eigene Frist: das Cancel-Flag erreicht den Worker in **< 300 ms**. Gemessen wird **ab beobachtetem Abbruch**: es beginnt **kein neuer `next()`-Aufruf** mehr — auch nicht der eines
 **Wiederholungs-Takes** nach einem stummen (`worker.py` startet den nächsten Generator
 heute ohne erneute Cancel-Prüfung; ein Testfall erzwingt einen stummen ersten Take) — ein bereits laufender darf zurückkehren und sein Chunk wird **verworfen**, `emit()` gelingt nicht mehr, und gepufferte Rahmen erreichen den Konsumenten nicht. „Keine Yields ab gesetztem Flag" wäre nicht erfüllbar — setzt ein anderer Thread das Flag, während der Eigentümer in `next()` steckt, liefert dieser Aufruf noch einen Chunk. „Keine Rahmen mehr" allein wäre mehrdeutig — ein Rahmen kann vor dem Abbruch im Puffer liegen und erst danach beobachtet werden. Das ist das Loch aus Schritt 5. |
 | P2-E | Hub unumgehbar, in beide Richtungen | (a) Vom Hub abgelehnter Text: der Doppel zählt **null** Anfragen. (b) Freigegebener Text plus eine Aussprache-Regel, die ihn semantisch verändert und den Zeichenfilter passiert: dAImon spricht trotzdem **exakt** den Hub-Text. (b) ist der Test, der Schritt 2 absichert — (a) allein prüft ihn nicht. |
-| P2-F | TTFA im Budget | Mimic-Pfad p95 **< 300 ms**, gemessen bis zum ersten **hörbaren** Sample (Amplitude über `STUMM_PEAK`), nicht bis zum ersten PCM-Byte — seit `f3a26bb` sind das nicht mehr dasselbe. n ≥ 30, eingefrorener Korpus, warmer Dienst, Maschine ohne Fremdlast. Kein erhöhtes Budget: die 250 ms enthalten Frontend, Socket und Rahmung bereits. |
+| P2-F | TTFA im Budget | **Rev 9: ausgesetzt, nicht erfüllt und nicht ersetzt.** Die 300 ms sind widerlegt, eine neue Schwelle ist heute nicht setzbar — drei Läufe mit gleichem Code und gleichem Korpus lieferten binnen zwanzig Minuten Median 231, 367 und 465 ms. Was feststeht, ist die **Form**: gemessen wird auf dem Korpus ab 80 Zeichen, warm, n ≥ 40, mit zwei Zahlen — **(a)** Median bis zum ersten **hörbaren** Sample und **(b)** Anteil der ersten Rahmen innerhalb der 500-ms-Frist aus Schritt 13. Das Instrument liefert beide (`tools/messreihe_ttfa.py --ab-zeichen 80`). Die Schwellen werden aus dem ersten Lauf auf einer **ruhigen** Maschine festgelegt und dann eingefroren. Bis dahin gilt P2-F als offen. |
 | P2-G | Sperre wirkt und gibt frei | (a) Hub verweigert → Mimic lädt **nicht**, meldet `load_denied` mit `hub_reason`, je einmal für `vram`, `fullscreen`, `lade_sperre`. (b) Hub nicht erreichbar → Mimic lädt (fail open). (c) **Erfolgreiches Laden → `fertig` bestätigt → ein zweiter Lader bekommt sofort eine neue Sperre**, nicht `lade_sperre`. Ohne (c) bliebe eine kaputte Freigabe unentdeckt, bis die 120-s-Frist sie zudeckt. (d) **Kaputte Hub-Antwort** — leer, ungültiges JSON, schemafremd: jeweils **kein** Ladeversuch, eigener Diagnosegrund. Schritt 1 verlangt hier fail-closed; ohne (d) wäre das unabgenommen. |
 | P2-H | Marke ist generationssicher | Deterministischer A/B-Lauf: A wird abgebrochen, B meldet `beginnt`, **dann** trifft As verspätetes `gesprochen` ein. Erwartung: B bleibt aktive Marke, `tts_active` bleibt `true`. Ohne diesen Test kann eine Umsetzung ein Feld hinzufügen, ohne das falsche Löschen zu verhindern. |
 | P2-L | Stumme Takes brechen die Engine-Wahl nicht | Zwei deterministische Stub-Fälle: (a) erster Take stumm, zweiter hörbar → der Konsument bekommt den ersten `A` **erst** mit hörbarem Audio, und der Satzanfang fehlt nicht; (b) beide Takes stumm → **kein** `A`, Fehlschlag **vor** HTTP 200. Dazu eine Obergrenze für die Zeit bis zum ersten hörbaren Sample. Ohne (a)/(b) ist Schritt 2a behauptet, nicht belegt. |
@@ -333,6 +333,67 @@ Schritt 2d). Ein
 freier String könnte über Leerzeichen oder Zeilenumbruch die `key=value`-Journalzeilen
 zerlegen. Jedem angenommenen Warmwunsch wird genau eine ID zugeordnet.
 
+
+## Rev 9 — P2-F, nachdem die Verteilung bekannt war (2026-08-09)
+
+Der Plan hat 300 ms festgeschrieben, bevor jemand die Verteilung kannte. Jetzt ist
+sie gemessen, und sie sieht anders aus als angenommen.
+
+**Was gemessen wurde.** `erstchunk_ms` — die Zeit bis zum ersten Chunk überhaupt —
+liegt in **jedem** Lauf bei 180–205 ms. Die Rechenleistung streut nicht. Die ganze
+Streuung sitzt in stiller Vorlaufzeit: dots.tts stellt der Äußerung stochastisch
+0 bis 16 Chunks à ~154 ms Stille voran. Zehn Hypothesen wurden dafür geprüft und
+widerlegt, darunter Umgebung, GPU-Takt, Nebenläufigkeit und ein zweiter GPU-Mieter;
+der Bisect, der den Code zu entlasten schien, hatte dreimal dieselbe eingefrorene
+Kopie gemessen. Details in `spike/ERGEBNIS.md`, Nachtrag 2026-08-08.
+
+**Auf dem Korpus, den Mimic wirklich bekommt** (≥ 80 Zeichen, warm, n = 40, Code
+mit verworfenem Stillepräfix):
+
+| | Median | p95 | max |
+|---|---|---|---|
+| Ankunft des ersten Rahmens | 201 ms | 456 ms | 538 ms |
+| bis zum ersten hörbaren Sample | 231 ms | 758 ms | 769 ms |
+
+**Warum das Kriterium und nicht die Zahl falsch war.** Ein p95 über *alle*
+Äußerungen misst zwei verschiedene Dinge in einem Wert: die Pipeline, die stabil
+ist, und die Laune des Modells, die es nicht ist. Und seit Schritt 13 hat der
+Schwanz für den Nutzer eine andere Folge als angenommen — er hört keine späte
+Äußerung, sondern eine, die sherpa spricht. Die Latenzzusage trägt P2-C, nicht
+P2-F. Was P2-F noch zu sichern hat, ist nicht „schnell", sondern **wie oft
+Mimics Stimme überhaupt zum Zug kommt**.
+
+Deshalb zwei Zahlen statt einer: ein Median, der die Pipeline bewacht, und ein
+Anteil, der die Stimme bewacht. Beide werden auf dem Korpus gemessen, der real
+ankommt — kurze Sätze gehen unter der Auswahlregel ohnehin an die Vorgabestufe,
+und sie in die Zahl zu mischen hat die alte Messung mit verzerrt.
+
+**Warum trotzdem keine neue Schwelle in diesem Dokument steht.** Drei Läufe,
+gleicher Code, gleicher Korpus, innerhalb von zwanzig Minuten:
+
+| Lauf | Median hörbar | Anteil Ankunft < 500 ms | Fremdlast |
+|---|---|---|---|
+| 1 | 231 ms | ≥ 95 % | zwei Worker, Load 6.6 |
+| 2 | 367 ms | 90 % | zwei Worker, Load 6.6 |
+| 3 | **465 ms** | **75 %** | ein Worker, Load 4.1 |
+
+Der Lauf mit **weniger** Last war der schlechteste. Eine Schwelle, die aus dieser
+Reihe stammt, wäre geraten und nicht gemessen — und der Plan sagt an dieser
+Stelle selbst: eingefroren wird **vor** dem ersten Lauf, nicht danach passend
+gemacht. Die Reihe gehört auf eine Maschine ohne laufende Agentensitzung; dieselbe
+Bedingung blockiert schon die Warmrampe aus Schritt 4a, deren Werkzeug bei Load
+über 2.5 von sich aus abbricht.
+
+**Was damit nicht behauptet wird.** Die Stille ist nicht behoben, sie ist
+eingeordnet. Verworfen, weil gemessen schlechter: die Referenz-Stille abschneiden
+(Median 609 statt 242 ms) und `language="de"` statt `en` (p95 1046 statt 858 ms).
+Ein Eingriff in dots.tts bleibt der einzige bekannte Weg zu einem kleinen p95 —
+und der ist nicht Teil dieses Plans.
+
+**Offen und bewusst nicht entschieden:** ob 90 % der richtige Anteil sind. Der
+Messwert liegt bei ≥ 95 %; die Zusage steht tiefer, damit sie nicht bei jedem
+Hintergrund-Build reißt. Nach zwei Wochen Alltag gehört sie nachgezogen —
+zusammen mit den 80 Zeichen, die aus demselben Grund ein Startwert sind.
 
 ## Risks / open questions
 

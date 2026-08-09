@@ -110,6 +110,11 @@ def main() -> int:
     ap.add_argument("-n", type=int, default=60)
     ap.add_argument("--mode", default="mf", choices=("mf", "soar"))
     ap.add_argument("--voice", default="matthias")
+    # Rev 9: gemessen wird der Korpus, den Mimic unter dAImons Auswahlregel
+    # wirklich bekommt. Kurze Saetze gehen an die Vorgabestufe; sie in die Zahl
+    # zu mischen hat die Messung vom 06.08. mit verzerrt.
+    ap.add_argument("--ab-zeichen", type=int, default=0,
+                    help="nur Texte ab dieser Laenge (Rev 9: 80)")
     a = ap.parse_args()
     global STIMME
     STIMME = a.voice
@@ -127,7 +132,15 @@ def main() -> int:
         "Die Charakterstufe springt nur an, wenn genug Grafikspeicher frei ist.",
         "Nach dem letzten Boss oeffnet sich der Aufzug, und du entscheidest, "
         "ob du weitergehst oder umkehrst.",
+        "Die Charakterstufe springt nur an, wenn genug Grafikspeicher frei ist "
+        "und kein Spiel im Vollbild laeuft.",
+        "Ich habe den Fehler gefunden: der Dienst lief aus einer eingefrorenen "
+        "Kopie und nicht aus dem Arbeitsbaum.",
+        "Das Modell stellt der Aeusserung manchmal eine halbe Sekunde Stille "
+        "voran, und niemand hat das je gemessen.",
     ]
+    if a.ab_zeichen:
+        korpus = [t for t in korpus if len(t) >= a.ab_zeichen]
     rng = random.Random(SEED)
     plan = [korpus[rng.randrange(len(korpus))] for _ in range(a.n + 3)]
 
@@ -151,6 +164,8 @@ def main() -> int:
     ttfas = [r["ttfa_s"] for r in roh]
     hoerbare = [r["hoerbar_s"] for r in roh if r["hoerbar_s"]]
     p95_h = perzentil(hoerbare, 0.95)
+    # Rev 9 (b): wie oft kommt Mimic durch, bevor dAImon nach 500 ms zurueckfaellt.
+    anteil = sum(1 for t in ttfas if t < 0.500) / len(ttfas)
     rtfs = [r["rtf"] for r in roh if r["rtf"]]
     p95 = perzentil(ttfas, 0.95)
     print(f"""
@@ -166,12 +181,14 @@ Bis zum ersten hoerbaren Sample -- das ist P2-F
   max  {max(hoerbare)*1000:7.1f} ms
 RTF med {statistics.median(rtfs):.4f}
 
-Kriterium C / P2-F (p95 hoerbar < 300 ms): {'PASS' if p95_h < 0.300 else 'FAIL'}""")
+P2-F Rev 9, Korpus ab {a.ab_zeichen or 0} Zeichen
+  (a) Median hoerbar < 300 ms          {statistics.median(hoerbare)*1000:6.0f} ms   {'PASS' if statistics.median(hoerbare) < 0.300 else 'FAIL'}
+  (b) Anteil Ankunft < 500 ms >= 90 %  {anteil*100:6.1f} %    {'PASS' if anteil >= 0.90 else 'FAIL'}""")
 
     ziel = Path(__file__).resolve().parent.parent / f"out/messreihe_ttfa_{a.mode}_{a.voice}.json"
     ziel.parent.mkdir(exist_ok=True)
     ziel.write_text(json.dumps({"n": len(ttfas), "mode": a.mode, "seed": SEED,
-                                "p95_s": p95, "p95_hoerbar_s": p95_h, "median_s": statistics.median(ttfas),
+                                "p95_s": p95, "p95_hoerbar_s": p95_h, "anteil_unter_500ms": anteil, "median_s": statistics.median(ttfas),
                                 "rtf_median": statistics.median(rtfs), "roh": roh}, indent=1))
     print(f"Rohwerte: {ziel}")
     return 0
