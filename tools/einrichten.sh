@@ -117,12 +117,22 @@ if ! "$ZIEL/kopfhoerer.sh"; then
     warnen "Kopfhoerer nicht verbunden -- die Ansage kaeme ueber die Boxen."
 fi
 
-if command -v mimic >/dev/null 2>&1 || [ -x "$ZIEL/mimic" ]; then
-    printf "   Probesatz sprechen? [Enter] ja, [n] nein: "
-    read -r antwort || antwort="n"
-    if [ "$antwort" != "n" ]; then
-        python3 "$ZIEL/mimic-ansage" --sagen \
-            "Fertig. Die Ansage steht, du hoerst mich ab jetzt bei jeder erledigten Aufgabe."
+MIMIC="$(command -v mimic || echo "$ZIEL/mimic")"
+if [ -x "$MIMIC" ]; then
+    # Erst laut nach dem Dienst fragen. Der Sprechpfad schluckt Fehler -- er
+    # muss das, als Hook -- und schwiege bei totem Worker einfach. Hier ist die
+    # eine Stelle, an der Schweigen die falsche Antwort waere.
+    if "$MIMIC" status >/dev/null; then
+        printf "   Probesatz sprechen? [Enter] ja, [n] nein: "
+        read -r antwort || antwort="n"
+        if [ "$antwort" != "n" ]; then
+            python3 "$ZIEL/mimic-ansage" --sagen \
+                "Fertig. Die Ansage steht, du hoerst mich ab jetzt bei jeder erledigten Aufgabe."
+            echo "   Nichts gehoert? Dann liegt es an der Senke, nicht am Dienst."
+        fi
+    else
+        warnen "Dienst antwortet nicht -- der Hook bliebe stumm. Starten mit:"
+        warnen "  systemctl --user start mimic.socket mimic-worker.socket"
     fi
 else
     echo "   Ausgelassen, mimic fehlt."
