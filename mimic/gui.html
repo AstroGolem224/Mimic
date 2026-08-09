@@ -654,14 +654,40 @@ Zeile ohne Kopf erbt den Sprecher von oben.
 const T = new URLSearchParams(location.search).get("t") || "";
 const $ = id => document.getElementById(id);
 
+/* Das Fenster kann seinen Server ueberleben -- er endet mit dem Prozess, das
+   Fenster aber erst mit dem Schliessen. Danach schlaegt jede Aktion fehl, und
+   "TypeError: Failed to fetch" hilft niemandem. */
+const TOT_TEXT = "Verbindung zum GUI-Server verloren — Fenster schließen und neu öffnen";
+let tot = false;
+
 async function api(pfad, koerper){
-  const antwort = await fetch(pfad, {
-    method: koerper === undefined ? "GET" : "POST",
-    headers: {"X-Mimic-Token": T, ...(koerper === undefined ? {} : {"Content-Type":"application/json"})},
-    body: koerper === undefined ? undefined : JSON.stringify(koerper),
-  });
-  if(!antwort.ok) throw new Error("HTTP " + antwort.status);
+  let antwort;
+  try{
+    antwort = await fetch(pfad, {
+      method: koerper === undefined ? "GET" : "POST",
+      headers: {"X-Mimic-Token": T, ...(koerper === undefined ? {} : {"Content-Type":"application/json"})},
+      body: koerper === undefined ? undefined : JSON.stringify(koerper),
+    });
+  }catch(fehler){
+    serverTot();
+    throw new Error(TOT_TEXT);
+  }
+  if(!antwort.ok){
+    let text = "HTTP " + antwort.status;
+    try{ text = (await antwort.json()).message || text; }catch(_){ }
+    throw new Error(text);
+  }
   return antwort.json();
+}
+
+function serverTot(){
+  if(tot) return;
+  tot = true;
+  setzeStatus(TOT_TEXT, "fehler");
+  $("sSub").textContent = "kein Neuladen möglich";
+  for(const id of ["bSpiel", "bSpeichern", "bStopp", "bWarm", "bNeu", "bKlon",
+                   "bRec", "bBehalten", "bNochmal", "bVerwerfen", "bProbe"])
+    $(id).disabled = true;
 }
 
 /* ── Stimmenliste ─────────────────────────────────────────────────── */
@@ -885,7 +911,8 @@ async function tick(neuLesen){
   try{
     wert = await api(`/api/state?seit=${marke}${neuLesen ? "&frisch=1" : ""}`);
   }catch(fehler){
-    setzeStatus("GUI-Server nicht erreichbar", "fehler");
+    // api() hat den Grund schon gesetzt und alles gesperrt -- nicht ueberschreiben.
+    if(!tot) setzeStatus("" + fehler, "fehler");
     return;
   }
 
