@@ -242,7 +242,15 @@ class Phase1Tests(unittest.TestCase):
         self.assert_reason({"text": "x" * 1001}, 400, "text_too_long")
         conn = UnixConnection(self.front_socket)
         huge = b"x" * (64 * 1024 + 1)
-        conn.request("POST", "/speak", huge, {"Content-Length": str(len(huge))})
+        try:
+            conn.request("POST", "/speak", huge, {"Content-Length": str(len(huge))})
+        except BrokenPipeError:
+            # Genau das gewuenschte Verhalten: das Frontend lehnt allein nach
+            # Content-Length ab und schliesst, ohne 64 KiB leerzulesen, die es
+            # schon verworfen hat. Ob der Client seinen Rumpf davor noch
+            # fertigschreiben kann, ist Zeitfrage -- die Antwort steht trotzdem
+            # im Socketpuffer und wird unten geprueft.
+            pass
         response = conn.getresponse()
         self.assertEqual("bad_request", json.loads(response.read())["reason"])
         response.close()
