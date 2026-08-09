@@ -30,6 +30,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import wave
@@ -52,6 +53,7 @@ MAX_TEXT_ZEICHEN = 100_000  # Grenze am Vertrauensrand; der Dienst prueft je Ein
 DAUER_MIN_S, DAUER_MAX_S = 3.0, 60.0
 DAUER_ZIEL = (8.0, 15.0)
 AUFNAHME_DECKEL_S = 90.0    # Notbremse gegen eine vergessene laufende Aufnahme
+AUFNEHMER = "pw-record"     # als Name gehalten, damit Tests ein Stubprogramm einhaengen koennen
 # 192 kbps ist fuer eine Monospur reichlich und die Datei bleibt klein; die
 # Zahl ist ueber die Umgebung stellbar, weil Geschmack hier streitbar ist.
 MP3_BITRATE = os.environ.get("MIMIC_MP3_BITRATE", "192")
@@ -201,9 +203,10 @@ class Aufnahme:
         self.profil: Path | None = None
         self.datei: Path | None = None
         self.gestartet = 0.0
-        self.profil_war_neu = False
         self.wache: threading.Timer | None = None
         self.letzte: dict | None = None     # fertige Aufnahme, wartet auf Behalten
+        self.meldung: object | None = None  # stderr des Aufnehmers, erst nach dessen Ende gelesen
+        self.abbruch = ""                   # Grund, falls der Aufnehmer von selbst ging
 
     def starten(self, name: str, force: bool) -> None:
         if not VOICE_RE.fullmatch(name):
@@ -215,16 +218,21 @@ class Aufnahme:
         with self.lock:
             if self.prozess is not None:
                 raise RuntimeError("es laeuft schon eine Aufnahme")
-            self.profil_war_neu = not profil.exists()
             profil_anlegen(profil)
             self.name, self.profil = name, profil
             self.datei = profil / "ref.wav.tmp"
             self.letzte = None
+            self.abbruch = ""
             self.gestartet = time.monotonic()
+            # stderr in eine Datei statt in eine Pipe: sie laeuft nicht voll und
+            # braucht keinen Leser-Thread. Ohne sie stirbt pw-record wortlos.
+            if self.meldung is not None:
+                self.meldung.close()
+            self.meldung = tempfile.TemporaryFile()
             self.prozess = subprocess.Popen(
-                ["pw-record", "--rate", "48000", "--channels", "1", "--format", "s16",
+                [AUFNEHMER, "--rate", "48000", "--channels", "1", "--format", "s16",
                  str(self.datei)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=subprocess.DEVNULL, stderr=self.meldung)
             self.wache = threading.Timer(AUFNAHME_DECKEL_S, self._deckel)
             self.wache.daemon = True
             self.wache.start()
@@ -235,11 +243,55 @@ class Aufnahme:
         except RuntimeError:
             pass
 
+    def _meldung_text(self) -> str:
+        """stderr des beendeten Aufnehmers. Nur nach dessen Ende aufrufen."""
+        if self.meldung is None:
+            return ""
+        try:
+            self.meldung.seek(0)
+            return self.meldung.read().decode(errors="replace").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def _pruefe_tod(self) -> None:
+        """Der Aufnehmer kann von selbst sterben -- ohne Geraet etwa sofort.
+
+        Dann laeuft nur noch die Uhr im Fenster weiter und der Nutzer haelt
+        eine Aufnahme fuer laufend, die es nie gab. Also hier abraeumen und
+        den Grund merken, den pw-record nach stderr geschrieben hat.
+        """
+        with self.lock:
+            prozess = self.prozess
+            if prozess is None or prozess.poll() is None:
+                return
+            self.prozess = None
+            if self.wache is not None:
+                self.wache.cancel()
+                self.wache = None
+            grund = self._meldung_text() or "keine Meldung"
+            self.abbruch = (f"{AUFNEHMER} endete von selbst (Code {prozess.returncode}): {grund}")
+            datei, profil = self.datei, self.profil
+            self.letzte = None
+            self.datei = self.profil = None
+        self._aufraeumen(datei, profil)
+
+    @staticmethod
+    def _aufraeumen(datei: Path | None, profil: Path | None) -> None:
+        if datei is not None:
+            datei.unlink(missing_ok=True)
+        # Ein abgebrochener Versuch soll keine Bauruine hinterlassen. rmdir
+        # raeumt nur das leere Verzeichnis ab -- ein Profil mit ref.wav bleibt.
+        if profil is not None:
+            try:
+                profil.rmdir()
+            except OSError:
+                pass
+
     def stoppen(self) -> dict:
         with self.lock:
             prozess, datei = self.prozess, self.datei
             if prozess is None or datei is None:
-                raise RuntimeError("es laeuft keine Aufnahme")
+                raise RuntimeError(self.abbruch or "es laeuft keine Aufnahme")
             self.prozess = None
             if self.wache is not None:
                 self.wache.cancel()
@@ -256,7 +308,9 @@ class Aufnahme:
         except (OSError, wave.Error) as fehler:
             with self.lock:
                 self.letzte = None
-            raise RuntimeError(f"Aufnahme unbrauchbar: {fehler}") from None
+                grund = self._meldung_text()
+            hinweis = f" -- {AUFNEHMER}: {grund}" if grund else ""
+            raise RuntimeError(f"Aufnahme unbrauchbar: {fehler}{hinweis}") from None
         brauchbar, hinweis = dauer_urteil(dauer)
         ergebnis = {"name": self.name, "dauer_s": round(dauer, 1),
                     "brauchbar": brauchbar, "hinweis": hinweis}
@@ -285,38 +339,36 @@ class Aufnahme:
         with self.lock:
             self.letzte = None
             self.datei = self.profil = None
-            self.profil_war_neu = False
         return {"name": name}
 
     def verwerfen(self) -> None:
         with self.lock:
             if self.prozess is not None:
                 raise RuntimeError("erst die laufende Aufnahme stoppen")
-            profil, datei, war_neu = self.profil, self.datei, self.profil_war_neu
+            profil, datei = self.profil, self.datei
             self.letzte = None
+            self.abbruch = ""
             self.datei = self.profil = None
-            self.profil_war_neu = False
-        if datei is not None:
-            datei.unlink(missing_ok=True)
-        # Ein abgebrochener erster Versuch soll keine Bauruine hinterlassen.
-        if profil is not None and war_neu:
-            try:
-                profil.rmdir()
-            except OSError:
-                pass
+        self._aufraeumen(datei, profil)
 
     def stand(self) -> dict:
+        self._pruefe_tod()
         with self.lock:
             laeuft = self.prozess is not None
             return {"laeuft": laeuft, "name": self.name,
                     "sekunden": round(time.monotonic() - self.gestartet, 1) if laeuft else 0.0,
-                    "deckel_s": AUFNAHME_DECKEL_S, "fertig": self.letzte}
+                    "deckel_s": AUFNAHME_DECKEL_S, "fertig": self.letzte,
+                    "abbruch": self.abbruch}
 
     def schliessen(self) -> None:
         try:
             self.stoppen()
         except RuntimeError:
             return
+        finally:
+            if self.meldung is not None:
+                self.meldung.close()
+                self.meldung = None
         self.verwerfen()
 
 
@@ -961,7 +1013,7 @@ def demo() -> None:
 
     aufnahme = Aufnahme()
     assert aufnahme.stand() == {"laeuft": False, "name": "", "sekunden": 0.0,
-                                "deckel_s": AUFNAHME_DECKEL_S, "fertig": None}
+                                "deckel_s": AUFNAHME_DECKEL_S, "fertig": None, "abbruch": ""}
     for boese in ("", "Gross", "../flucht", "_start", "x" * 33, "a/b"):
         try:
             aufnahme.starten(boese, False)

@@ -62,14 +62,16 @@ class StubRuntime:
     def __init__(self, takes: list[list[bytes]]):
         self.takes = iter(takes)
         self.texts: list[str] = []
+        self.kwargs: list[dict] = []
 
-    def generate_stream(self, *, text: str, **_kwargs):
+    def generate_stream(self, *, text: str, **kwargs):
         self.texts.append(text)
+        self.kwargs.append(kwargs)
         chunks = next(self.takes)
         return (chunk for chunk in chunks)
 
 
-def run_engine(runtime: StubRuntime, request: dict):
+def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = None):
     from mimic import worker
 
     engine = worker.Engine.__new__(worker.Engine)
@@ -87,7 +89,8 @@ def run_engine(runtime: StubRuntime, request: dict):
                             "mode": "mf", "aussprache": True,
                             "correlation_id": "1" * 32, **request})
     job.delivered.set()
-    profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0)
+    profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0,
+                              **{"language": "en", "speaker_scale": 1.5, **(stimme or {})})
     with (mock.patch.object(worker, "load_voice", return_value=profile),
           mock.patch.object(worker, "close_voice"),
           mock.patch.object(worker, "tensor_to_pcm", side_effect=lambda chunk, _gain: chunk),
@@ -287,7 +290,8 @@ class WorkerDefectTests(unittest.TestCase):
         events = []
         engine.emit = lambda _job, kind, payload: events.append((kind, payload)) or True
         job = worker.Job(0, 0, {"text": "x", "voice": "matthias", "mode": "mf"})
-        profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0)
+        profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0,
+                              language="en", speaker_scale=1.5)
         with mock.patch.object(worker, "load_voice", return_value=profile), \
              mock.patch.object(worker, "close_voice"), \
              mock.patch.object(engine, "_load",
@@ -707,5 +711,89 @@ class Phase2bTests(unittest.TestCase):
                 os.environ[key] = value
 
 
+class AufnahmeTests(unittest.TestCase):
+    """Der Aufnehmer kann beim Start sterben -- das Fenster muss es merken."""
+
+    def _stub(self, ordner: Path, rumpf: str) -> str:
+        weg = ordner / "stub-aufnehmer"
+        weg.write_text("#!/bin/sh\n" + rumpf + "\n")
+        weg.chmod(0o755)
+        return str(weg)
+
+    def test_gestorbener_aufnehmer_meldet_grund_statt_weiterzuzaehlen(self):
+        from mimic import gui
+
+        with tempfile.TemporaryDirectory() as ordner:
+            heim = Path(ordner)
+            stub = self._stub(heim, "echo 'kein Aufnahmegeraet' >&2\nexit 1")
+            saved = {"MIMIC_VOICES_DIR": os.environ.get("MIMIC_VOICES_DIR")}
+            os.environ["MIMIC_VOICES_DIR"] = str(heim / "voices")
+            with mock.patch.object(gui, "AUFNEHMER", stub):
+                try:
+                    aufnahme = gui.Aufnahme()
+                    aufnahme.starten("stubstimme", force=True)
+                    for _ in range(200):          # auf das Ende des Stubs warten
+                        stand = aufnahme.stand()
+                        if not stand["laeuft"]:
+                            break
+                        time.sleep(0.01)
+                    self.assertFalse(stand["laeuft"], "tote Aufnahme zaehlt weiter")
+                    self.assertIn("kein Aufnahmegeraet", stand["abbruch"])
+                    # Der abgebrochene Versuch darf kein leeres Profil hinterlassen.
+                    self.assertFalse((heim / "voices" / "stubstimme").exists())
+                finally:
+                    self._restore_env(saved)
+
+    def test_stopp_ohne_datei_nennt_die_meldung_des_aufnehmers(self):
+        from mimic import gui
+
+        with tempfile.TemporaryDirectory() as ordner:
+            heim = Path(ordner)
+            stub = self._stub(heim, "echo 'Quelle belegt' >&2\nexit 1")
+            saved = {"MIMIC_VOICES_DIR": os.environ.get("MIMIC_VOICES_DIR")}
+            os.environ["MIMIC_VOICES_DIR"] = str(heim / "voices")
+            with mock.patch.object(gui, "AUFNEHMER", stub):
+                try:
+                    aufnahme = gui.Aufnahme()
+                    aufnahme.starten("stubstimme", force=True)
+                    aufnahme.prozess.wait(timeout=5)
+                    with self.assertRaises(RuntimeError) as gefangen:
+                        aufnahme.stoppen()
+                    self.assertIn("Quelle belegt", str(gefangen.exception))
+                finally:
+                    self._restore_env(saved)
+
+    @staticmethod
+    def _restore_env(saved):
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class SprachParameterTests(unittest.TestCase):
+    """Die Stimmeinstellungen muessen bis an dots.tts durchkommen.
+
+    Vorher stand `language="en"` hart im Worker und `speaker_scale` gar nicht --
+    damit lief jede Stimme auf dem Default 1.5. Fuer eine englische Referenz mit
+    deutschem Text ist das der Unterschied zwischen verstaendlich und nicht.
+    """
+
+    def test_worker_reicht_sprache_und_scale_durch(self):
+        runtime = StubRuntime([[pcm(9000)]])
+        run_engine(runtime, {"text": "Ein Satz, der lang genug ist."},
+                   stimme={"language": "de", "speaker_scale": 0.8})
+        self.assertEqual(1, len(runtime.kwargs))
+        self.assertEqual("de", runtime.kwargs[0]["language"])
+        self.assertEqual(0.8, runtime.kwargs[0]["speaker_scale"])
+
+    def test_vorgabe_bleibt_der_gemessene_betriebspunkt(self):
+        runtime = StubRuntime([[pcm(9000)]])
+        run_engine(runtime, {"text": "Ein Satz, der lang genug ist."})
+        self.assertEqual("en", runtime.kwargs[0]["language"])
+        self.assertEqual(1.5, runtime.kwargs[0]["speaker_scale"])
