@@ -54,8 +54,17 @@ Sätze ab. 10–15 s ist auch der einzige gemessene Bereich — die Phase-0-Refe
 Zeile je Einsatz, `#stimme: "Text"` setzt den Sprecher, eine Zeile ohne Präfix
 erbt ihn von der Zeile darüber, `//` ist ein Kommentar. Doppelklick auf eine
 Stimme fügt den Kopf ein. **Abspielen** streamt alles durch ein einziges
-`pw-cat`, **Als WAV** sammelt dieselben Blöcke und lädt die Datei ins
-Download-Verzeichnis. **Stopp** (oder `Esc`) killt `pw-cat` und schließt die
+`pw-cat`, **Exportieren** sammelt dieselben Blöcke in eine Datei. Format
+daneben umschaltbar zwischen **wav** (roh, wie der Dienst liefert) und **mp3**
+(192 kbps, über `lame`, sonst `ffmpeg`; ohne beides ist der Knopf aus,
+Bitrate per `MIMIC_MP3_BITRATE`). Ordner und Dateiname fragt der
+Speichern-Dialog **vor** dem Auftrag ab — `showSaveFilePicker` braucht eine
+frische Nutzeraktion, und die wäre nach zwei Minuten Rechnen verfallen;
+nebenbei ist erst-wohin-dann-laufen die bessere Reihenfolge. Der Vorschlag
+lautet `mimic-<stimme>-<hhmm>.<endung>`, den Ordner der letzten Wahl merkt
+sich der Dialog. Ohne die API landet die Datei wie bisher im
+Download-Verzeichnis.
+**Stopp** (oder `Esc`) killt `pw-cat` und schließt die
 Verbindung — der Worker sieht den Abbruch und hört auf zu rechnen
 (`outcome=cancelled` im Log). **Warmlauf** lädt `mf` vor, damit der erste Satz
 nicht auf das Modell wartet. Der Schalter **Modus** wechselt zwischen `mf`

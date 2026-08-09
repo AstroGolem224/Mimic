@@ -325,6 +325,11 @@ textarea::selection{background:rgba(168,120,255,.34)}
   background:linear-gradient(140deg,var(--violett),#d3a2ff);
   box-shadow:0 3px 14px rgba(168,120,255,.34), inset 0 1px 0 rgba(255,255,255,.4);
 }
+.modus button.an[data-format=mp3]{
+  background:linear-gradient(140deg,var(--bernstein),#ffd39b);
+  box-shadow:0 3px 14px rgba(255,180,92,.34), inset 0 1px 0 rgba(255,255,255,.45);
+}
+.modus button:disabled{opacity:.3;cursor:default}
 
 /* Statuszeile rechts */
 .status{
@@ -337,6 +342,7 @@ textarea::selection{background:rgba(168,120,255,.34)}
 }
 .status b.fehler{color:var(--koralle)}
 .status b.gut{color:var(--cyan)}
+.status b.warn{color:var(--bernstein)}
 .status u{
   text-decoration:none;
   font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
@@ -564,7 +570,11 @@ Zeile ohne Kopf erbt den Sprecher von oben.
     <button class="knopf spiel" id="bSpiel" title="Abspielen (Strg+Enter)">
       <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
     </button>
-    <button class="knopf" id="bSpeichern">Als WAV</button>
+    <button class="knopf" id="bSpeichern">Exportieren</button>
+    <div class="modus" id="format">
+      <button data-format="wav" class="an">wav</button>
+      <button data-format="mp3">mp3</button>
+    </div>
     <button class="knopf stopp" id="bStopp" disabled>Stopp</button>
     <button class="knopf warm" id="bWarm">Warmlauf</button>
     <div class="modus" id="modus">
@@ -745,13 +755,19 @@ function zeichneWelle(){
 }
 
 /* ── Bedienung ────────────────────────────────────────────────────── */
-let modus = "mf", laeuft = false;
+let modus = "mf", format = "wav", laeuft = false;
 
 $("modus").onclick = e => {
   const knopf = e.target.closest("button[data-modus]");
   if(!knopf) return;
   modus = knopf.dataset.modus;
   [...$("modus").children].forEach(b => b.classList.toggle("an", b === knopf));
+};
+$("format").onclick = e => {
+  const knopf = e.target.closest("button[data-format]:not(:disabled)");
+  if(!knopf) return;
+  format = knopf.dataset.format;
+  [...$("format").children].forEach(b => b.classList.toggle("an", b === knopf));
 };
 
 function setzeStatus(text, art){
@@ -769,15 +785,62 @@ function sperre(anAn){
   $("fort").classList.toggle("an", anAn);
 }
 
-async function starten(speichern){
+/* Zielort wird VOR dem Auftrag gewaehlt: showSaveFilePicker braucht eine
+   frische Nutzeraktion, und wenn der Auftrag erst zwei Minuten rechnet, ist
+   die langst verfallen. Nebeneffekt ist die bessere Reihenfolge -- erst
+   sagen wohin, dann laufen lassen. Ohne die API (kein Chromium) bleibt der
+   normale Download ins Download-Verzeichnis. */
+let zielGriff = null;
+
+function vorschlag(){
+  const stempel = new Date().toTimeString().slice(0, 5).replace(":", "");
+  const stimme = (gewaehlt || "mimic").replace(/^matthias_?/, "") || "mimic";
+  return `mimic-${stimme}-${stempel}.${format}`;
+}
+
+async function zielWaehlen(){
+  if(!window.showSaveFilePicker) return true;          // Fallback: Download
+  const typen = format === "mp3"
+    ? [{description: "MP3-Audio", accept: {"audio/mpeg": [".mp3"]}}]
+    : [{description: "WAV-Audio", accept: {"audio/wav": [".wav"]}}];
+  try{
+    // id merkt sich den Ordner der letzten Wahl fuer das naechste Mal.
+    zielGriff = await window.showSaveFilePicker({
+      id: "mimic-export", suggestedName: vorschlag(), types: typen});
+    return true;
+  }catch(fehler){
+    if(fehler && fehler.name === "AbortError"){ setzeStatus("Export abgebrochen"); return false; }
+    zielGriff = null;
+    setzeStatus("Speicherort nicht wählbar, gehe in den Download-Ordner", "warn");
+    return true;
+  }
+}
+
+async function ablegen(){
+  const antwort = await fetch("/api/export", {headers: {"X-Mimic-Token": T}});
+  if(!antwort.ok) throw new Error("HTTP " + antwort.status);
+  const strom = await antwort.blob();
+  const schreiber = await zielGriff.createWritable();
+  await schreiber.write(strom);
+  await schreiber.close();
+  const name = zielGriff.name;
+  zielGriff = null;
+  return name;
+}
+
+async function starten(datei){
   const text = $("feld").value;
   if(!text.trim()){ setzeStatus("nichts zu sprechen", "fehler"); return; }
+  zielGriff = null;
+  if(datei && !await zielWaehlen()) return;
   pegel = []; zeichneWelle();
   sperre(true);
   setzeStatus("wird vorbereitet…");
   try{
-    await api("/api/speak", {text, mode: modus, voice: gewaehlt, speichern});
+    await api("/api/speak", {text, mode: modus, voice: gewaehlt,
+                             speichern: !!datei, format: datei ? format : null});
   }catch(fehler){
+    zielGriff = null;
     sperre(false);
     setzeStatus("" + fehler, "fehler");
   }
@@ -843,6 +906,11 @@ async function tick(neuLesen){
   $("tUp").textContent = zeit(d.uptime_s);
 
   if(wert.record) zeigeAufnahme(wert.record);
+  const mp3Knopf = $("format").querySelector('[data-format=mp3]');
+  if(wert.mp3 === false && !mp3Knopf.disabled){
+    mp3Knopf.disabled = true;
+    mp3Knopf.title = "kein lame und kein ffmpeg gefunden";
+  }
 
   const auftrag = wert.job || {};
   if(wert.levels && wert.levels.length){ pegel.push(...wert.levels); zeichneWelle(); }
@@ -860,7 +928,14 @@ async function tick(neuLesen){
     }
     // Auch nach einem Neuladen den letzten Ausgang zeigen, nicht stumm "bereit".
     setzeStatus(auftrag.message || "bereit", !auftrag.message ? "" : auftrag.ok === false ? "fehler" : "gut");
-    if(auftrag.download) location.href = "/api/wav?t=" + encodeURIComponent(T);
+    if(auftrag.download){
+      if(zielGriff){
+        ablegen().then(name => setzeStatus(`gespeichert: ${name}`, "gut"))
+                 .catch(fehler => setzeStatus("Schreiben fehlgeschlagen: " + fehler, "fehler"));
+      }else{
+        location.href = "/api/export?t=" + encodeURIComponent(T);
+      }
+    }
     if(!auftrag.message) $("sSub").textContent = "—";
   }
 }

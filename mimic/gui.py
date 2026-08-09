@@ -20,6 +20,7 @@ Megabyte-Abhaengigkeit fuer ein Fenster mit vier Knoepfen.
 from __future__ import annotations
 
 import array
+import functools
 import hmac
 import http.server
 import io
@@ -51,10 +52,46 @@ MAX_TEXT_ZEICHEN = 100_000  # Grenze am Vertrauensrand; der Dienst prueft je Ein
 DAUER_MIN_S, DAUER_MAX_S = 3.0, 60.0
 DAUER_ZIEL = (8.0, 15.0)
 AUFNAHME_DECKEL_S = 90.0    # Notbremse gegen eine vergessene laufende Aufnahme
+# 192 kbps ist fuer eine Monospur reichlich und die Datei bleibt klein; die
+# Zahl ist ueber die Umgebung stellbar, weil Geschmack hier streitbar ist.
+MP3_BITRATE = os.environ.get("MIMIC_MP3_BITRATE", "192")
+# lame zuerst: liest die WAV von stdin, schreibt MP3 nach stdout, ein Prozess.
+# ffmpeg als Ausweichweg, weil es haeufiger installiert ist als lame.
+MP3_KODIERER = (
+    ("lame", ["--quiet", "-b", MP3_BITRATE, "-", "-"]),
+    ("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0",
+                "-f", "mp3", "-b:a", f"{MP3_BITRATE}k", "pipe:1"]),
+)
+FORMATE = {"wav": ("audio/wav", "mimic.wav"), "mp3": ("audio/mpeg", "mimic.mp3")}
 
 
 def stille(kopf: dict) -> bytes:
     return bytes(int(kopf["sample_rate"] * SPRECHERPAUSE_MS / 1000) * 2 * kopf["channels"])
+
+
+@functools.lru_cache(maxsize=1)
+def mp3_kodierer() -> tuple[str, list[str]] | None:
+    """Einmal suchen: der Puls fragt das mehrmals je Sekunde ab."""
+    for programm, argumente in MP3_KODIERER:
+        pfad = shutil.which(programm)
+        if pfad:
+            return pfad, argumente
+    return None
+
+
+def nach_mp3(wav: bytes) -> bytes:
+    """WAV nach MP3, ueber einen Fremdprozess -- Python kann kein MP3."""
+    werkzeug = mp3_kodierer()
+    if werkzeug is None:
+        raise RuntimeError("kein MP3-Kodierer gefunden -- lame oder ffmpeg installieren")
+    pfad, argumente = werkzeug
+    fertig = subprocess.run([pfad, *argumente], input=wav,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if fertig.returncode != 0 or not fertig.stdout:
+        grund = fertig.stderr.decode(errors="replace").strip().splitlines()
+        raise RuntimeError(f"{Path(pfad).name} ist fehlgeschlagen: "
+                           f"{grund[-1] if grund else f'Code {fertig.returncode}'}")
+    return fertig.stdout
 
 
 def pegel(pcm: bytes) -> list[float]:
@@ -515,7 +552,7 @@ class Sitzung:
         self.auftrag: dict = {"running": False, "index": 0, "total": 0, "voice": "",
                               "mode": "", "message": "", "ok": True, "download": False}
         self.pegel: list[float] = []
-        self.wav: bytes | None = None
+        self.export: dict | None = None     # {"daten", "typ", "name"} des letzten Auftrags
         self._status: tuple[float, dict] = (0.0, {})
         self._stimmen: tuple[float, list[str]] = (0.0, [])
 
@@ -550,7 +587,7 @@ class Sitzung:
         with self.lock:
             self.auftrag.update(felder)
 
-    def starten(self, text: str, modus: str, standard: str, speichern: bool) -> None:
+    def starten(self, text: str, modus: str, standard: str, format: str | None) -> None:
         if self.aufnahme.stand()["laeuft"]:
             raise RuntimeError("es laeuft eine Aufnahme")
         with self.lock:
@@ -559,16 +596,16 @@ class Sitzung:
             self.abbruch.clear()
             self.aktive.zuruecksetzen()
             self.pegel = []
-            self.wav = None
+            self.export = None
             self.auftrag = {"running": True, "index": 0, "total": 0, "voice": "",
                             "mode": modus, "message": "wird vorbereitet…",
                             "ok": True, "download": False}
         self.thread = threading.Thread(target=self._lauf, name="mimic-gui-auftrag",
-                                       args=(text, modus, standard, speichern), daemon=True)
+                                       args=(text, modus, standard, format), daemon=True)
         self.thread.start()
 
-    def _lauf(self, text: str, modus: str, standard: str, speichern: bool) -> None:
-        senke = Sammler() if speichern else Wiedergabe()
+    def _lauf(self, text: str, modus: str, standard: str, format: str | None) -> None:
+        senke = Sammler() if format else Wiedergabe()
 
         def gemessen(kopf: dict, pcm: bytes) -> None:
             senke(kopf, pcm)
@@ -593,10 +630,15 @@ class Sitzung:
                     senke.pause()
             if isinstance(senke, Sammler):
                 daten = senke.wav()
+                if format == "mp3":
+                    self.melden(message="kodiert MP3…")
+                    daten = nach_mp3(daten)
+                typ, name = FORMATE[format or "wav"]
                 with self.lock:
-                    self.wav = daten
+                    self.export = {"daten": daten, "typ": typ, "name": name}
                 self.melden(running=False, download=True, ok=True,
-                            message=f"WAV bereit ({len(daten) // 1024} KiB) — wird geladen")
+                            message=f"{(format or 'wav').upper()} bereit "
+                                    f"({len(daten) // 1024} KiB) — wird geladen")
             else:
                 senke.schliessen()
                 self.melden(running=False, ok=True,
@@ -679,14 +721,14 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             return
         if pfad == "/api/state":
             self._zustand()
-        elif pfad == "/api/wav":
+        elif pfad == "/api/export":
             with self.sitzung.lock:
-                daten = self.sitzung.wav
-            if daten is None:
-                self._json(404, {"message": "keine WAV bereit"})
+                fach = self.sitzung.export
+            if fach is None:
+                self._json(404, {"message": "keine Datei bereit"})
                 return
-            self._senden(200, "audio/wav", daten,
-                         {"Content-Disposition": 'attachment; filename="mimic.wav"'})
+            self._senden(200, fach["typ"], fach["daten"],
+                         {"Content-Disposition": f'attachment; filename="{fach["name"]}"'})
         elif pfad == "/api/inventar":
             self._json(200, {"voices": stimmen_details(),
                              "charaktere": [{"name": name, "regie": wert.regie, "text": wert.text}
@@ -800,7 +842,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                 self.sitzung.auftrag["download"] = False
         self._json(200, {"voices": self.sitzung.stimmen(frisch), "service": self.sitzung.dienst(),
                          "job": auftrag, "levels": neue, "cursor": marke,
-                         "record": self.sitzung.aufnahme.stand()})
+                         "record": self.sitzung.aufnahme.stand(),
+                         "mp3": mp3_kodierer() is not None})
 
     def _sprechen(self, wunsch: dict) -> None:
         text = wunsch.get("text")
@@ -815,8 +858,16 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         if modus not in ("mf", "soar"):
             self._json(400, {"message": "mode muss mf oder soar sein"})
             return
+        format = wunsch.get("format") or None
+        if format is not None and format not in FORMATE:
+            self._json(400, {"message": f"format muss {' oder '.join(FORMATE)} sein"})
+            return
+        if format == "mp3" and mp3_kodierer() is None:
+            self._json(503, {"message": "kein MP3-Kodierer gefunden -- lame oder ffmpeg "
+                                        "installieren"})
+            return
         try:
-            self.sitzung.starten(text, modus, stimme, bool(wunsch.get("speichern")))
+            self.sitzung.starten(text, modus, stimme, format)
         except RuntimeError as fehler:
             self._json(409, {"message": str(fehler)})
             return
@@ -930,10 +981,22 @@ def demo() -> None:
     assert len(sitzung.token) >= 24
     assert not sitzung.auftrag["running"]
     sammler = Sammler()
-    sammler({"sample_rate": 24000, "channels": 1}, bytes(480))
-    kopf = sammler.wav()[:4]
-    assert kopf == b"RIFF", kopf
-    print("gui demo ok")
+    # Eine halbe Sekunde Sinuston: Stille wuerde lame zu einem winzigen Rahmen
+    # zusammenfalten und die Kodierung nicht wirklich pruefen.
+    import math
+    ton = array.array("h", [int(9000 * math.sin(i * 0.18)) for i in range(12000)])
+    sammler({"sample_rate": 24000, "channels": 1}, ton.tobytes())
+    wav = sammler.wav()
+    assert wav[:4] == b"RIFF", wav[:4]
+
+    if mp3_kodierer() is None:
+        print("gui demo ok (ohne MP3: kein lame und kein ffmpeg)")
+        return
+    mp3 = nach_mp3(wav)
+    # MPEG-Rahmen beginnt mit 11 gesetzten Bits, ein ID3-Kopf davor ist erlaubt.
+    assert mp3[:3] == b"ID3" or (mp3[0] == 0xFF and mp3[1] & 0xE0 == 0xE0), mp3[:4]
+    assert 0 < len(mp3) < len(wav), (len(mp3), len(wav))
+    print(f"gui demo ok (MP3 {len(mp3)} von {len(wav)} Byte)")
 
 
 if __name__ == "__main__":
