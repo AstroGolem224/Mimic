@@ -1,6 +1,6 @@
 """Fenster zum Vorlesen von Skripten mit mehreren Stimmen.
 
-Format im Textfeld, eine Zeile je Einsatz:
+Format im Textfeld:
 
     #matthias_krieger: "Der Turm steht offen."
     #matthias_magier: Weisst du, was das bedeutet?
@@ -8,7 +8,8 @@ Format im Textfeld, eine Zeile je Einsatz:
 
 Die Anfuehrungszeichen sind optional. Eine Zeile ohne Praefix erbt den
 Sprecher der Zeile darueber; ganz am Anfang gilt die links ausgewaehlte
-Stimme. Leerzeilen und Zeilen ab '//' werden uebersprungen.
+Stimme. Aufeinanderfolgende Zeilen desselben Sprechers bilden einen Absatz;
+eine Leerzeile trennt Einsaetze. Zeilen ab '//' werden uebersprungen.
 
 Die Oberflaeche liegt als HTML in gui.html und laeuft in einem
 Chromium-App-Fenster gegen einen kurzlebigen Loopback-Server. Grund: echtes
@@ -119,20 +120,33 @@ def parse_skript(quelle: str, standard: str) -> list[Einsatz]:
     """Zerlegt das Textfeld in Einsaetze. Reine Textverarbeitung, kein Netz."""
     einsaetze: list[Einsatz] = []
     aktuell = standard
+    absatz: list[str] = []
+
+    def abschliessen() -> None:
+        if absatz:
+            einsaetze.append(Einsatz(aktuell, " ".join(absatz)))
+            absatz.clear()
+
     for zeile in quelle.splitlines():
         zeile = zeile.strip()
-        if not zeile or zeile.startswith("//"):
+        if not zeile:
+            abschliessen()
+            continue
+        if zeile.startswith("//"):
             continue
         if zeile.startswith("#") and ":" in zeile:
             kopf, rest = zeile[1:].split(":", 1)
             kopf = kopf.strip()
             if kopf:
+                if kopf != aktuell:
+                    abschliessen()
                 aktuell = kopf
                 zeile = rest.strip()
         if len(zeile) >= 2 and zeile[0] == zeile[-1] and zeile[0] in "\"'":
             zeile = zeile[1:-1].strip()
         if zeile:
-            einsaetze.append(Einsatz(aktuell, zeile))
+            absatz.append(zeile)
+    abschliessen()
     return einsaetze
 
 
@@ -999,7 +1013,7 @@ def main() -> int:
 def demo() -> None:
     """Selbstpruefung ohne Fenster: Parser, Pegel und Token-Wache."""
     assert parse_skript('#a: "eins"\nzwei\n// weg\n', "z") == [
-        Einsatz("a", "eins"), Einsatz("a", "zwei")]
+        Einsatz("a", "eins zwei")]
     assert parse_skript("Er sagte: komm.", "z") == [Einsatz("z", "Er sagte: komm.")]
     laut = array.array("h", [32767, -32768] * PEGEL_FENSTER).tobytes()
     assert pegel(laut) == [1.0, 1.0], pegel(laut)

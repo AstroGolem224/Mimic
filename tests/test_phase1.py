@@ -348,6 +348,35 @@ class TextAndLevelTests(unittest.TestCase):
             # Nichts darf verlorengehen.
             self.assertEqual(sorted(text.split()), sorted(" ".join(teile).split()))
 
+    def test_10a_lange_stuecke_werden_begrenzt(self):
+        from mimic.voices import MAX_SATZ_ZEICHEN, MIN_SATZ_ZEICHEN, split_sentences
+        text = " ".join(["Dieser lange Text enthaelt viele Woerter und ein Komma,"] * 8)
+        teile = split_sentences(text)
+        self.assertGreater(len(teile), 1)
+        for teil in teile:
+            self.assertGreaterEqual(len(teil), MIN_SATZ_ZEICHEN)
+            self.assertLessEqual(len(teil), MAX_SATZ_ZEICHEN + MIN_SATZ_ZEICHEN)
+        self.assertEqual(sorted(text.split()), sorted(" ".join(teile).split()))
+
+    def test_10b_normale_saetze_bleiben_unveraendert(self):
+        from mimic.voices import split_sentences
+        text = ("Dieser erste Satz ist lang genug und bleibt unveraendert. "
+                "Auch dieser zweite Satz hat genug Inhalt und bleibt ganz.")
+        self.assertEqual([
+            "Dieser erste Satz ist lang genug und bleibt unveraendert.",
+            "Auch dieser zweite Satz hat genug Inhalt und bleibt ganz.",
+        ], split_sentences(text))
+
+    def test_10c_hart_umgebrochener_absatz_bleibt_ein_einsatz(self):
+        from mimic.gui import Einsatz, parse_skript
+        quelle = ("#matthias: Dieser Satz beginnt in der ersten Zeile,\n"
+                  "wird in der zweiten Zeile fortgesetzt und\n"
+                  "endet erst in der dritten Zeile.\n")
+        self.assertEqual([
+            Einsatz("matthias", ("Dieser Satz beginnt in der ersten Zeile, wird in der "
+                                 "zweiten Zeile fortgesetzt und endet erst in der dritten Zeile.")),
+        ], parse_skript(quelle, "standard"))
+
     def test_11_verstaerkung_hebt_referenz_auf_zielpegel(self):
         import math
         import wave

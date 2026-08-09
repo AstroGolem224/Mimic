@@ -104,6 +104,9 @@ _SATZENDE = re.compile(r"(?<=[.!?…])[\"')\]]*\s+")
 # kostet dort hoerbare Totzeit -- billiger ist, den kurzen Satz an seinen
 # Nachbarn zu haengen. Preis: an solchen Stellen entfaellt die Atempause.
 MIN_SATZ_ZEICHEN = 20
+# Ein Generierungsaufruf bleibt so in der Laenge, die das Modell sauber traegt;
+# 250 Zeichen entsprechen etwa zwei langen deutschen Saetzen.
+MAX_SATZ_ZEICHEN = 250
 
 
 def split_sentences(text: str) -> list[str]:
@@ -126,7 +129,28 @@ def split_sentences(text: str) -> list[str]:
     if len(zusammengefasst) > 1 and len(zusammengefasst[0]) < MIN_SATZ_ZEICHEN:
         zusammengefasst[1] = f"{zusammengefasst[0]} {zusammengefasst[1]}"
         zusammengefasst.pop(0)
-    return zusammengefasst
+    begrenzt: list[str] = []
+    for teil in zusammengefasst:
+        stuecke: list[str] = []
+        while len(teil) > MAX_SATZ_ZEICHEN:
+            schnitt = 0
+            for treffer in re.finditer(r"[,;:–—](?=\s)", teil[:MAX_SATZ_ZEICHEN + 1]):
+                if treffer.end() >= MIN_SATZ_ZEICHEN:
+                    schnitt = treffer.end()
+            if not schnitt:
+                leerzeichen = [treffer.start() for treffer in
+                               re.finditer(r"\s+", teil[:MAX_SATZ_ZEICHEN + 1])
+                               if treffer.start() >= MIN_SATZ_ZEICHEN]
+                schnitt = leerzeichen[-1] if leerzeichen else MAX_SATZ_ZEICHEN
+            stuecke.append(teil[:schnitt].strip())
+            teil = teil[schnitt:].strip()
+        if teil:
+            if stuecke and len(teil) < MIN_SATZ_ZEICHEN:
+                stuecke[-1] = f"{stuecke[-1]} {teil}"
+            else:
+                stuecke.append(teil)
+        begrenzt.extend(stuecke)
+    return begrenzt
 
 
 def default_voices_dir() -> Path:
