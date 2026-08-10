@@ -163,17 +163,31 @@ class Ansagetext(unittest.TestCase):
 
 
 class Stimme(unittest.TestCase):
+    def leeres_laufzeitverzeichnis(self) -> str:
+        return str(Path(self.enterContext(tempfile.TemporaryDirectory())))
+
     def test_vorgabe(self):
-        with unittest.mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(ansage.stimme(), "matthias_krieger")
+        with unittest.mock.patch.dict(
+                os.environ, {"XDG_RUNTIME_DIR": self.leeres_laufzeitverzeichnis()}, clear=True):
+            self.assertEqual(ansage.stimme(), "forge")
 
     def test_umgebung_sticht(self):
         with unittest.mock.patch.dict(os.environ, {"MIMIC_ANSAGE_STIMME": "matthias_magier"}):
             self.assertEqual(ansage.stimme(), "matthias_magier")
 
     def test_leere_umgebung_faellt_auf_die_vorgabe_zurueck(self):
-        with unittest.mock.patch.dict(os.environ, {"MIMIC_ANSAGE_STIMME": "  "}):
-            self.assertEqual(ansage.stimme(), "matthias_krieger")
+        with unittest.mock.patch.dict(
+                os.environ, {"MIMIC_ANSAGE_STIMME": "  ",
+                             "XDG_RUNTIME_DIR": self.leeres_laufzeitverzeichnis()}):
+            self.assertEqual(ansage.stimme(), "forge")
+
+    def test_persona_datei_sticht_die_vorgabe(self):
+        # Die Persona-Skills schreiben diese Datei beim Umschalten. Fehlt der
+        # Mechanismus, spricht jede Persona mit der Vorgabestimme weiter.
+        laufzeit = self.leeres_laufzeitverzeichnis()
+        (Path(laufzeit) / "mimic-ansage.stimme").write_text("glados\n", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": laufzeit}, clear=True):
+            self.assertEqual(ansage.stimme(), "glados")
 
 
 class Einhaengen(unittest.TestCase):

@@ -30,7 +30,7 @@ Aufruf von Hand:
     tools/ansage.py --vorschau < h.json  # zeigt nur den Satz, spricht nicht
 
 Stellschrauben ueber die Umgebung:
-    MIMIC_ANSAGE_STIMME   Stimmprofil (Vorgabe: matthias_krieger)
+    MIMIC_ANSAGE_STIMME   Stimmprofil (Vorgabe: forge)
     MIMIC_ANSAGE_STILL=1  schaltet die Ansage ab, ohne den Hook auszubauen
 """
 
@@ -56,11 +56,32 @@ FERTIG = "Fertig."
 OHNE_INHALT = "Fertig. Keine Zusammenfassung im Transkript."
 
 
-VORGABE_STIMME = "matthias_krieger"     # tief, langsam, jedes Wort steht fuer sich
+VORGABE_STIMME = "forge"        # Stimme der Standard-Persona
+
+
+def stimmdatei() -> Path:
+    # Eine Datei fuer alle Sitzungen -- zwei parallele Sitzungen mit
+    # verschiedenen Personas teilen sich die Stimme. Bei Bedarf nach
+    # session_id schluesseln, das Hook-JSON enthaelt sie.
+    laufzeit = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return Path(laufzeit) / "mimic-ansage.stimme"
 
 
 def stimme() -> str:
-    return os.environ.get("MIMIC_ANSAGE_STIMME", VORGABE_STIMME).strip() or VORGABE_STIMME
+    """Umgebung schlaegt Persona-Datei schlaegt Vorgabe.
+
+    Die Datei schreiben die Persona-Skills beim Umschalten. Sie liegt im
+    Laufzeitverzeichnis und ueberlebt keinen Neustart -- danach gilt wieder
+    VORGABE_STIMME. Genau deshalb muss die Vorgabe die Standard-Persona sein.
+    """
+    aus_umgebung = os.environ.get("MIMIC_ANSAGE_STIMME", "").strip()
+    if aus_umgebung:
+        return aus_umgebung
+    try:
+        aus_datei = stimmdatei().read_text(encoding="utf-8").strip()
+    except OSError:
+        aus_datei = ""
+    return aus_datei or VORGABE_STIMME
 
 
 # ---------------------------------------------------------------- Text bauen

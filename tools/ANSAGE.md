@@ -87,7 +87,12 @@ starten, dann zeigt `/hooks`, was aktiv ist.
 
 | Variable | Wirkung |
 |---|---|
-| `MIMIC_ANSAGE_STIMME` | Stimmprofil, Vorgabe `matthias_krieger`. Jedes Profil aus `mimic voices` geht. |
+| `MIMIC_ANSAGE_STIMME` | Stimmprofil, sticht alles andere. Jedes Profil aus `mimic voices` geht. |
+
+Ohne diese Variable gilt `$XDG_RUNTIME_DIR/mimic-ansage.stimme` -- die Datei
+schreiben die Persona-Skills beim Umschalten. Sie liegt im Laufzeitverzeichnis
+und ueberlebt keinen Neustart; danach spricht wieder die Vorgabe `forge`.
+
 | `MIMIC_ANSAGE_STILL=1` | Schweigt, ohne den Hook auszubauen. Für lange Sitzungen am Schreibtisch. |
 | `KOPFHOERER_MAC` | Überschreibt `~/.config/mimic/kopfhoerer`. |
 
