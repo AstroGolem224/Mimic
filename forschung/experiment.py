@@ -16,10 +16,10 @@ from __future__ import annotations
 
 # ── Stellschrauben (NUR diesen Block editieren) ─────────────────────────
 MIN_SATZ_ZEICHEN = 20      # Vorgabe des Dienstes: 20
-MAX_SATZ_ZEICHEN = 250     # Vorgabe des Dienstes: 250
+MAX_SATZ_ZEICHEN = 80      # Vorgabe des Dienstes: 80 (seit Nachtlauf 2026-08-10)
 PAUSE_MS = 180             # Atempause zwischen Saetzen, Vorgabe: 180
-SPEAKER_SCALE = None       # None = Wert aus dem Stimmprofil (z. B. 1.5 / 0.8)
-NOTIZ = "baseline"         # eine Zeile: was dieser Lauf prueft
+SPEAKER_SCALE = 1.0        # None = Wert aus dem Stimmprofil (Profile stehen auf 1.0)
+NOTIZ = "gewinnerlage: max_satz 80, speaker_scale 1.0 (zweifach bestaetigt)"
 # ────────────────────────────────────────────────────────────────────────
 
 BUDGET_S = 300.0           # Zeitbudget wie im autoresearch-Original

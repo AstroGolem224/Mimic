@@ -104,9 +104,14 @@ _SATZENDE = re.compile(r"(?<=[.!?…])[\"')\]]*\s+")
 # kostet dort hoerbare Totzeit -- billiger ist, den kurzen Satz an seinen
 # Nachbarn zu haengen. Preis: an solchen Stellen entfaellt die Atempause.
 MIN_SATZ_ZEICHEN = 20
-# Ein Generierungsaufruf bleibt so in der Laenge, die das Modell sauber traegt;
-# 250 Zeichen entsprechen etwa zwei langen deutschen Saetzen.
-MAX_SATZ_ZEICHEN = 250
+# Ein Generierungsaufruf bleibt so in der Laenge, die das Modell sauber traegt.
+# 80 statt 250: der Nachtlauf vom 2026-08-10 (forschung/journal.jsonl) hat den
+# Sweep 250->160->120->80 gemessen -- bei 250 verschluckte dots.tts in langen
+# Kommatexten stochastisch ganze Chunks (Wortfehlerrate 0.31/0.50 bei
+# unauffaelliger Sprecher-Aehnlichkeit), ab 160 abwaerts trat das in 12 von 12
+# Laeufen nicht mehr auf, und die Aehnlichkeit stieg monoton bis 80. Preis:
+# alle ~80 Zeichen eine Atempause -- im A/B-Hoervergleich als besser beurteilt.
+MAX_SATZ_ZEICHEN = 80
 
 
 def split_sentences(text: str) -> list[str]:
