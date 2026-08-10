@@ -36,7 +36,8 @@ oder verwerfen.
   darfst du `ollama stop <modell>` ausführen, sonst nichts beenden.
 - Stellschrauben-Grenzen: `MIN_SATZ_ZEICHEN` 10–60, `MAX_SATZ_ZEICHEN`
   80–500, `PAUSE_MS` 0–600, `SPEAKER_SCALE` None oder 0.5–2.0 (Grenzen des
-  Dienstes, siehe mimic/voices.py).
+  Dienstes, siehe mimic/voices.py), `MODUS` "mf" oder "soar". `mittel`-Werte
+  sind nur zwischen Läufen mit demselben `MODUS` vergleichbar.
 - Stopp nach 12 Läufen oder wenn drei Änderungen in Folge nichts verbessert
   haben. Dann: bestes Journal-Ergebnis nennen, Stellschrauben auf den
   Gewinnerstand setzen, NICHT committen — der Gewinner wird am Morgen von

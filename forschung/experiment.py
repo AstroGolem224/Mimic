@@ -19,7 +19,8 @@ MIN_SATZ_ZEICHEN = 20      # Vorgabe des Dienstes: 20
 MAX_SATZ_ZEICHEN = 80      # Vorgabe des Dienstes: 80 (seit Nachtlauf 2026-08-10)
 PAUSE_MS = 180             # Atempause zwischen Saetzen, Vorgabe: 180
 SPEAKER_SCALE = 1.0        # None = Wert aus dem Stimmprofil (Profile stehen auf 1.0)
-NOTIZ = "gewinnerlage: max_satz 80, speaker_scale 1.0 (zweifach bestaetigt)"
+MODUS = "soar"             # "mf" oder "soar"; Laeufe sind nur im selben Modus vergleichbar
+NOTIZ = "soar-validierung der gewinnerlage nach standardwechsel"
 # ────────────────────────────────────────────────────────────────────────
 
 BUDGET_S = 300.0           # Zeitbudget wie im autoresearch-Original
@@ -137,7 +138,7 @@ def main() -> int:
     release = request_gpu_permission()
     try:
         from dots_tts.runtime import DotsTtsRuntime
-        repo, revision = REVISIONS["mf"]
+        repo, revision = REVISIONS[MODUS]
         os.environ["HF_HUB_OFFLINE"] = "1"
         with torch.device("cuda"):
             runtime = DotsTtsRuntime.from_pretrained(
@@ -179,7 +180,8 @@ def main() -> int:
     gueltig = bool(ergebnisse) and all(e["wer"] <= WER_DECKEL for e in ergebnisse)
     eintrag = {"lauf": lauf, "notiz": NOTIZ,
                "stellschrauben": {"min_satz": MIN_SATZ_ZEICHEN, "max_satz": MAX_SATZ_ZEICHEN,
-                                  "pause_ms": PAUSE_MS, "speaker_scale": SPEAKER_SCALE},
+                                  "pause_ms": PAUSE_MS, "speaker_scale": SPEAKER_SCALE,
+                                  "modus": MODUS},
                "mittel": mittel, "gueltig": gueltig, "wer_deckel": WER_DECKEL,
                "proben": ergebnisse, "uebersprungen": uebersprungen,
                "dauer_s": round(time.monotonic() - start, 1)}
