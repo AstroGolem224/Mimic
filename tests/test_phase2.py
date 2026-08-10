@@ -228,10 +228,11 @@ class WorkerDefectTests(unittest.TestCase):
 
         path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "pronunciation.json"
         path.write_text(json.dumps({"gut": "/etc/passwd", "web": "https://example.test",
-                                    "harmlos": "anderer Satz", "main": "mayn"}),
+                                    "harmlos": "anderer Satz", "main": "mayn",
+                                    "Satzende": "Satz-Ende"}),
                         encoding="utf-8")
-        self.assertEqual("gut web anderer Satz mayn",
-                         apply_pronunciation("gut web harmlos main", path))
+        self.assertEqual("gut web anderer Satz mayn Satz-Ende",
+                         apply_pronunciation("gut web harmlos main Satzende", path))
 
     def test_stummer_take_wird_verworfen_bis_hoerbarer_take_beginnt(self):
         from mimic import worker
