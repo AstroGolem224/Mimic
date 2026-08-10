@@ -84,9 +84,37 @@ class Zusammenfassen(unittest.TestCase):
         self.assertEqual(ansage.zusammenfassen("Fertig.\n```\nkaputt"), "Fertig.")
 
     def test_auszeichnung_und_links(self):
-        text = "## Ergebnis\n- **Zwei** Fehler behoben\n- Siehe [PHASE2](PHASE2.md)"
+        text = "## Ergebnis\n- **Zwei** Fehler behoben\n- Der Rest passt"
         self.assertEqual(ansage.zusammenfassen(text),
-                         "Ergebnis. Zwei Fehler behoben. Siehe PHASE2.")
+                         "Ergebnis. Zwei Fehler behoben. Der Rest passt.")
+
+    def test_inline_code_wird_nicht_vorgelesen(self):
+        """Bezeichner buchstabiert die Stimme, das zerhackt den Sprachfluss."""
+        text = "Die Vorgabe steht in `VORGABE_STIMME` und greift sofort."
+        self.assertEqual(ansage.zusammenfassen(text), "Die Vorgabe steht in und greift sofort.")
+
+    def test_dateiname_und_verzeichnis_im_fliesstext_fallen_weg(self):
+        text = "Der Filter sitzt in tools/ansage.py und deckt auch ~/.local/bin ab."
+        ergebnis = ansage.zusammenfassen(text)
+        self.assertNotIn("ansage", ergebnis)
+        self.assertNotIn("local", ergebnis)
+        self.assertIn("Der Filter sitzt in", ergebnis)
+
+    def test_dateilink_faellt_ganz_weg(self):
+        # Der Linktext ist bei uns der Dateiname -- ihn zu behalten hiesse,
+        # genau das vorzulesen, was nicht vorgelesen werden soll.
+        text = "Geaendert in [cli.py](mimic/cli.py:195), Tests bleiben gruen."
+        ergebnis = ansage.zusammenfassen(text)
+        self.assertNotIn("cli", ergebnis)
+        self.assertIn("Tests bleiben gruen", ergebnis)
+
+    def test_satzzeichen_ruecken_nach_dem_streichen_zusammen(self):
+        text = "Fertig in `mimic/worker.py` , alles gruen."
+        self.assertEqual(ansage.zusammenfassen(text), "Fertig in, alles gruen.")
+
+    def test_zeile_nur_aus_bezeichnern_faellt_weg(self):
+        text = "Fertig. `mimic say --voice forge`\nDer Rest bleibt."
+        self.assertEqual(ansage.zusammenfassen(text), "Fertig. Der Rest bleibt.")
 
     def test_tabellen_und_trennlinien(self):
         text = "Stand:\n| A | B |\n|---|---|\n| 1 | 2 |\n---\nPasst."

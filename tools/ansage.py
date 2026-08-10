@@ -46,7 +46,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-GRENZE = 420            # Zeichen; darueber wird die Ansage zum Vortrag
+GRENZE = 650            # Zeichen; darueber wird die Ansage zum Vortrag
 MINDEST = 150           # darunter lieber anschneiden als abbrechen
 TAIL_BYTES = 1 << 20    # so weit wird ins Transkript zurueckgelesen
 KOPFHOERER_FRIST_S = 20
@@ -143,9 +143,26 @@ def letzte_antwort(pfad: Path) -> str:
 
 
 _CODEBLOCK = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
-_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# Der Linktext ist hier fast immer der Dateiname -- ihn zu behalten hiesse,
+# genau das vorzulesen, was nicht vorgelesen werden soll.
+_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
 _URL = re.compile(r"<?https?://\S+>?")
+# Alles in Backticks ist Bezeichner, Befehl oder Pfad. Die Stimme buchstabiert
+# es, und das zerhackt den Sprachfluss mehr, als der Inhalt wert ist -- wer den
+# genauen Namen braucht, liest ihn im Terminal nach.
+_INLINE_CODE = re.compile(r"`[^`]*`")
+# Dateiartig ohne Backticks: Pfade mit Schraegstrich oder Tilde und einzelne
+# Dateinamen mit bekannter Endung, jeweils mit optionaler :Zeilennummer.
+_DATEIARTIG = re.compile(
+    r"(?<!\w)(?:~?[\w.@-]*/[\w./@-]+|[\w-]+\.(?:py|sh|md|json|jsonl|toml|txt|ya?ml"
+    r"|html|css|js|ts|tsx|wav|mp3|service|socket))(?::\d+)?")
 _AUSZEICHNUNG = re.compile(r"[`*_#>]+")
+# Nach dem Streichen bleiben Luecken vor Satzzeichen und leere Klammerpaare.
+_LUECKE_VOR_SATZZEICHEN = re.compile(r"\s+([,.;:!?])")
+_LEERE_KLAMMER = re.compile(r"\(\s*\)|\[\s*\]")
+# Ein Wort, das die Stimme als Wort spricht. Bleibt nach dem Streichen keines
+# uebrig, war die Zeile nur ein Rahmen um einen Bezeichner ("Siehe:" plus Pfad).
+_WORTHALTIG = re.compile(r"[^\W\d_]{3,}")
 _AUFZAEHLUNG = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _PFADARTIG = re.compile(r"^\S+/\S+$")
 # Doppelpunkt beendet hier bewusst KEINEN Satz: "Der Kern ist der:" und was
@@ -162,14 +179,17 @@ def _kappen(text: str, grenze: int) -> str:
 def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     """Aus einer Markdown-Antwort einen sprechbaren Satz machen.
 
-    Gesprochen wird nur Prosa. Codebloecke, Tabellen, URLs und Trennlinien
-    liest keine Stimme sinnvoll vor, also fallen sie weg, bevor gekuerzt wird
-    -- sonst besteht die Ansage aus dem Anfang eines Diffs oder aus einer
-    buchstabierten GitHub-Adresse.
+    Gesprochen wird nur Prosa. Codebloecke, Tabellen, URLs, Trennlinien und
+    alles Dateiartige liest keine Stimme sinnvoll vor, also fallen sie weg,
+    bevor gekuerzt wird -- sonst besteht die Ansage aus dem Anfang eines Diffs,
+    aus einer buchstabierten GitHub-Adresse oder aus Pfaden, die den Satzfluss
+    zerhacken.
     """
     text = _CODEBLOCK.sub(" ", text)
-    text = _LINK.sub(r"\1", text)
+    text = _LINK.sub(" ", text)
     text = _URL.sub(" ", text)
+    text = _INLINE_CODE.sub(" ", text)
+    text = _DATEIARTIG.sub(" ", text)
 
     saetze: list[str] = []
     for zeile in text.splitlines():
@@ -191,8 +211,12 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
             if schnitt < 0:
                 continue
             zeile = zeile[:schnitt + 1]
-        zeile = zeile.rstrip(_RANDZEICHEN)
-        if not zeile or _PFADARTIG.match(zeile):
+        zeile = _LEERE_KLAMMER.sub(" ", zeile)
+        zeile = _LUECKE_VOR_SATZZEICHEN.sub(r"\1", " ".join(zeile.split()))
+        zeile = zeile.rstrip(_RANDZEICHEN).lstrip(_RANDZEICHEN)
+        # Was von der Zeile bleibt, muss noch etwas aussagen: eine Zeile, die
+        # nur aus einem Befehl bestand, ist jetzt leer oder ein Rumpf wie "in".
+        if not _WORTHALTIG.search(zeile) or _PFADARTIG.match(zeile):
             continue
         saetze.append(zeile if zeile[-1] in ".!?" else zeile + ".")
 
