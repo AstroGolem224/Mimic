@@ -112,6 +112,12 @@ MIN_SATZ_ZEICHEN = 20
 # Laeufen nicht mehr auf, und die Aehnlichkeit stieg monoton bis 80. Preis:
 # alle ~80 Zeichen eine Atempause -- im A/B-Hoervergleich als besser beurteilt.
 MAX_SATZ_ZEICHEN = 80
+# Die Zielgrenze ist weich: geschnitten wird nur an Klausel-Interpunktion.
+# Ein Stueck OHNE solche Grenze bleibt bis hierher ganz -- ein Schnitt am
+# blossen Leerzeichen mitten im Satzteil klingt wie ein Aussetzer. 250 ist
+# die alte, fuer einzelne Saetze unauffaellige Obergrenze; das Verschlucken
+# wurde nur bei Klauselketten weit darueber beobachtet.
+MAX_SATZ_HART = 250
 
 
 def split_sentences(text: str) -> list[str]:
@@ -143,10 +149,19 @@ def split_sentences(text: str) -> list[str]:
                 if treffer.end() >= MIN_SATZ_ZEICHEN:
                     schnitt = treffer.end()
             if not schnitt:
+                # Keine Klauselgrenze vor der Zielmarke: lieber ein laengeres
+                # Stueck bis zur naechsten Grenze als ein Schnitt mitten im Satz.
+                for treffer in re.finditer(r"[,;:–—](?=\s)", teil[:MAX_SATZ_HART + 1]):
+                    if treffer.end() >= MIN_SATZ_ZEICHEN:
+                        schnitt = treffer.end()
+                        break
+            if not schnitt:
+                if len(teil) <= MAX_SATZ_HART:
+                    break               # kein Schnittpunkt, aber tragbar: ganz lassen
                 leerzeichen = [treffer.start() for treffer in
-                               re.finditer(r"\s+", teil[:MAX_SATZ_ZEICHEN + 1])
+                               re.finditer(r"\s+", teil[:MAX_SATZ_HART + 1])
                                if treffer.start() >= MIN_SATZ_ZEICHEN]
-                schnitt = leerzeichen[-1] if leerzeichen else MAX_SATZ_ZEICHEN
+                schnitt = leerzeichen[-1] if leerzeichen else MAX_SATZ_HART
             stuecke.append(teil[:schnitt].strip())
             teil = teil[schnitt:].strip()
         if teil:

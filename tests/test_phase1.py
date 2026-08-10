@@ -367,6 +367,32 @@ class TextAndLevelTests(unittest.TestCase):
             "Auch dieser zweite Satz hat genug Inhalt und bleibt ganz.",
         ], split_sentences(text))
 
+    def test_10d_satz_ohne_klauselgrenze_bleibt_ganz(self):
+        from mimic.voices import MAX_SATZ_HART, MAX_SATZ_ZEICHEN, split_sentences
+        text = ("Der alte Kartograph zeichnete die verwitterte Karte des noerdlichen "
+                "Gebirges bei flackerndem Kerzenlicht vollstaendig neu")
+        self.assertGreater(len(text), MAX_SATZ_ZEICHEN)
+        self.assertLessEqual(len(text), MAX_SATZ_HART)
+        # Kein Schnitt am blossen Leerzeichen mitten im Satz.
+        self.assertEqual([text], split_sentences(text))
+
+    def test_10e_klauselgrenze_hinter_der_zielmarke_wird_genutzt(self):
+        from mimic.voices import MAX_SATZ_ZEICHEN, split_sentences
+        vorn = ("Der alte Kartograph zeichnete die verwitterte Karte des "
+                "noerdlichen Gebirges vollstaendig neu,")
+        hinten = "und niemand im Dorf wollte ihm dabei zusehen"
+        self.assertGreater(len(vorn), MAX_SATZ_ZEICHEN)
+        self.assertEqual([vorn, hinten], split_sentences(f"{vorn} {hinten}"))
+
+    def test_10f_monster_ohne_interpunktion_teilt_an_der_harten_grenze(self):
+        from mimic.voices import MAX_SATZ_HART, split_sentences
+        text = " ".join(["wort"] * 120)
+        teile = split_sentences(text)
+        self.assertGreater(len(teile), 1)
+        for teil in teile:
+            self.assertLessEqual(len(teil), MAX_SATZ_HART)
+        self.assertEqual(sorted(text.split()), sorted(" ".join(teile).split()))
+
     def test_10c_hart_umgebrochener_absatz_bleibt_ein_einsatz(self):
         from mimic.gui import Einsatz, parse_skript
         quelle = ("#matthias: Dieser Satz beginnt in der ersten Zeile,\n"
