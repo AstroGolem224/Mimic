@@ -149,7 +149,7 @@ if [ -x "$MIMIC" ]; then
         fi
     else
         warnen "Dienst antwortet nicht -- der Hook bliebe stumm. Starten mit:"
-        warnen "  systemctl --user start mimic.socket mimic-worker.socket"
+        warnen "  systemctl --user enable --now mimic.socket mimic-worker.socket"
     fi
 else
     echo "   Ausgelassen, mimic fehlt."

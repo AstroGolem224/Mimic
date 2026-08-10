@@ -13,3 +13,10 @@ SocketMode=0600
 DirectoryMode=0700
 RemoveOnStop=yes
 
+# Ohne [Install] blieb die Unit nach einem Reboot tot: mimic.socket startete
+# per sockets.target, das Frontend lief, aber jeder /speak endete mit
+# "Worker starb vor dem Stream". Aufgedeckt am 2026-08-10 beim ersten
+# Neustart seit der Einrichtung.
+[Install]
+WantedBy=sockets.target
+
