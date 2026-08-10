@@ -192,6 +192,79 @@ def speichern(profil: Path, aufnahme: Path, text: str) -> None:
     transkript.chmod(0o600)
 
 
+def importieren(args: argparse.Namespace) -> int:
+    """Legt ein Profil aus einer fertigen Audiodatei an statt aus einer Aufnahme.
+
+    ffmpeg macht daraus die 48-kHz-Mono-WAV, die load_voice verlangt -- damit ist
+    das Eingangsformat egal (mp3, opus, Stereo, 44.1 kHz). Ansonsten derselbe
+    Pfad wie `record`: dieselben Grenzen, dieselben Rechte, dieselbe Endpruefung.
+    """
+    from .charaktere import CHARAKTERE
+
+    name = args.voice
+    if not VOICE_RE.fullmatch(name):
+        print("unknown_voice: Name nur a-z, 0-9, _ und -, max. 32 Zeichen", file=sys.stderr)
+        return 1
+    charakter = CHARAKTERE.get(name)
+    text = args.text or (charakter.text if charakter else None)
+    if not text:
+        print(f"invalid_voice_profile: kein Referenztext fuer {name!r} -- --text angeben "
+              f"oder einen bekannten Charakter nehmen: {', '.join(sorted(CHARAKTERE))}",
+              file=sys.stderr)
+        return 1
+    quelle = Path(args.datei).expanduser()
+    if not quelle.is_file():
+        print(f"invalid_voice_profile: {quelle} gibt es nicht", file=sys.stderr)
+        return 1
+
+    root = default_voices_dir()
+    profil = root / name
+    if (profil / "ref.wav").exists() and not args.force:
+        print(f"invalid_voice_profile: {name!r} existiert schon -- --force zum Ueberschreiben",
+              file=sys.stderr)
+        return 1
+
+    profil_anlegen(profil)
+    umgewandelt = profil / "ref.wav.tmp"   # gleiches Dateisystem, sonst EXDEV in speichern()
+    try:
+        wandlung = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(quelle),
+             # -f wav explizit: die Endung ist .tmp, daraus raet ffmpeg nichts.
+             "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", str(umgewandelt)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if wandlung.returncode != 0:
+            print(f"invalid_voice_profile: ffmpeg konnte {quelle.name} nicht wandeln: "
+                  f"{wandlung.stderr.decode(errors='replace').strip()}", file=sys.stderr)
+            return 1
+        umgewandelt.chmod(0o600)
+        dauer = _dauer(umgewandelt)
+        if not 3 <= dauer <= 60:
+            print(f"invalid_voice_profile: {dauer:.1f} s liegt ausserhalb 3-60 s -- "
+                  f"der Dienst wuerde das Profil ablehnen", file=sys.stderr)
+            return 1
+        if not 8 <= dauer <= 15:
+            # Kein Abbruch: der Dienst nimmt 3-60 s. Aber nur 8-15 s ist erprobt.
+            print(f"  Hinweis: {dauer:.1f} s weicht vom Ziel 10 s ab.")
+        speichern(profil, umgewandelt, text)
+    except (OSError, wave.Error, subprocess.SubprocessError) as exc:
+        print(f"invalid_voice_profile: Import fehlgeschlagen: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        umgewandelt.unlink(missing_ok=True)
+        if not any(profil.iterdir()):   # Abbruch soll keine Bauruine hinterlassen
+            profil.rmdir()
+
+    try:
+        profile = load_voice(name, root)
+    except VoiceError as exc:
+        print(f"{exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+    close_voice(profile)
+    print(f"  {dauer:.1f} s aus {quelle.name}\n  {profil}/ref.wav\n  {profil}/ref.txt\n"
+          f"  Probe:  mimic say \"Test\" --voice {name}")
+    return 0
+
+
 def record(args: argparse.Namespace) -> int:
     from .charaktere import CHARAKTERE
 
@@ -381,6 +454,12 @@ def parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--text", help="eigener Referenztext statt des Charaktertexts")
     record_parser.add_argument("--force", action="store_true", help="bestehendes Profil ersetzen")
     record_parser.set_defaults(function=record)
+    import_parser = commands.add_parser("import")
+    import_parser.add_argument("voice")
+    import_parser.add_argument("datei", help="Audiodatei in beliebigem Format")
+    import_parser.add_argument("--text", help="woertliches Transkript der Datei")
+    import_parser.add_argument("--force", action="store_true", help="bestehendes Profil ersetzen")
+    import_parser.set_defaults(function=importieren)
     return result
 
 

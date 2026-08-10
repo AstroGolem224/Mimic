@@ -36,6 +36,12 @@ Kontrollwiedergabe und behalten/nochmal. Rechte (0700/0600) setzt der Befehl
 selbst. Für die Charakterstimmen in `mimic/charaktere.py` liefert er Text und
 Regieanweisung mit, jeder andere Name braucht `--text`.
 
+`mimic import <name> <datei> --text "<Transkript>"` legt dasselbe Profil aus
+einer fertigen Audiodatei an. ffmpeg macht daraus die 48-kHz-Mono-WAV, das
+Eingangsformat ist also egal (mp3, opus, Stereo, 44.1 kHz). Die 3–60-s-Grenze
+gilt hart, außerhalb von 8–15 s kommt ein Hinweis. `--force` ersetzt ein
+bestehendes Profil.
+
 **Charakterstimmen.** dots.tts klont Prosodie mit, nicht nur Timbre — die
 Referenz muss also bereits so klingen wie das Ziel. Die Texte in
 `charaktere.py` sind auf **10 s** ausgelegt und enthalten je Aussage, Frage und

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import argparse
 import http.client
 import json
 import os
+import shutil
 import socket
 import array
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import wave
 from pathlib import Path
 
@@ -450,6 +453,37 @@ class TextAndLevelTests(unittest.TestCase):
         profil = load_voice("matthias_krieger", root)
         self.assertEqual(" ".join(text.split()), profil.prompt_text)
         close_voice(profil)
+
+    def test_13a_import_wandelt_fremdformat_in_ladbares_profil(self):
+        # Der Import lebt von der ffmpeg-Wandlung: Stereo/44.1 kHz rein,
+        # 48-kHz-Mono raus -- alles andere lehnt load_voice ab.
+        import math
+        from mimic import cli
+        from mimic.voices import close_voice, load_voice
+        if shutil.which("ffmpeg") is None:
+            self.skipTest("ffmpeg fehlt")
+        arbeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        root = arbeit / "voices"
+        quelle = arbeit / "quelle.wav"
+        rate = 44_100
+        rahmen = array.array("h")
+        for i in range(rate * 10):
+            wert = int(9000 * math.sin(i * 0.05))
+            rahmen.extend((wert, wert))          # Stereo, damit -ac 1 etwas zu tun hat
+        with wave.open(str(quelle), "wb") as wav:
+            wav.setnchannels(2); wav.setsampwidth(2); wav.setframerate(rate)
+            wav.writeframes(rahmen.tobytes())
+        args = argparse.Namespace(voice="importprobe", datei=str(quelle),
+                                  text="Ein Satz. Und noch einer?", force=False)
+        with unittest.mock.patch.object(cli, "default_voices_dir", lambda: root):
+            self.assertEqual(0, cli.importieren(args))
+            profil = load_voice("importprobe", root)
+            with wave.open(profil.wav_path, "rb") as wav:
+                self.assertEqual((1, 48_000), (wav.getnchannels(), wav.getframerate()))
+            self.assertEqual("Ein Satz. Und noch einer?", profil.prompt_text)
+            close_voice(profil)
+            # Zweiter Lauf ohne --force darf das Profil nicht anfassen.
+            self.assertEqual(1, cli.importieren(args))
 
     def test_14_stumme_takes_werden_von_gesprochenen_getrennt(self):
         # Die Schwelle entscheidet, ob ein Satz nochmal erzeugt wird. Zu hoch
