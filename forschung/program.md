@@ -42,9 +42,18 @@ oder verwerfen.
   Gewinnerstand setzen, NICHT committen — der Gewinner wird am Morgen von
   einem Menschen reviewt und regulär übernommen.
 
-## Bekannte Lücke
+## WER-Wächter und Streuung
 
-Die Metrik misst Sprecher-Ähnlichkeit, nicht Verständlichkeit. Ein WER-Wächter
-(faster-whisper) ist geplant, aber noch nicht eingebaut. Bis dahin gilt:
-Stichprobe anhören lassen bzw. auffällig kurze/stille WAVs in
-`forschung/out/<lauf>/` als verdächtig melden.
+Jeder Lauf trägt `gueltig` im Journal: eine Probe mit Wortfehlerrate über
+`WER_DECKEL` (0.25) macht den Lauf ungültig — dots.tts verschluckt bei langen
+Kommatexten stochastisch ganze Chunks, die Ähnlichkeit bleibt dabei
+unauffällig. Daraus folgt:
+
+- Nur gültige Läufe zählen im Vergleich der `mittel`-Werte.
+- Die Baseline-Läufe vom 2026-08-10 waren BEIDE ungültig (je eine
+  verschluckte Probe). Erstes Ziel der Schleife ist deshalb nicht mehr
+  Ähnlichkeit, sondern: eine Stellschraubenlage finden, die zuverlässig
+  gültige Läufe liefert — z. B. kleineres `MAX_SATZ_ZEICHEN`.
+- Messwerte streuen. Eine vielversprechende Änderung mit einem zweiten Lauf
+  bei gleicher Einstellung bestätigen (NOTIZ: "... bestaetigung"), bevor sie
+  als besser gilt.

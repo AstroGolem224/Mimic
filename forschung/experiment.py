@@ -24,6 +24,14 @@ NOTIZ = "baseline"         # eine Zeile: was dieser Lauf prueft
 
 BUDGET_S = 300.0           # Zeitbudget wie im autoresearch-Original
 MAX_VERSUCHE = 2           # stummer Take -> genau eine Wiederholung, wie im Worker
+# WER-Waechter: eine Probe ueber dieser Wortfehlerrate macht den ganzen Lauf
+# ungueltig -- Aehnlichkeit, die durch geopferte Sprache gewonnen wird, zaehlt
+# nicht. Gemessen an zwei Baseline-Laeufen am 2026-08-10 (whisper small, int8,
+# CPU): intakte Proben lagen bei 0.00-0.11, Proben mit stochastisch
+# verschlucktem Chunk bei 0.31 und 0.50 -- die Aehnlichkeit blieb dabei
+# unauffaellig (0.86-0.88). 0.25 trennt beide Gruppen mit Abstand.
+WER_DECKEL = 0.25
+WHISPER_MODELL = "small"   # mehrsprachig; base war bei deutschen Umlauten unsicher
 
 import dataclasses
 import json
@@ -68,6 +76,33 @@ def synthese(runtime, profil, text: str) -> bytes:
     return b"".join(teile)
 
 
+_UMSCHRIFT = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def _woerter(text: str) -> list[str]:
+    """Korpustexte stehen in ASCII-Umschrift, Whisper liefert echte Umlaute --
+    beide Seiten auf dieselbe Form bringen, sonst zaehlt jedes Gemaeuer als
+    Fehler."""
+    import re
+    text = text.lower().translate(_UMSCHRIFT)
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def wer(soll: str, ist: str) -> float:
+    """Wortfehlerrate ueber Levenshtein-Distanz. Eigene 15 Zeilen statt jiwer:
+    eine Abhaengigkeit weniger im Overlay, und die Definition steht lesbar da."""
+    a, b = _woerter(soll), _woerter(ist)
+    if not a:
+        return 0.0
+    zeile = list(range(len(b) + 1))
+    for i, wort_a in enumerate(a, 1):
+        vorher, zeile[0] = zeile[0], i
+        for j, wort_b in enumerate(b, 1):
+            vorher, zeile[j] = zeile[j], min(zeile[j] + 1, zeile[j - 1] + 1,
+                                             vorher + (wort_a != wort_b))
+    return zeile[-1] / len(a)
+
+
 def main() -> int:
     import numpy as np
     import torch
@@ -92,6 +127,12 @@ def main() -> int:
     ausgabe = FORSCHUNG / "out" / lauf
     ausgabe.mkdir(parents=True)
     start = time.monotonic()
+
+    # Whisper VOR dem Offline-Schalter laden: HF_HUB_OFFLINE gilt fuer den
+    # ganzen Prozess und wuerde den erstmaligen Modell-Download verhindern.
+    # CPU mit int8, damit der Waechter nicht mit dots.tts um VRAM streitet.
+    from faster_whisper import WhisperModel
+    whisper = WhisperModel(WHISPER_MODELL, device="cpu", compute_type="int8")
 
     release = request_gpu_permission()
     try:
@@ -126,20 +167,25 @@ def main() -> int:
             wav.writeframes(pcm)
         embedding = encoder.embed_utterance(preprocess_wav(wav_pfad))
         wert = float(np.dot(referenzen[probe.stimme], embedding))
+        segmente, _info = whisper.transcribe(str(wav_pfad), language=probe.sprache)
+        transkript = " ".join(segment.text for segment in segmente)
+        fehlerrate = round(wer(probe.text, transkript), 4)
         ergebnisse.append({"kennung": probe.kennung, "stimme": probe.stimme,
-                           "aehnlichkeit": round(wert, 4)})
-        print(f"{wert:.4f}  {probe.kennung}")
+                           "aehnlichkeit": round(wert, 4), "wer": fehlerrate})
+        print(f"{wert:.4f}  wer={fehlerrate:.4f}  {probe.kennung}")
 
     mittel = (round(sum(e["aehnlichkeit"] for e in ergebnisse) / len(ergebnisse), 4)
               if ergebnisse else 0.0)
+    gueltig = bool(ergebnisse) and all(e["wer"] <= WER_DECKEL for e in ergebnisse)
     eintrag = {"lauf": lauf, "notiz": NOTIZ,
                "stellschrauben": {"min_satz": MIN_SATZ_ZEICHEN, "max_satz": MAX_SATZ_ZEICHEN,
                                   "pause_ms": PAUSE_MS, "speaker_scale": SPEAKER_SCALE},
-               "mittel": mittel, "proben": ergebnisse, "uebersprungen": uebersprungen,
+               "mittel": mittel, "gueltig": gueltig, "wer_deckel": WER_DECKEL,
+               "proben": ergebnisse, "uebersprungen": uebersprungen,
                "dauer_s": round(time.monotonic() - start, 1)}
     with JOURNAL.open("a", encoding="utf-8") as journal:
         journal.write(json.dumps(eintrag, ensure_ascii=False) + "\n")
-    print(f"mittel={mittel} proben={len(ergebnisse)} "
+    print(f"mittel={mittel} gueltig={gueltig} proben={len(ergebnisse)} "
           f"uebersprungen={len(uebersprungen)} dauer_s={eintrag['dauer_s']} -> {JOURNAL}")
     return 0
 

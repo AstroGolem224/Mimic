@@ -21,7 +21,8 @@ CACHE = FORSCHUNG / "cache"
 class Probe:
     kennung: str
     stimme: str
-    text: str
+    sprache: str            # Sprache des TEXTES, fuer den WER-Waechter --
+    text: str               # nicht der language-Tag des Stimmprofils
 
 
 # Harte Faelle zuerst: genau die Textformen, an denen die Chunk-Naehte im
@@ -29,43 +30,43 @@ class Probe:
 # Satzgefuege). Je Stimme auch ein unkritischer Kontrolltext, damit ein
 # Experiment, das die harten Faelle verbessert, die einfachen nicht ruiniert.
 KORPUS = (
-    Probe("krieger_kommakette", "matthias_krieger",
+    Probe("krieger_kommakette", "matthias_krieger", "de",
           "Der Turm steht offen, die Tore knarren im Wind, niemand wagt sich hinein, "
           "die Fackeln sind laengst erloschen, das Moos kriecht ueber die Schwellen, "
           "die Raben sitzen stumm auf den Zinnen, der Brunnen im Hof ist versiegt, "
           "und tief unten im Gemaeuer wartet etwas, das keinen Namen mehr hat, "
           "das aelter ist als die Mauern selbst, das die Steine atmen laesst"),
-    Probe("krieger_liste", "matthias_krieger",
+    Probe("krieger_liste", "matthias_krieger", "de",
           "Nehmt mit: Seile, Fackeln, Proviant fuer drei Tage, trockenes Zunderholz, "
           "die Karte des alten Kartographen, zwei Schilde, den eisernen Haken, "
           "Verbandszeug, Salz gegen die Geister, Kreide fuer die Wegzeichen, "
           "und den Schluessel, den der Schmied uns unter Eid gegeben hat"),
-    Probe("krieger_satzgefuege", "matthias_krieger",
+    Probe("krieger_satzgefuege", "matthias_krieger", "de",
           "Als wir im Morgengrauen aufbrachen, waehrend der Nebel noch in den Senken "
           "hing und die Voegel schwiegen, weil sie den Sturm frueher spueren als wir, "
           "wussten wir bereits, dass der Weg durch die Schlucht laenger dauern wuerde, "
           "als der Hauptmann uns versprochen hatte, denn die Bruecke war seit dem "
           "Fruehjahr eingestuerzt und der Umweg fuehrte ueber das Geroellfeld."),
-    Probe("krieger_absaetze", "matthias_krieger",
+    Probe("krieger_absaetze", "matthias_krieger", "de",
           "Die Legende erzaehlt von einer Stimme tief unten im Gemaeuer. Wer sie "
           "hoert, kehrt veraendert zurueck. Manche schweigen fuer immer. Andere "
           "reden wirres Zeug von Zahnraedern und einem Labyrinth aus Ordnung. "
           "Der Hauptmann glaubt kein Wort davon. Ich habe die Stimme gehoert. "
           "Sie zaehlt. Sie zaehlt unablaessig, und sie hat sich verzaehlt."),
-    Probe("krieger_kontrolle", "matthias_krieger",
+    Probe("krieger_kontrolle", "matthias_krieger", "de",
           "Wir brechen im Morgengrauen auf. Der Weg durch die Schlucht ist lang."),
-    Probe("nordom_runon", "n0rd0m",
+    Probe("nordom_runon", "n0rd0m", "en",
           "This unit has catalogued the anomalies, sorted them by severity, "
           "cross-referenced them with the archive, flagged the contradictions, "
           "discarded the duplicates, weighted the remainder by observed frequency, "
           "and reached a conclusion that the available evidence does not support, "
           "which is itself the four hundred and thirteenth anomaly"),
-    Probe("nordom_satzfolge", "n0rd0m",
+    Probe("nordom_satzfolge", "n0rd0m", "en",
           "Query. The gears of order turn regardless of observation. Statement. "
           "Nordom persists in its calculations. The census of the sector continues "
           "without interruption. Each anomaly receives a number. Each number "
           "receives a file. The files disagree with one another. This is recorded."),
-    Probe("nordom_kontrolle", "n0rd0m",
+    Probe("nordom_kontrolle", "n0rd0m", "en",
           "Statement. This unit is operational. Analysis continues."),
 )
 

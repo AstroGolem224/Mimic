@@ -5,7 +5,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-UV_WITH='--with resemblyzer --with setuptools<81 --with torch==2.8.0 --with torchaudio==2.8.0'
+UV_WITH='--with resemblyzer --with setuptools<81 --with torch==2.8.0 --with torchaudio==2.8.0 --with faster-whisper'
 
 # shellcheck disable=SC2086
 uv run $UV_WITH python forschung/prepare.py
