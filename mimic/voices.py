@@ -98,6 +98,7 @@ def _reference_gain_berechnen(wav_path: str) -> float:
 
 
 _SATZENDE = re.compile(r"(?<=[.!?…])[\"')\]]*\s+")
+_SATZENDE_AM_SCHLUSS = re.compile(r"[.!?…][\"')\]]*$")
 # 20, nicht 12. Gemessen am 2026-08-05: ein Satz mit 14 Zeichen kam in 4 von 22
 # Generierungen ohne Sprache zurueck, Saetze mit 19 bis 21 Zeichen in 0 von 24.
 # Der Worker faengt den Rest per Wiederholung ab (worker.STUMM_PEAK), aber die
@@ -171,6 +172,16 @@ def split_sentences(text: str) -> list[str]:
                 stuecke.append(teil)
         begrenzt.extend(stuecke)
     return begrenzt
+
+
+def endet_satz(teil: str) -> bool:
+    """Endet das Stueck an einem Satzende -- oder mitten im Satz?
+
+    split_sentences schneidet lange Saetze zusaetzlich an Komma und Semikolon
+    (MAX_SATZ_ZEICHEN). An solchen Schnitten gehoert keine Atempause hin: der
+    Satz laeuft ja weiter, und die Pause klingt dort wie ein Aussetzer.
+    """
+    return bool(_SATZENDE_AM_SCHLUSS.search(teil.rstrip()))
 
 
 def default_voices_dir() -> Path:

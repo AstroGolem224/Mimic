@@ -19,7 +19,7 @@ from pathlib import Path
 
 from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_path
 from .protocol import finish_chunks, write_chunk, encode_frame
-from .voices import (VoiceError, apply_pronunciation, close_voice, load_voice,
+from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz, load_voice,
                      split_sentences)
 
 REVISIONS = {
@@ -312,7 +312,11 @@ class Engine:
             saetze = split_sentences(text) or [text]
             pause = bytes(int(sample_rate * PAUSE_MS / 1000) * 2)
             for index, satz in enumerate(saetze):
-                if index:
+                # Pause nur, wo wirklich ein Satz endete. Die Schnitte an Komma
+                # und Semikolon (voices.MAX_SATZ_ZEICHEN) sind Generierungs-
+                # grenzen, keine Sprechpausen -- dort klang die Atempause wie
+                # ein Aussetzer mitten im Satz.
+                if index and endet_satz(saetze[index - 1]):
                     if not self.emit(job, "A", pause):
                         outcome = "cancelled"
                         return

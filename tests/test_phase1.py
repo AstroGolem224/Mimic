@@ -454,6 +454,20 @@ class TextAndLevelTests(unittest.TestCase):
         self.assertEqual(" ".join(text.split()), profil.prompt_text)
         close_voice(profil)
 
+    def test_10g_pause_nur_am_satzende(self):
+        # Lange Kommasaetze werden an Klauselgrenzen zerteilt (MAX_SATZ_ZEICHEN).
+        # Diese Schnitte sind Generierungsgrenzen, keine Sprechpausen -- der
+        # Worker haengt die Atempause deshalb nur an echte Satzenden.
+        from mimic.voices import endet_satz, split_sentences
+        text = ("Er ging zum Hafen, der schon lange keiner mehr war, und blieb dort stehen, "
+                "bis es dunkel wurde und der Regen einsetzte. Dann kehrte er endlich um.")
+        teile = split_sentences(text)
+        self.assertGreater(len(teile), 2)                   # an Kommas zerteilt
+        pausen = [i for i in range(1, len(teile)) if endet_satz(teile[i - 1])]
+        self.assertEqual([teile[i].startswith("Dann") for i in pausen], [True])
+        self.assertTrue(endet_satz('Er sagte: "Genug."'))   # schliessendes Zeichen zaehlt mit
+        self.assertFalse(endet_satz("und blieb dort stehen,"))
+
     def test_13a_import_wandelt_fremdformat_in_ladbares_profil(self):
         # Der Import lebt von der ffmpeg-Wandlung: Stereo/44.1 kHz rein,
         # 48-kHz-Mono raus -- alles andere lehnt load_voice ab.

@@ -437,7 +437,7 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(required=True)
     say_parser = commands.add_parser("say")
     say_parser.add_argument("text")
-    say_parser.add_argument("--voice", default="matthias")
+    say_parser.add_argument("--voice", default="forge")
     say_parser.add_argument("--mode", choices=("mf", "soar"), default="soar")
     say_parser.add_argument("-o", "--output")
     say_parser.set_defaults(function=say)
