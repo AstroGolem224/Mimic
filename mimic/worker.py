@@ -19,8 +19,8 @@ from pathlib import Path
 
 from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_path
 from .protocol import finish_chunks, write_chunk, encode_frame
-from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz, load_voice,
-                     split_sentences)
+from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
+                     entschaerfe_versalien, load_voice, split_sentences)
 
 REVISIONS = {
     "mf": ("dots-studio/dots.tts-mf", "25c53fb462e57087e52237daa5ea30df1c5cc328"),
@@ -306,6 +306,9 @@ class Engine:
                 return
             text = (apply_pronunciation(request["text"])
                     if request.get("aussprache", True) else request["text"])
+            # Unabhaengig von der Aussprachetabelle: Versalien verhunzt das
+            # Modell zuverlaessig, das ist keine Geschmacksfrage.
+            text = entschaerfe_versalien(text)
             # Satzweise statt am Stueck: sonst haengen die Saetze ohne Atempause
             # aneinander. Die Zerlegung fasst kurze Bruchstuecke wieder zusammen
             # -- Fragmente ohne Satzkontext halluziniert das Modell voll.

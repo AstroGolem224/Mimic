@@ -174,6 +174,24 @@ def split_sentences(text: str) -> list[str]:
     return begrenzt
 
 
+# Ab fuenf Grossbuchstaben. Laenge ist der einzige billige Trenner zwischen
+# Wort und Akronym, und er ist nicht perfekt: GPU, JSON und VRAM bleiben
+# richtig unangetastet, HTTPS faellt faelschlich mit durch. Wen das stoert,
+# traegt das Wort in pronunciation.json ein -- die Tabelle laeuft vorher.
+_VERSALWORT = re.compile(r"(?<![^\W\d_])[A-ZÄÖÜ]{5,}(?![^\W\d_])")
+
+
+def entschaerfe_versalien(text: str) -> str:
+    """VERSALIEN in Normalschreibung, sonst verhunzt dots.tts das Wort.
+
+    Gemessen am 2026-08-10 mit der Stimme n0rd0m: "ANSWER:" kam als "Anna's
+    door" heraus, "ANSWER." als "Anastbar", "Answer:" dagegen sauber. Das
+    trifft jeden Text mit Versalien -- Nordoms Praefixe sind nur der Fall, an
+    dem es auffiel.
+    """
+    return _VERSALWORT.sub(lambda treffer: treffer.group().capitalize(), text)
+
+
 def endet_satz(teil: str) -> bool:
     """Endet das Stueck an einem Satzende -- oder mitten im Satz?
 

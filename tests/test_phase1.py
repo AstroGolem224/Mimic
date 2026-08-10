@@ -468,6 +468,18 @@ class TextAndLevelTests(unittest.TestCase):
         self.assertTrue(endet_satz('Er sagte: "Genug."'))   # schliessendes Zeichen zaehlt mit
         self.assertFalse(endet_satz("und blieb dort stehen,"))
 
+    def test_10h_versalien_werden_entschaerft(self):
+        # Gemessen mit n0rd0m: "ANSWER:" kam als "Anna's door" heraus,
+        # "Answer:" sauber. Akronyme bleiben, die will man buchstabiert hoeren.
+        from mimic.voices import entschaerfe_versalien
+        self.assertEqual("Answer: Nordom weiss es nicht.",
+                         entschaerfe_versalien("ANSWER: Nordom weiss es nicht."))
+        self.assertEqual("Statement und Beobachtung",
+                         entschaerfe_versalien("STATEMENT und BEOBACHTUNG"))
+        self.assertEqual("Die GPU hat 32 GB VRAM.",
+                         entschaerfe_versalien("Die GPU hat 32 GB VRAM."))
+        self.assertEqual("MoDus", entschaerfe_versalien("MoDus"))   # nur reine Versalien
+
     def test_13a_import_wandelt_fremdformat_in_ladbares_profil(self):
         # Der Import lebt von der ffmpeg-Wandlung: Stereo/44.1 kHz rein,
         # 48-kHz-Mono raus -- alles andere lehnt load_voice ab.
