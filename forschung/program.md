@@ -1,0 +1,50 @@
+# program.md — Anweisungen für den Nachtagenten
+
+Du experimentierst an den Chunking-Stellschrauben des Mimic-TTS. Ziel: die
+mittlere Sprecher-Ähnlichkeit (`mittel` im Journal) erhöhen, gemessen am
+festen Korpus. Vorbild: karpathy/autoresearch — ändern, messen, behalten
+oder verwerfen.
+
+## Setup (einmal)
+
+1. `forschung/lauf.sh` ausführen. Der erste Lauf mit `NOTIZ = "baseline"`
+   ist die Vergleichsbasis; sein `mittel` steht in `forschung/journal.jsonl`.
+
+## Schleife (je Experiment)
+
+1. **Eine** Änderung im Stellschrauben-Block von `forschung/experiment.py`
+   (zwischen den Markierungen). `NOTIZ` auf eine Zeile setzen, die sagt, was
+   geprüft wird — z. B. "max_satz 180 statt 250".
+2. `forschung/lauf.sh` ausführen.
+3. `mittel` des neuen Laufs gegen das beste bisherige `mittel` im Journal
+   vergleichen.
+   - Besser → Stellschraube behalten, weiter mit Schritt 1.
+   - Schlechter oder gleich → Stellschraube auf den letzten besten Stand
+     zurücksetzen, andere Änderung probieren.
+4. Nach jedem Lauf zwei Sätze ins Journal-Feld deiner Antwort: was geändert,
+   was gemessen.
+
+## Regeln
+
+- Editiert wird NUR der Stellschrauben-Block in `experiment.py`. Nicht
+  `prepare.py`, nicht `program.md`, nicht der Messapparat unter dem Block,
+  nichts unter `mimic/`.
+- Eine Änderung je Lauf. Zwei gleichzeitig = Messung wertlos.
+- Bricht ein Lauf mit `load_denied` (GPU-Hub: fullscreen/VRAM) oder CUDA-OOM
+  ab: das ist KEIN Messwert. Warten, später erneut — nicht als
+  Verschlechterung zählen. Hält ein anderer Prozess (z. B. ollama) den VRAM,
+  darfst du `ollama stop <modell>` ausführen, sonst nichts beenden.
+- Stellschrauben-Grenzen: `MIN_SATZ_ZEICHEN` 10–60, `MAX_SATZ_ZEICHEN`
+  80–500, `PAUSE_MS` 0–600, `SPEAKER_SCALE` None oder 0.5–2.0 (Grenzen des
+  Dienstes, siehe mimic/voices.py).
+- Stopp nach 12 Läufen oder wenn drei Änderungen in Folge nichts verbessert
+  haben. Dann: bestes Journal-Ergebnis nennen, Stellschrauben auf den
+  Gewinnerstand setzen, NICHT committen — der Gewinner wird am Morgen von
+  einem Menschen reviewt und regulär übernommen.
+
+## Bekannte Lücke
+
+Die Metrik misst Sprecher-Ähnlichkeit, nicht Verständlichkeit. Ein WER-Wächter
+(faster-whisper) ist geplant, aber noch nicht eingebaut. Bis dahin gilt:
+Stichprobe anhören lassen bzw. auffällig kurze/stille WAVs in
+`forschung/out/<lauf>/` als verdächtig melden.
