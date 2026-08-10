@@ -913,7 +913,7 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
 
     def _sprechen(self, wunsch: dict) -> None:
         text = wunsch.get("text")
-        modus = wunsch.get("mode", "mf")
+        modus = wunsch.get("mode", "soar")
         stimme = wunsch.get("voice") or ""
         if not isinstance(text, str) or not text.strip():
             self._json(400, {"message": "text fehlt"})
@@ -941,7 +941,7 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
 
     def _warm(self) -> None:
         try:
-            antwort = request("POST", "/warm", {"mode": "mf"})
+            antwort = request("POST", "/warm", {"mode": "soar"})
             try:
                 wert = json.loads(antwort.read() or b"{}")
                 status = antwort.status

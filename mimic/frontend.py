@@ -245,7 +245,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
         if len(request["text"]) > MAX_TEXT_CHARS:
             self._error("text_too_long", f"text ueberschreitet {MAX_TEXT_CHARS} Zeichen")
             return
-        mode = request.get("mode", "mf")
+        mode = request.get("mode", "soar")
         voice = request.get("voice", "matthias")
         aussprache = request.get("aussprache", True)
         require_warm = request.get("require_warm", False)
@@ -278,9 +278,9 @@ class FrontendHandler(BaseHTTPRequestHandler):
         self._proxy(request)
 
     def _handle_warm(self, request: dict) -> None:
-        mode = request.get("mode", "mf")
-        if mode != "mf":
-            self._error("bad_request", "Warmlauf ist nur fuer mf definiert")
+        mode = request.get("mode", "soar")
+        if mode not in ("mf", "soar"):
+            self._error("bad_request", "mode muss mf oder soar sein")
             return
         correlation_id = request.get("correlation_id")
         if correlation_id is None:

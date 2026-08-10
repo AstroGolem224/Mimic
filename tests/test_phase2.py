@@ -611,8 +611,11 @@ class Phase2bTests(unittest.TestCase):
         engine.state = "warm"
         engine.runtimes = {"mf": object()}
         self.assertEqual(200, engine.request_warm({"mode": "mf"}))
+        # soar ist nicht geladen: der Warmlauf wird angenommen und loest den
+        # kontrollierten Moduswechsel aus, statt abgelehnt zu werden.
+        self.assertEqual(202, engine.request_warm({"mode": "soar"}))
         with self.assertRaises(worker.WorkerRefusal) as raised:
-            engine.request_warm({"mode": "soar"})
+            engine.request_warm({"mode": "quatsch"})
         self.assertEqual("bad_request", raised.exception.reason)
 
     def test_status_listet_nur_ladbare_stimmen_mit_version(self):
@@ -671,7 +674,7 @@ class Phase2bTests(unittest.TestCase):
             handler._proxy_once({"text": "x"}, retry_mode=False)
         self.assertEqual("future_worker_reason", result["value"]["reason"])
 
-    def test_frontend_warm_reicht_202_200_409_durch_und_lehnt_soar_ab(self):
+    def test_frontend_warm_reicht_202_200_409_durch_und_lehnt_fremden_modus_ab(self):
         from mimic import frontend
 
         class Response:
@@ -712,7 +715,7 @@ class Phase2bTests(unittest.TestCase):
         handler = frontend.FrontendHandler.__new__(frontend.FrontendHandler)
         result = {}
         handler._error = lambda reason, message, **details: result.update(reason=reason)
-        handler._handle_warm({"mode": "soar"})
+        handler._handle_warm({"mode": "quatsch"})
         self.assertEqual("bad_request", result["reason"])
 
     @staticmethod

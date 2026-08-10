@@ -116,8 +116,8 @@ class Engine:
 
     def request_warm(self, request: dict) -> int:
         mode = request.get("mode")
-        if mode != "mf":
-            raise WorkerRefusal("bad_request", "Warmlauf ist nur fuer mf definiert")
+        if mode not in REVISIONS:
+            raise WorkerRefusal("bad_request", f"unbekannter Modus fuer den Warmlauf: {mode!r}")
         with self.condition:
             if self.state == "warm" and mode in self.runtimes:
                 return 200
