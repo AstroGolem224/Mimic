@@ -90,7 +90,8 @@ def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = Non
                             "correlation_id": "1" * 32, **request})
     job.delivered.set()
     profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0,
-                              **{"language": "en", "speaker_scale": 1.5, **(stimme or {})})
+                              **{"language": "en", "speaker_scale": 1.5, "effekt": "",
+                                 **(stimme or {})})
     with (mock.patch.object(worker, "load_voice", return_value=profile),
           mock.patch.object(worker, "close_voice"),
           mock.patch.object(worker, "tensor_to_pcm", side_effect=lambda chunk, _gain: chunk),
@@ -791,6 +792,42 @@ class AufnahmeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EffektTests(unittest.TestCase):
+    """Der Effekt sitzt hinter tensor_to_pcm und muss ueber Bloecke tragen."""
+
+    def test_ohne_effekt_bleibt_das_pcm_unveraendert(self):
+        runtime = StubRuntime([[pcm(9000), pcm(-9000)]])
+        _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist."})
+        audio = b"".join(payload for kind, payload in events if kind == "A")
+        self.assertEqual(pcm(9000) + pcm(-9000), audio)
+
+    def test_effekt_veraendert_das_pcm(self):
+        runtime = StubRuntime([[pcm(9000), pcm(-9000)]])
+        _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist."},
+                                     stimme={"effekt": "roboter"})
+        audio = b"".join(payload for kind, payload in events if kind == "A")
+        self.assertEqual(len(pcm(9000) + pcm(-9000)), len(audio))
+        self.assertNotEqual(pcm(9000) + pcm(-9000), audio)
+
+    def test_unbekannter_effekt_wird_beim_laden_abgelehnt(self):
+        from mimic.voices import VoiceError, load_voice
+        import wave as wave_modul
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        profil = root / "probe"
+        profil.mkdir(mode=0o700, parents=True)
+        root.chmod(0o700)
+        with wave_modul.open(str(profil / "ref.wav"), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(48_000)
+            wav.writeframes(array.array("h", [1000] * 48_000 * 4).tobytes())
+        (profil / "ref.txt").write_text("Ein Satz.\n", encoding="utf-8")
+        (profil / "settings.json").write_text(json.dumps({"effekt": "rm -rf"}), encoding="utf-8")
+        for datei in ("ref.wav", "ref.txt", "settings.json"):
+            (profil / datei).chmod(0o600)
+        with self.assertRaises(VoiceError) as erhoben:
+            load_voice("probe", root)
+        self.assertIn("effekt", erhoben.exception.message)
 
 
 class SprachParameterTests(unittest.TestCase):

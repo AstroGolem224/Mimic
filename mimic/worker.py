@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_path
+from .effekte import Effekt
 from .protocol import finish_chunks, write_chunk, encode_frame
 from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
                      entschaerfe_versalien, load_voice, split_sentences)
@@ -314,6 +315,10 @@ class Engine:
             # -- Fragmente ohne Satzkontext halluziniert das Modell voll.
             saetze = split_sentences(text) or [text]
             pause = bytes(int(sample_rate * PAUSE_MS / 1000) * 2)
+            # Ein Effekt je Aeusserung, nicht je Block: Tremolo- und
+            # Verzoegerungszustand muessen ueber Blockgrenzen tragen, sonst
+            # klickt es an jeder Naht.
+            effekt = Effekt(profile.effekt, sample_rate) if profile.effekt else None
             for index, satz in enumerate(saetze):
                 # Pause nur, wo wirklich ein Satz endete. Die Schnitte an Komma
                 # und Semikolon (voices.MAX_SATZ_ZEICHEN) sind Generierungs-
@@ -344,6 +349,8 @@ class Engine:
                         if first_chunk_at is None:
                             first_chunk_at = time.monotonic()
                         pcm = tensor_to_pcm(chunk, profile.gain)
+                        if effekt is not None:
+                            pcm = effekt.verarbeite(pcm)
                         spitze = max(spitze, peak_int16(pcm))
                         if not hoerbar:
                             anfang.append(pcm)

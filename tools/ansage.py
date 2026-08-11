@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 GRENZE = 650            # Zeichen; darueber wird die Ansage zum Vortrag
@@ -262,6 +263,24 @@ def ansagetext(nutzlast: dict) -> str:
 
 # ------------------------------------------------------------------ Sprechen
 
+def _protokoll(ereignis: str, text: str = "", **felder: object) -> None:
+    """Eine Zeile je Ansage ins Laufzeitverzeichnis, fuer die Fehlersuche.
+
+    Der Hook laeuft ohne Terminal und schluckt jeden Fehler -- ohne diese Spur
+    ist nicht feststellbar, WELCHEN Text er gewaehlt hat und ob er ueberhaupt
+    zum Sprechen kam. Die Datei liegt im Laufzeitverzeichnis und ist nach dem
+    naechsten Neustart weg.
+    """
+    laufzeit = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    zusatz = " ".join(f"{name}={wert}" for name, wert in felder.items())
+    zeile = f"{time.strftime('%H:%M:%S')} {ereignis} {zusatz} {text[:70]!r}\n"
+    try:
+        with open(Path(laufzeit) / "mimic-ansage.log", "a", encoding="utf-8") as datei:
+            datei.write(zeile)
+    except OSError:
+        pass
+
+
 def _sperre():
     """Exklusive Sperre auf die Audioausgabe, oder None, wenn schon jemand spricht."""
     laufzeit = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
@@ -290,7 +309,9 @@ def sprechen(text: str) -> int:
     """Vordergrundpfad: Kopfhoerer sicherstellen, dann sprechen. Immer 0."""
     griff = _sperre()
     if griff is None:
+        _protokoll("verworfen", text, grund="sperre")
         return 0
+    _protokoll("spricht", text)
 
     kopfhoerer = Path(__file__).resolve().parent / "kopfhoerer.sh"
     if os.access(kopfhoerer, os.X_OK):
@@ -445,7 +466,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.sagen is not None:
         return sprechen(args.sagen)
 
-    text = ansagetext(hook_nutzlast())
+    nutzlast = hook_nutzlast()
+    text = ansagetext(nutzlast)
+    pfad = nutzlast.get("transcript_path")
+    try:
+        groesse = os.path.getsize(pfad) if isinstance(pfad, str) else -1
+    except OSError:
+        groesse = -1
+    _protokoll(str(nutzlast.get("hook_event_name") or "?"), text, bytes=groesse)
     if args.vorschau:
         print(text)
         return 0
