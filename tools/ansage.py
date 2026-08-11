@@ -523,18 +523,27 @@ def sprechen(text: str) -> int:
     if not programm:
         return 0
     gewaehlt = stimme()
-    for stueck in _stuecke(text):
+    stuecke = _stuecke(text)
+    for nummer, stueck in enumerate(stuecke, 1):
+        begonnen = time.monotonic()
         try:
             lauf = subprocess.run([programm, "say", stueck, "--voice", gewaehlt],
                                   timeout=SPRECH_FRIST_S,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as fehler:
+            # Diese Zweige waren stumm: ein Timeout oder ein fehlendes `mimic`
+            # sahen im Protokoll aus wie eine vollstaendig gesprochene Ansage.
+            _protokoll("gescheitert", stueck[:40], stueck=f"{nummer}/{len(stuecke)}",
+                       fehler=type(fehler).__name__)
             return 0
         if lauf.returncode != 0:
             # Ein gescheitertes Stueck heisst: der Rest wird auch scheitern.
             # Weiterreden hiesse, den Satz mittendrin fortzusetzen.
-            _protokoll("abgebrochen", stueck, code=lauf.returncode)
+            _protokoll("abgebrochen", stueck[:40], stueck=f"{nummer}/{len(stuecke)}",
+                       code=lauf.returncode)
             return 0
+        _protokoll("stueck", "", nummer=f"{nummer}/{len(stuecke)}", zeichen=len(stueck),
+                   dauer_s=int(time.monotonic() - begonnen))
     return 0
 
 
