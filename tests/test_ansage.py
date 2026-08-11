@@ -218,6 +218,43 @@ class Stimme(unittest.TestCase):
             self.assertEqual(ansage.stimme(), "glados")
 
 
+class Sitzungstitel(unittest.TestCase):
+    """Mehrere Sitzungen teilen sich die Ausgabe -- der Titel ordnet sie zu."""
+
+    @staticmethod
+    def titel(text: str) -> dict:
+        return {"type": "custom-title", "customTitle": text, "sessionId": "abc"}
+
+    def test_titel_wird_gefunden(self):
+        pfad = transkript(self.titel("Alter Titel"), assistent("egal"), self.titel("Neuer Titel"))
+        self.assertEqual("Neuer Titel", ansage.sitzungstitel(pfad))
+
+    def test_ohne_titel_leer(self):
+        self.assertEqual("", ansage.sitzungstitel(transkript(assistent("nur Text"))))
+
+    def test_titel_steht_vor_der_meldung(self):
+        pfad = transkript(self.titel("Stimmen bauen"), assistent("Zwei Fehler behoben."))
+        self.assertEqual("Stimmen bauen. Fertig. Zwei Fehler behoben.",
+                         ansage.ansagetext({"hook_event_name": "Stop",
+                                            "transcript_path": str(pfad)}))
+
+    def test_ohne_titel_bleibt_die_meldung_unveraendert(self):
+        pfad = transkript(assistent("Zwei Fehler behoben."))
+        self.assertEqual("Fertig. Zwei Fehler behoben.",
+                         ansage.ansagetext({"hook_event_name": "Stop",
+                                            "transcript_path": str(pfad)}))
+
+    def test_titel_auch_bei_der_nachfrage(self):
+        pfad = transkript(self.titel("Stimmen bauen"))
+        self.assertEqual("Stimmen bauen. Claude wartet.",
+                         ansage.ansagetext({"hook_event_name": "Notification",
+                                            "transcript_path": str(pfad)}))
+
+    def test_langer_titel_wird_gekappt(self):
+        pfad = transkript(self.titel("W" * 200))
+        self.assertEqual(ansage.TITEL_GRENZE, len(ansage.sitzungstitel(pfad)))
+
+
 class Verdraengen(unittest.TestCase):
     """Die neue Ansage loest die laufende ab, statt zu schweigen."""
 

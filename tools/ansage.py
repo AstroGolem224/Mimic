@@ -49,6 +49,7 @@ import time
 from pathlib import Path
 
 GRENZE = 650            # Zeichen; darueber wird die Ansage zum Vortrag
+TITEL_GRENZE = 60       # der Sitzungstitel steht VOR der Meldung, also kurz halten
 MINDEST = 150           # darunter lieber anschneiden als abbrechen
 TAIL_BYTES = 1 << 20    # so weit wird ins Transkript zurueckgelesen
 KOPFHOERER_FRIST_S = 20
@@ -104,14 +105,11 @@ def _bloecke_zu_text(inhalt) -> str:
     return "\n".join(teile)
 
 
-def letzte_antwort(pfad: Path) -> str:
-    """Text der letzten Assistentennachricht aus dem JSONL-Transkript.
+def _endzeilen(pfad: Path) -> list[bytes]:
+    """Die letzten Zeilen des Transkripts, jÃ¼ngste zuletzt.
 
-    Rueckwaerts gelesen und nur das Ende der Datei: eine lange Sitzung wird
-    zweistellig megabyteschwer, und der Hook soll den Sitzungsabschluss nicht
-    mit Einlesen bezahlen. Subagenten (`isSidechain`) zaehlen nicht -- ihre
-    Antworten sieht der Nutzer nicht, sie waeren also eine Ansage ueber
-    Arbeit, die im Hauptstrang gar nicht steht.
+    Nur das Dateiende: eine lange Sitzung wird zweistellig megabyteschwer, und
+    der Hook soll den Sitzungsabschluss nicht mit Einlesen bezahlen.
     """
     try:
         with open(pfad, "rb") as datei:
@@ -120,11 +118,40 @@ def letzte_antwort(pfad: Path) -> str:
             datei.seek(beginn)
             rohdaten = datei.read()
     except OSError:
-        return ""
+        return []
     zeilen = rohdaten.split(b"\n")
-    if beginn:
-        zeilen = zeilen[1:]     # erste Zeile ist angeschnitten
-    for zeile in reversed(zeilen):
+    return zeilen[1:] if beginn else zeilen     # erste Zeile ist angeschnitten
+
+
+def sitzungstitel(pfad: Path) -> str:
+    """Der Titel, den Claude Code der Sitzung gegeben hat, oder leer.
+
+    Claude Code schreibt den Eintrag laufend neu, auch am Dateiende -- selbst
+    in einer 70-MB-Sitzung stand er in den letzten hundert Bytes. Das Lesen des
+    Dateiendes reicht also.
+    """
+    for zeile in reversed(_endzeilen(pfad)):
+        if b"custom-title" not in zeile:        # billiger Vorfilter vor dem Parsen
+            continue
+        try:
+            eintrag = json.loads(zeile)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(eintrag, dict) and eintrag.get("type") == "custom-title":
+            titel = str(eintrag.get("customTitle") or "").strip()
+            if titel:
+                return " ".join(titel.split())[:TITEL_GRENZE]
+    return ""
+
+
+def letzte_antwort(pfad: Path) -> str:
+    """Text der letzten Assistentennachricht aus dem JSONL-Transkript.
+
+    Subagenten (`isSidechain`) zaehlen nicht -- ihre Antworten sieht der Nutzer
+    nicht, sie waeren also eine Ansage ueber Arbeit, die im Hauptstrang gar
+    nicht steht.
+    """
+    for zeile in reversed(_endzeilen(pfad)):
         if not zeile.strip():
             continue
         try:
@@ -246,20 +273,37 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     return ergebnis
 
 
+def _vorspann(pfad: object) -> str:
+    """Sitzungstitel als erster Satz, damit hoerbar ist, WER da meldet.
+
+    Mehrere Sitzungen teilen sich eine Audioausgabe; ohne den Titel klingt die
+    Meldung aus dem anderen Fenster wie die eigene. Fehlt der Titel -- neue
+    Sitzung, noch keiner vergeben -- bleibt es beim blossen "Fertig."
+    """
+    if not isinstance(pfad, str) or not pfad:
+        return ""
+    titel = sitzungstitel(Path(pfad))
+    if not titel:
+        return ""
+    return titel if titel[-1] in ".!?" else f"{titel}."
+
+
 def ansagetext(nutzlast: dict) -> str:
     """Der Satz, den Mimic sprechen soll -- aus dem Hook-JSON abgeleitet."""
     ereignis = nutzlast.get("hook_event_name")
+    pfad = nutzlast.get("transcript_path")
+    vorspann = _vorspann(pfad)
 
     if ereignis == "Notification":
         meldung = str(nutzlast.get("message") or "").strip()
-        return f"Claude wartet. {zusammenfassen(meldung)}".strip() if meldung else "Claude wartet."
+        kern = f"Claude wartet. {zusammenfassen(meldung)}".strip() if meldung else "Claude wartet."
+        return f"{vorspann} {kern}".strip()
 
-    pfad = nutzlast.get("transcript_path")
     antwort = letzte_antwort(Path(pfad)) if isinstance(pfad, str) and pfad else ""
     stand = zusammenfassen(antwort)
     if not stand:
-        return OHNE_INHALT
-    return f"{FERTIG} {stand}"
+        return f"{vorspann} {OHNE_INHALT}".strip()
+    return f"{vorspann} {FERTIG} {stand}".strip()
 
 
 # ------------------------------------------------------------------ Sprechen
