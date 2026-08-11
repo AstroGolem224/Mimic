@@ -1,0 +1,58 @@
+# Eigene Umgebung, aus demselben Grund wie bei moss/: die Pins beissen sich.
+#
+# `chatterbox-tts` steht ABSICHTLICH nicht in dieser Liste. Das Paket pinnt
+# torch==2.6 und numpy<1.26 -- beides unbrauchbar auf sm_120, wo es cu128
+# braucht. voicebox loest das genauso (justfile:70-74, backend/requirements.txt:26-38):
+# das Paket ohne seine Abhaengigkeiten installieren und die tatsaechlich
+# benoetigten selbst mitbringen. Die Liste unten ist von dort uebernommen und
+# ist der einzige Grund, warum ich mir einen Nachmittag Pin-Krieg gespart habe.
+#
+#   uv sync --python 3.12
+#   uv pip install --no-deps chatterbox-tts
+#
+[project]
+name = "spike2-chatterbox"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "transformers>=4.46.3,<=4.57.6",
+    "accelerate",
+    # ab hier: die Unterabhaengigkeiten von chatterbox-tts, die --no-deps
+    # weglaesst. Reihenfolge und Auswahl aus voicebox/backend/requirements.txt.
+    "conformer>=0.3.2",
+    "diffusers>=0.29.0",
+    "omegaconf",
+    "resemble-perth>=1.0.1",
+    # Nicht kosmetisch: resemble-perth importiert `pkg_resources`, das seit
+    # Python 3.12 nicht mehr mitkommt. Fehlt es, ist perth.PerthImplicitWatermarker
+    # still None und der Konstruktor von ChatterboxMultilingualTTS stirbt mit
+    # "TypeError: 'NoneType' object is not callable" (mtl_tts.py:155) -- eine
+    # Fehlermeldung, die nichts mit der Ursache zu tun hat.
+    # <81, weil setuptools genau dort `pkg_resources` entfernt hat. Ein blosses
+    # "setuptools" holt 84 und aendert nichts.
+    "setuptools<81",
+    "s3tokenizer",
+    "pykakasi",
+    "spacy-pkuseg",
+    "safetensors",
+    # numpy<2 und numba<0.61 sind harte Pins von librosa/s3tokenizer. Sie sind
+    # der wahrscheinlichste Bruchpunkt dieser Umgebung -- wenn hier etwas
+    # scheitert, dann hier.
+    "numpy>=1.26,<2.0",
+    "numba>=0.60.0,<0.61.0",
+    "librosa",
+    "soundfile",
+    "pyyaml",
+    "huggingface_hub",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }

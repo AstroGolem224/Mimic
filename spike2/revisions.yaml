@@ -13,3 +13,9 @@ checkpoints:
   dots_mf:
     repo: dots-studio/dots.tts-mf
     revision: 25c53fb462e57087e52237daa5ea30df1c5cc328
+  # Nachgetragen 2026-08-11 fuer den Klonvergleich, ueber dieselbe HF-API.
+  # Beide ungated. `qwen` oben ist der Base-Checkpoint -- nur der klont aus
+  # Referenzaudio; die CustomVoice-Variante hat neun feste Sprecher.
+  chatterbox:
+    repo: ResembleAI/chatterbox
+    revision: 5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18

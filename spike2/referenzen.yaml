@@ -1,0 +1,24 @@
+# Eingefroren am 2026-08-11, VOR der ersten Generierung.
+#
+# Zwei Referenzen, weil sie zwei verschiedene Fragen stellen:
+#
+#   matthias  -- die Phase-0-Referenz, 14.8 s, echte Aufnahme. Nur fuer sie
+#                existieren Vergleichszahlen (spike/ERGEBNIS.md, Kriterium B).
+#                Deutsch gesprochen, deutscher Text.
+#   klinisch_0 -- ein MOSS-Entwurf aus out/entwurf, also synthetisch erzeugt
+#                und ENGLISCH gesprochen. Prueft zweierlei auf einmal: laesst
+#                sich eine entworfene Stimme ueberhaupt weiterklonen, und was
+#                macht eine englische Referenz mit deutscher Ausgabe.
+#
+# `text` muss woertlich das sein, was in der Datei gesprochen wird -- beide
+# Engines bekommen ihn als ref_text. Der Entwurfstext stammt aus stimmen.yaml.
+# Anderen Entwurf hoeren: `pfad` und `text` tauschen, sonst nichts.
+referenzen:
+  - id: matthias
+    quelle: mimic-profil
+    pfad: ~/.local/share/mimic/voices/matthias/ref.wav
+    text_datei: ~/.local/share/mimic/voices/matthias/ref.txt
+  - id: klinisch_0
+    quelle: moss-entwurf
+    pfad: out/entwurf/klinisch_0.wav
+    text: "Well done. That was almost the correct answer. We will make a note of your progress."

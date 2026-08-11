@@ -1,5 +1,5 @@
 # Eingefroren am 2026-08-11, VOR der ersten Messung. Alle drei Engines
-# bekommen dieselben sechs Texte.
+# bekommen dieselben sieben Texte.
 #
 # Deutsch, weil genau das die offene Frage ist: eine aus englischem Audio
 # geklonte Stimme, die Deutsch sprechen soll. Die Klassen folgen
@@ -25,3 +25,15 @@ texte:
   - id: t6_lang
     klasse: lang
     text: "Ich habe die Kammer zweimal durchsucht und nichts gefunden, was dort nicht hingehört. Wenn du willst, gehe ich ein drittes Mal, aber dann brauche ich Licht."
+  # Nachgetragen am 2026-08-11, vor der ersten Messung an Chatterbox und Qwen,
+  # auf Zuruf von Matthias. Woertlich uebernommen -- "Brahnsch" ist Absicht:
+  # ein englisches Lehnwort in deutscher Lautschrift, genau der Fall, an dem
+  # Kriterium B in Phase 0 gescheitert ist. Der Text wechselt mitten in der
+  # Aeusserung die Sprache und traegt drei Satzarten sowie drei Interpunktions-
+  # fallen (Auslassung, Gedankenstrich, Ausruf) in einem Stueck.
+  - id: t7_zweisprachig
+    klasse: code_switching
+    text: |-
+      Ich habe den Brahnsch gestern Abend noch einmal geprüft, ruhig und ohne Eile.
+      The tests are green, but the build still fails... — ...how much time do we really have?
+      Dann fangen wir eben sofort an, jetzt gleich!
