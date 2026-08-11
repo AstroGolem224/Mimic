@@ -4,8 +4,9 @@ Aufrufweg und Feldnamen stammen aus der Modellkarte von MOSS-VoiceGenerator
 (README, Abschnitt "Basic Usage"), nicht aus einer Vermutung. Drei Kandidaten
 je Stimme, weil generative Entwuerfe streuen und der erste Wurf selten sitzt.
 
-  uv run python 00_entwerfen.py            # alle zwoelf, je drei Kandidaten
-  uv run python 00_entwerfen.py bot_kalt   # nur eine
+  uv run python 00_entwerfen.py                     # alle aus stimmen.yaml
+  uv run python 00_entwerfen.py bot_kalt            # nur eine daraus
+  uv run python 00_entwerfen.py stimmen_wild.yaml   # anderer Satz Entwuerfe
 """
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch.backends.cuda.enable_math_sdp(True)
 
 WURZEL = pathlib.Path(__file__).resolve().parent.parent
-STIMMEN = yaml.safe_load((WURZEL / "stimmen.yaml").read_text())["stimmen"]
 AUS = WURZEL / "out" / "entwurf"
 KANDIDATEN = 3
 VERSUCHE = 3
@@ -52,7 +52,12 @@ def attention_waehlen(geraet: str, dtype: torch.dtype) -> str:
 
 
 def main() -> None:
-    nur = sys.argv[1] if len(sys.argv) > 1 else None
+    # Ein Argument ist entweder eine Stimmendatei oder eine einzelne id.
+    argument = sys.argv[1] if len(sys.argv) > 1 else None
+    quelle = WURZEL / argument if argument and argument.endswith(".yaml") else WURZEL / "stimmen.yaml"
+    nur = None if not argument or argument.endswith(".yaml") else argument
+    stimmen = yaml.safe_load(quelle.read_text())["stimmen"]
+    print(f"[info] {len(stimmen)} Entwuerfe aus {quelle.name}")
     AUS.mkdir(parents=True, exist_ok=True)
 
     geraet = "cuda" if torch.cuda.is_available() else "cpu"
@@ -79,7 +84,7 @@ def main() -> None:
     rate = prozessor.model_config.sampling_rate
 
     with torch.no_grad():
-        for stimme in STIMMEN:
+        for stimme in stimmen:
             if nur and stimme["id"] != nur:
                 continue
             gespraech = [prozessor.build_user_message(text=stimme["text"], instruction=stimme["instruction"])]

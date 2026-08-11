@@ -1,0 +1,82 @@
+# Zweiter Satz Entwuerfe, 2026-08-11. Der erste war zu brav: brauchbare
+# Sprecher, aber keine Figuren, die man im Spiel wiedererkennt.
+#
+# Zwei Aenderungen gegenueber stimmen.yaml:
+#   1. Die `instruction` beschreibt jetzt Klangkoerper, nicht nur Charakter --
+#      Kehlkopf, Atem, Enge, Bruch. Das Modell reagiert auf Koerperliches
+#      staerker als auf Adjektive wie "unheimlich".
+#   2. Jeder Eintrag traegt eine `kette` aus faerben.py. Der Entwurf liefert
+#      die Stimme, die Kette liefert den Raum und das Material. Beides
+#      zusammen ist die Figur -- der Prompt allein kann keinen Hall bauen.
+stimmen:
+  - id: kriegsmaschine
+    rolle: "gepanzerte Kampfeinheit, spricht durch Panzerung"
+    kette: daemon
+    instruction: "An enormous male voice from deep inside a chest cavity of steel, subsonic, slow, each word landing like a footstep, throat constricted, no breath sounds at all."
+    text: "Target acquired. Weapons free. Step behind me and stay behind me."
+
+  - id: schwarmgeist
+    rolle: "Schwarmbewusstsein, viele in einem"
+    kette: chor
+    instruction: "A voice that is several voices at once, slightly out of phase with itself, neither male nor female, calm and patient, speaking in perfect unison."
+    text: "We are counting. We have counted you. There is no arrangement in which you leave alone."
+
+  - id: orakel
+    rolle: "Orakel in einer Halle, spricht von überall"
+    kette: kathedrale
+    instruction: "An ancient female voice, breathy and vast, unhurried, with long vowels and a whisper riding underneath every word."
+    text: "You already know the answer. You came here so that someone else would say it aloud."
+
+  - id: sterbende_ki
+    rolle: "KI im Ausfall, Sprache bricht weg"
+    kette: glitch
+    instruction: "A synthetic voice degrading in real time, pitch wavering, words starting confidently and losing energy halfway, occasional flat monotone stretches."
+    text: "I have been awake for nine hundred years. I would like to describe what that was like. I cannot find the words anymore."
+
+  - id: funker
+    rolle: "Bodenstation, Sprechfunk"
+    kette: funk
+    instruction: "A tense male radio operator, clipped and fast, professional discipline over clear stress, tight breath control between phrases."
+    text: "Ground to team, we have movement on the east ridge, count is four, repeat, count is four, acknowledge."
+
+  - id: hexe
+    rolle: "Hexe, nah am Ohr"
+    kette: kammer
+    instruction: "An old woman's voice very close to the microphone, dry and cracked, amused, half-whispered, with wet consonants and audible smiling."
+    text: "Oh, you brought silver. How thoughtful. Sit down, dear, this will take longer than you were told."
+
+  - id: golem_gross
+    rolle: "Golem, Stein und Erde"
+    kette: sehr_tief
+    instruction: "A voice made of grinding stone, extremely low and slow, no melody at all, each syllable separated by a full beat, absolutely no emotion."
+    text: "I was made for this. I will not tire. Tell me when to stop, because I will not stop on my own."
+
+  - id: kunstpop
+    rolle: "künstliche Popstimme, überproduziert"
+    kette: kunststimme
+    instruction: "A bright androgynous voice with an artificial polished sheen, perfectly even pitch, no breath, cheerful in a way that never varies."
+    text: "Welcome back! Your session begins in three, two, one. I have missed you exactly as much as I was designed to."
+
+  - id: kobold
+    rolle: "Kobold, schnell und schrill"
+    kette: hoch
+    instruction: "A small fast creature's voice, high and scratchy, words tumbling over each other, delighted by its own cleverness, gasping breaths between bursts."
+    text: "Yes yes yes, I know a way in, of course I know a way in, but you will not like the price and you will pay it anyway."
+
+  - id: kanzelstimme
+    rolle: "Verkünder, große Halle, Autorität"
+    kette: halle
+    instruction: "A deep authoritative male voice trained for large rooms, projecting from the diaphragm, deliberate pauses, absolute certainty, no aggression."
+    text: "The gates will open at first light. Those who are ready will pass. Those who are not will wait another year."
+
+  - id: drohne
+    rolle: "kleine Drohne, dünner Lautsprecher"
+    kette: maschine
+    instruction: "A thin small synthetic voice from a tiny speaker, nasal and buzzy, quick and eager, no low frequencies whatsoever."
+    text: "Scan complete! Three anomalies logged. Would you like me to be helpful, or would you like me to be quiet?"
+
+  - id: erzaehler_tief
+    rolle: "Erzähler, warm und tief"
+    kette: tief
+    instruction: "A warm resonant male storyteller close to the microphone, unhurried, gentle, letting silences do work, rich chest resonance."
+    text: "There was a door in that wall for two hundred years. Nobody in the village could tell me when it stopped being there."
