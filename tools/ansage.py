@@ -48,7 +48,12 @@ import sys
 import time
 from pathlib import Path
 
-GRENZE = 650            # Zeichen; darueber wird die Ansage zum Vortrag
+# 0 = ungekuerzt. Die Ansage soll den ganzen Fliesstext sprechen, nicht seinen
+# Anfang; wer sie kuerzer will, setzt hier eine Zeichenzahl.
+GRENZE = 0
+# Der Dienst nimmt 1000 Zeichen je Anfrage (frontend.MAX_TEXT_CHARS). Laengeres
+# wird an Satzgrenzen zerlegt und nacheinander gesprochen.
+STUECK_ZEICHEN = 900
 TITEL_GRENZE = 60       # der Sitzungstitel steht VOR der Meldung, also kurz halten
 WARTE_FRIST_S = 10.0    # so lange wartet die Ansage auf die frische Antwort
 WARTE_TAKT_S = 0.2
@@ -288,7 +293,7 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     fluss = " ".join(" ".join(saetze).split())
     if not fluss:
         return ""
-    if len(fluss) <= grenze:
+    if not grenze or len(fluss) <= grenze:
         return fluss
 
     ergebnis = ""
@@ -449,6 +454,31 @@ def _merke_pid(griff) -> None:
         pass
 
 
+def _stuecke(text: str, grenze: int = STUECK_ZEICHEN) -> list[str]:
+    """Text in sprechbare Haeppchen unter der Grenze des Dienstes.
+
+    Geschnitten wird an Satzgrenzen, nicht an Zeichen: ein Schnitt mitten im
+    Satz hoert man. Ein einzelner Satz ueber der Grenze bleibt ganz -- der
+    Dienst lehnt ihn dann ab, was seltener vorkommt und weniger stoert als ein
+    Satz, der in zwei Haelften gesprochen wird.
+    """
+    text = text.strip()
+    if len(text) <= grenze:
+        return [text] if text else []
+    stuecke: list[str] = []
+    aktuell = ""
+    for satz in _SATZENDE.split(text):
+        kandidat = f"{aktuell} {satz}".strip()
+        if aktuell and len(kandidat) > grenze:
+            stuecke.append(aktuell)
+            aktuell = satz
+        else:
+            aktuell = kandidat
+    if aktuell:
+        stuecke.append(aktuell)
+    return stuecke
+
+
 def _mimic() -> str | None:
     """`mimic` im PATH, sonst der Pfad, den `uv tool install` benutzt.
 
@@ -492,11 +522,19 @@ def sprechen(text: str) -> int:
     programm = _mimic()
     if not programm:
         return 0
-    try:
-        subprocess.run([programm, "say", text, "--voice", stimme()], timeout=SPRECH_FRIST_S,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    gewaehlt = stimme()
+    for stueck in _stuecke(text):
+        try:
+            lauf = subprocess.run([programm, "say", stueck, "--voice", gewaehlt],
+                                  timeout=SPRECH_FRIST_S,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return 0
+        if lauf.returncode != 0:
+            # Ein gescheitertes Stueck heisst: der Rest wird auch scheitern.
+            # Weiterreden hiesse, den Satz mittendrin fortzusetzen.
+            _protokoll("abgebrochen", stueck, code=lauf.returncode)
+            return 0
     return 0
 
 

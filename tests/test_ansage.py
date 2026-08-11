@@ -140,13 +140,20 @@ class Zusammenfassen(unittest.TestCase):
         self.assertNotIn("github", ergebnis)
         self.assertIn("ist offen", ergebnis)
 
-    def test_langer_zweiter_satz_wird_angeschnitten_statt_verschluckt(self):
-        """Der eigentliche Defekt: kurzer Auftakt, lange Aussage, nur der Auftakt kam an."""
+    def test_ungekuerzt_kommt_alles_durch(self):
+        """GRENZE=0 ist der Normalfall: gesprochen wird der ganze Fliesstext."""
         lang = "Der Kern der Sache ist ziemlich verwickelt " + "und geht noch weiter " * 30
         ergebnis = ansage.zusammenfassen(f"Gemerged. {lang}.")
         self.assertTrue(ergebnis.startswith("Gemerged. Der Kern der Sache"), ergebnis)
+        self.assertTrue(ergebnis.endswith("weiter."), ergebnis)
+
+    def test_langer_zweiter_satz_wird_angeschnitten_statt_verschluckt(self):
+        """Mit gesetzter Grenze: kurzer Auftakt, lange Aussage, beides muss ankommen."""
+        lang = "Der Kern der Sache ist ziemlich verwickelt " + "und geht noch weiter " * 30
+        ergebnis = ansage.zusammenfassen(f"Gemerged. {lang}.", grenze=650)
+        self.assertTrue(ergebnis.startswith("Gemerged. Der Kern der Sache"), ergebnis)
         self.assertTrue(ergebnis.endswith("..."), ergebnis)
-        self.assertLessEqual(len(ergebnis), ansage.GRENZE + 4)
+        self.assertLessEqual(len(ergebnis), 654)
 
     def test_kurzer_auftakt_plus_passender_satz_bleibt_ganz(self):
         text = "Gemerged. Lokales main nachgezogen, Arbeitsverzeichnis sauber."
@@ -154,15 +161,39 @@ class Zusammenfassen(unittest.TestCase):
 
     def test_kuerzt_an_der_satzgrenze(self):
         text = " ".join(f"Satz nummer {n} steht hier." for n in range(50))
-        ergebnis = ansage.zusammenfassen(text)
-        self.assertLessEqual(len(ergebnis), ansage.GRENZE)
+        ergebnis = ansage.zusammenfassen(text, grenze=650)
+        self.assertLessEqual(len(ergebnis), 650)
         self.assertTrue(ergebnis.endswith("."))
         self.assertTrue(ergebnis.startswith("Satz nummer 0"))
 
     def test_ein_einziger_langer_satz(self):
-        ergebnis = ansage.zusammenfassen("wort " * 200)
-        self.assertLessEqual(len(ergebnis), ansage.GRENZE + 4)
+        ergebnis = ansage.zusammenfassen("wort " * 200, grenze=650)
+        self.assertLessEqual(len(ergebnis), 654)
         self.assertTrue(ergebnis.endswith("..."))
+
+
+class Stueckeln(unittest.TestCase):
+    """Der Dienst nimmt 1000 Zeichen je Anfrage -- laengeres wird zerlegt."""
+
+    def test_kurzer_text_bleibt_ein_stueck(self):
+        self.assertEqual(["Kurz und gut."], ansage._stuecke("Kurz und gut."))
+
+    def test_leerer_text_ergibt_nichts(self):
+        self.assertEqual([], ansage._stuecke("   "))
+
+    def test_schnitt_liegt_auf_satzgrenzen(self):
+        text = " ".join(f"Das ist Satz nummer {n}." for n in range(60))
+        stuecke = ansage._stuecke(text, grenze=200)
+        self.assertGreater(len(stuecke), 3)
+        for stueck in stuecke:
+            self.assertLessEqual(len(stueck), 200)
+            self.assertTrue(stueck.endswith("."), stueck)
+        self.assertEqual(text, " ".join(stuecke))      # nichts verloren, nichts doppelt
+
+    def test_einzelner_uebergrosser_satz_bleibt_ganz(self):
+        # Lieber eine Absage vom Dienst als ein Satz, der mittendrin abbricht.
+        satz = "wort " * 100 + "ende."
+        self.assertEqual([satz.strip()], ansage._stuecke(satz, grenze=200))
 
     def test_leere_eingabe(self):
         self.assertEqual(ansage.zusammenfassen(""), "")
