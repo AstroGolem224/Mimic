@@ -12,6 +12,7 @@ je Stimme, weil generative Entwuerfe streuen und der erste Wurf selten sitzt.
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import sys
 
@@ -31,7 +32,12 @@ torch.backends.cuda.enable_math_sdp(True)
 
 WURZEL = pathlib.Path(__file__).resolve().parent.parent
 AUS = WURZEL / "out" / "entwurf"
-KANDIDATEN = 3
+KANDIDATEN = int(os.environ.get("MIMIC_KANDIDATEN", "3"))
+# Der Standard-Referenztext. Zweisprachig, weil eine Referenz, die nur
+# Englisch spricht, dem Klon kein Deutsch beibringt -- und weil Mimic beide
+# Sprachen im selben Satz bedienen muss. Ein Eintrag in der Stimmendatei
+# darf mit einem eigenen `text` davon abweichen.
+REFERENZ = (WURZEL / "referenztext.txt").read_text().strip()
 VERSUCHE = 3
 
 # Aus der Modellkarte uebernommen. Das Modell ist laut eigener Warnung
@@ -87,7 +93,11 @@ def main() -> None:
         for stimme in stimmen:
             if nur and stimme["id"] != nur:
                 continue
-            gespraech = [prozessor.build_user_message(text=stimme["text"], instruction=stimme["instruction"])]
+            gespraech = [
+                prozessor.build_user_message(
+                    text=stimme.get("text") or REFERENZ, instruction=stimme["instruction"]
+                )
+            ]
             for k in range(KANDIDATEN):
                 ziel = AUS / f"{stimme['id']}_{k}.wav"
                 if ziel.exists():

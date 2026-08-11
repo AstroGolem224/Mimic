@@ -1,0 +1,3 @@
+Ich habe den "Brahnsch" gestern Abend noch einmal geprüft, ruhig und ohne Eile.
+The tests are green, but the build still fails — how much time do we really have?
+Dann fangen wir eben sofort an, jetzt gleich!

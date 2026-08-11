@@ -1,0 +1,22 @@
+# Dritter Satz, 2026-08-11. Nur die beiden Figuren, die Matthias behalten hat,
+# neu erzeugt -- diesmal mit dem zweisprachigen Referenztext aus
+# referenztext.txt statt mit einem englischen Einzeiler.
+#
+# Grund: die Referenz ist das, was der Klon nachmacht. Eine rein englische
+# Referenz bringt dem Klon kein Deutsch bei, und Mimic muss beide Sprachen im
+# selben Satz bedienen. Kein `text`-Feld hier -- dann greift referenztext.txt.
+#
+# Offen und in diesem Lauf zu klaeren: ob MOSS-VoiceGenerator ueberhaupt
+# brauchbares Deutsch spricht. Die Modellkarte nennt Chinesisch und Englisch.
+# Sechs Kandidaten je Figur statt drei, weil das die Frage ist, an der alles
+# haengt.
+stimmen:
+  - id: zs_sterbende_ki
+    rolle: "KI im Ausfall, Sprache bricht weg"
+    kette: glitch
+    instruction: "A synthetic voice degrading in real time, pitch wavering, words starting confidently and losing energy halfway, occasional flat monotone stretches."
+
+  - id: zs_drohne
+    rolle: "kleine Drohne, dünner Lautsprecher"
+    kette: maschine
+    instruction: "A thin small synthetic voice from a tiny speaker, nasal and buzzy, quick and eager, no low frequencies whatsoever."
