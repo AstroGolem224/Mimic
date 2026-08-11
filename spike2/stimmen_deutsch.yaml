@@ -1,0 +1,30 @@
+# Vierter Satz, 2026-08-11. Diesmal steht die `instruction` auf Deutsch.
+#
+# Vorgeschichte: Satz drei hatte englische Anweisungen und den zweisprachigen
+# Referenztext. Ergebnis nach Matthias' Ohr: englische Aussprache der deutschen
+# Woerter, unbrauchbar. Offen blieb dabei, ob das Modell die Sprache am `text`
+# festmacht oder an der `instruction`. Wenn die Anweisung die Sprache mitzieht,
+# muss sie deutsch sein.
+#
+# Die Modellkarte nennt Chinesisch und Englisch. Deutsch ist damit auf beiden
+# Seiten unbelegtes Gebiet -- das hier ist der Versuch, der es entscheidet, und
+# nicht mehr. Faellt er durch, ist MOSS-VoiceGenerator als Entwerfer fuer
+# deutsche Stimmen erledigt und der naechste Weg ist ein anderer.
+#
+# Kein `text`-Feld: es greift referenztext.txt, derselbe zweisprachige Absatz
+# wie in Satz drei. Nur so ist der Vergleich sauber -- eine Variable je Lauf.
+stimmen:
+  - id: de_sterbende_ki
+    rolle: "KI im Ausfall, Sprache bricht weg"
+    kette: glitch
+    instruction: "Eine synthetische Stimme, die im Sprechen zerfaellt. Die Tonhoehe schwankt, jeder Satz beginnt fest und verliert auf halbem Weg die Kraft, dazwischen liegen tonlose Strecken. Deutliches Hochdeutsch, kein Akzent."
+
+  - id: de_drohne
+    rolle: "kleine Drohne, dünner Lautsprecher"
+    kette: maschine
+    instruction: "Eine duenne, kleine Maschinenstimme aus einem winzigen Lautsprecher, naeselnd und surrend, schnell und diensteifrig, voellig ohne Tiefen. Deutliches Hochdeutsch, kein Akzent."
+
+  - id: de_erzaehler
+    rolle: "Erzähler, warm und tief, Kontrollstimme"
+    kette: tief
+    instruction: "Eine warme, tiefe maennliche Erzaehlerstimme dicht am Mikrofon, unaufgeregt, mit vollem Brustton und ruhigen Pausen. Deutliches Hochdeutsch, kein Akzent."
