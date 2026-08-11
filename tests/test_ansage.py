@@ -306,7 +306,8 @@ class FrischeAntwort(unittest.TestCase):
         with (unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(laufzeit)}),
               unittest.mock.patch.object(ansage.time, "sleep", side_effect=nachschieben),
               unittest.mock.patch.object(ansage, "sprechen",
-                                         side_effect=lambda satz: gesprochen.append(satz) or 0)):
+                                         side_effect=lambda satz, *_a, **_k:
+                                         gesprochen.append(satz) or 0)):
             self.assertEqual(0, ansage.melden(str(pfad)))
         self.assertEqual(["Fertig. die neue Antwort ist da."], gesprochen)
         # Die Kennung ist fortgeschrieben, sonst spraeche die naechste Ansage dasselbe.
@@ -323,7 +324,8 @@ class FrischeAntwort(unittest.TestCase):
         with (unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(laufzeit)}),
               unittest.mock.patch.object(ansage.time, "monotonic", side_effect=lambda: next(zeiten)),
               unittest.mock.patch.object(ansage, "sprechen",
-                                         side_effect=lambda satz: gesprochen.append(satz) or 0)):
+                                         side_effect=lambda satz, *_a, **_k:
+                                         gesprochen.append(satz) or 0)):
             self.assertEqual(0, ansage.melden(str(pfad)))
         self.assertEqual([], gesprochen)
 
@@ -341,6 +343,70 @@ class Vorspann(unittest.TestCase):
     def test_rest_vom_gestrichenen_bezeichner_faellt_weg(self):
         self.assertEqual("Drin. Ab jetzt gilt das hier.",
                          ansage.zusammenfassen("Drin, `30a5628`. Ab jetzt gilt das hier."))
+
+
+class Warteschlange(unittest.TestCase):
+    """Eigene Sitzung verdraengen, fremde abwarten -- sonst reden Fenster ueber Kreuz."""
+
+    def setUp(self):
+        self.laufzeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(unittest.mock.patch.dict(
+            os.environ, {"XDG_RUNTIME_DIR": str(self.laufzeit)}))
+
+    def besitzer(self, pid: int, sitzung: str) -> None:
+        (self.laufzeit / "mimic-ansage.pid").write_text(f"{pid} {sitzung}\n", encoding="utf-8")
+
+    def test_freie_ausgabe_wird_sofort_belegt(self):
+        griff = ansage._sperre_holen("eigene")
+        self.assertIsNotNone(griff)
+
+    def test_eigene_sitzung_wird_verdraengt(self):
+        halter = ansage._sperre()                      # belegt die Ausgabe
+        self.assertIsNotNone(halter)
+        self.besitzer(4242, "eigene")
+        verdraengt = []
+
+        def freigeben():
+            verdraengt.append(True)
+            halter.close()                             # der verdraengte gibt die Sperre frei
+
+        with (unittest.mock.patch.object(ansage, "_verdraenge_laufende_ansage",
+                                         side_effect=freigeben),
+              unittest.mock.patch.object(ansage.time, "sleep")):
+            griff = ansage._sperre_holen("eigene")
+        self.assertIsNotNone(griff)
+        self.assertEqual([True], verdraengt)
+
+    def test_fremde_sitzung_wird_abgewartet_nicht_abgeschnitten(self):
+        halter = ansage._sperre()
+        self.besitzer(4242, "fremde")
+        verdraengt = []
+        takte = []
+
+        def warten(_dauer):
+            takte.append(1)
+            if len(takte) == 3:                        # die fremde Ansage endet
+                halter.close()
+
+        with (unittest.mock.patch.object(ansage, "_verdraenge_laufende_ansage",
+                                         side_effect=lambda: verdraengt.append(True)),
+              unittest.mock.patch.object(ansage.time, "sleep", side_effect=warten)):
+            griff = ansage._sperre_holen("eigene")
+        self.assertIsNotNone(griff)
+        self.assertEqual([], verdraengt)               # nichts abgeschnitten
+        self.assertEqual(3, len(takte))                # sondern angestanden
+
+    def test_haengender_sprecher_haelt_die_schlange_nicht_ewig(self):
+        halter = ansage._sperre()                      # bleibt belegt bis Testende
+        self.addCleanup(halter.close)
+        self.besitzer(4242, "fremde")
+        uhr = iter([0.0, ansage.WARTESCHLANGE_FRIST_S + 1])
+        with (unittest.mock.patch.object(ansage.time, "monotonic", side_effect=lambda: next(uhr)),
+              unittest.mock.patch.object(ansage.time, "sleep")):
+            self.assertIsNone(ansage._sperre_holen("eigene"))
+
+    def test_besitzer_ohne_datei(self):
+        self.assertEqual((0, ""), ansage._besitzer())
 
 
 class Verdraengen(unittest.TestCase):

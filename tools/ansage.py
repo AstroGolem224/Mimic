@@ -57,6 +57,8 @@ STUECK_ZEICHEN = 900
 TITEL_GRENZE = 60       # der Sitzungstitel steht VOR der Meldung, also kurz halten
 WARTE_FRIST_S = 10.0    # so lange wartet die Ansage auf die frische Antwort
 WARTE_TAKT_S = 0.2
+VERDRAENGUNG_FRIST_S = 2.0        # so lange braucht ein verdraengter Sprecher hoechstens
+WARTESCHLANGE_FRIST_S = 300.0     # so lange wartet eine Ansage auf eine fremde Sitzung
 MINDEST = 150           # darunter lieber anschneiden als abbrechen
 TAIL_BYTES = 1 << 20    # so weit wird ins Transkript zurueckgelesen
 KOPFHOERER_FRIST_S = 20
@@ -421,6 +423,53 @@ def _ist_ansage_prozess(pid: int) -> bool:
     return bool(namen & {b"mimic-ansage", b"ansage.py"})
 
 
+def _besitzer() -> tuple[int, str]:
+    """PID und Sitzung dessen, der gerade spricht -- (0, "") wenn unbekannt."""
+    try:
+        roh = (_laufzeit() / "mimic-ansage.pid").read_text(encoding="utf-8").split()
+    except OSError:
+        return 0, ""
+    try:
+        return int(roh[0]), roh[1] if len(roh) > 1 else ""
+    except (IndexError, ValueError):
+        return 0, ""
+
+
+def _sperre_holen(sitzung: str):
+    """Die Ausgabe belegen. Eigene Sitzung verdraengen, fremde abwarten.
+
+    Zwei Faelle, zwei Regeln. Spricht dieselbe Sitzung noch ihre vorige
+    Antwort, ist die neue aktueller -- also verdraengen. Spricht eine ANDERE
+    Sitzung, gehoert ihre Meldung einem anderen Fenster und darf nicht
+    abgeschnitten werden; dann wird angestanden, bis sie fertig ist.
+    """
+    griff = _sperre()
+    if griff is not None:
+        return griff
+
+    pid, fremde = _besitzer()
+    if pid and fremde == sitzung:
+        _verdraenge_laufende_ansage()
+        for _ in range(int(VERDRAENGUNG_FRIST_S / WARTE_TAKT_S)):
+            time.sleep(WARTE_TAKT_S)
+            griff = _sperre()
+            if griff is not None:
+                return griff
+        return None
+
+    # Fremde Sitzung: anstellen. Gepollt statt blockierend, damit die Frist
+    # gilt -- ein haengender Sprecher darf die Schlange nicht ewig halten.
+    _protokoll("wartet", "", vor=fremde or "unbekannt")
+    frist = time.monotonic() + WARTESCHLANGE_FRIST_S
+    while time.monotonic() < frist:
+        time.sleep(WARTE_TAKT_S)
+        griff = _sperre()
+        if griff is not None:
+            return griff
+    _protokoll("aufgegeben", "", wartete_s=int(WARTESCHLANGE_FRIST_S))
+    return None
+
+
 def _verdraenge_laufende_ansage() -> None:
     """Die vorige Ansage beenden, damit die neue drankommt.
 
@@ -446,10 +495,11 @@ def _verdraenge_laufende_ansage() -> None:
         return
 
 
-def _merke_pid(griff) -> None:
-    """Eigene PID hinterlegen, solange die Sperre gehalten wird."""
+def _merke_pid(sitzung: str = "") -> None:
+    """Eigene PID und Sitzung hinterlegen, solange die Sperre gehalten wird."""
     try:
-        (_laufzeit() / "mimic-ansage.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        (_laufzeit() / "mimic-ansage.pid").write_text(f"{os.getpid()} {sitzung}\n",
+                                                     encoding="utf-8")
     except OSError:
         pass
 
@@ -492,24 +542,20 @@ def _mimic() -> str | None:
     return str(ersatz) if os.access(ersatz, os.X_OK) else None
 
 
-def sprechen(text: str) -> int:
-    """Vordergrundpfad: Kopfhoerer sicherstellen, dann sprechen. Immer 0."""
-    griff = _sperre()
+def sprechen(text: str, sitzung: str = "", griff=None) -> int:
+    """Vordergrundpfad: Ausgabe belegen, Kopfhoerer sicherstellen, sprechen. Immer 0.
+
+    `griff` uebergibt eine bereits gehaltene Sperre -- der Meldepfad belegt die
+    Ausgabe VOR dem Warten auf die Antwort, damit der Text beim Sprechbeginn
+    frisch ist und nicht der Stand von vor der Warteschlange.
+    """
     if griff is None:
-        # Nicht schweigen, sondern die veraltete Ansage abloesen. Zwei
-        # Versuche mit kurzer Pause: der verdraengte Prozess braucht einen
-        # Moment, bis sein Signal durch ist und die Sperre faellt.
-        _verdraenge_laufende_ansage()
-        for _ in range(20):
-            time.sleep(0.05)
-            griff = _sperre()
-            if griff is not None:
-                break
-        if griff is None:
-            _protokoll("verworfen", text, grund="sperre")
-            return 0
-    _merke_pid(griff)
-    _protokoll("spricht", text)
+        griff = _sperre_holen(sitzung)
+    if griff is None:
+        _protokoll("verworfen", text, grund="sperre")
+        return 0
+    _merke_pid(sitzung)
+    _protokoll("spricht", text, sitzung=sitzung or "-")
 
     kopfhoerer = Path(__file__).resolve().parent / "kopfhoerer.sh"
     if os.access(kopfhoerer, os.X_OK):
@@ -645,7 +691,16 @@ def melden(pfad: str) -> int:
     andere erscheint. Kommt in der Frist nichts Neues, wird geschwiegen: eine
     Wiederholung ist schlechter als Stille.
     """
+    sitzung = Path(pfad).stem[:64]
     datei = _zuletzt_datei(pfad)
+    # Erst die Ausgabe belegen, dann auf die Antwort warten: wer in der
+    # Warteschlange steht, soll am Ende den DANN aktuellen Stand melden, nicht
+    # den von vor fuenf Minuten.
+    griff = _sperre_holen(sitzung)
+    if griff is None:
+        return 0
+    _merke_pid(sitzung)
+
     try:
         vorher = datei.read_text(encoding="utf-8").strip()
     except OSError:
@@ -666,7 +721,7 @@ def melden(pfad: str) -> int:
         datei.write_text(kennung + "\n", encoding="utf-8")
     except OSError:
         pass
-    return sprechen(satz)
+    return sprechen(satz, sitzung, griff=griff)
 
 
 def abkoppeln(*argumente: str) -> None:
