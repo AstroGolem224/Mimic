@@ -1,0 +1,27 @@
+# Eingefroren am 2026-08-11, VOR der ersten Messung. Alle drei Engines
+# bekommen dieselben sechs Texte.
+#
+# Deutsch, weil genau das die offene Frage ist: eine aus englischem Audio
+# geklonte Stimme, die Deutsch sprechen soll. Die Klassen folgen
+# spike/corpus.yaml, damit sich die Ergebnisse mit Phase 0 vergleichen lassen.
+# `t5_codeswitch` ist der haerteste Fall -- englische Fachbegriffe im deutschen
+# Satz, wo eine Engine mit Sprachschalter zwangslaeufig eine Seite falsch bedient.
+texte:
+  - id: t1_kurz
+    klasse: kurz
+    text: "Fertig. Der Rest wartet."
+  - id: t2_frage
+    klasse: frage
+    text: "Wohin soll ich das bringen, und wann brauchst du es dort?"
+  - id: t3_ausruf
+    klasse: ausruf
+    text: "Weg da! Der Träger hält keine zehn Sekunden mehr!"
+  - id: t4_zahlen
+    klasse: zahlen
+    text: "Sektor 12, Druck bei 3,4 bar, Rest der Schicht noch 47 Minuten."
+  - id: t5_codeswitch
+    klasse: code_switching
+    text: "Der Worker läuft, aber das Streaming bricht nach dem ersten Chunk ab."
+  - id: t6_lang
+    klasse: lang
+    text: "Ich habe die Kammer zweimal durchsucht und nichts gefunden, was dort nicht hingehört. Wenn du willst, gehe ich ein drittes Mal, aber dann brauche ich Licht."

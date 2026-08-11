@@ -1,0 +1,71 @@
+# Eingefroren am 2026-08-11, VOR der ersten Erzeugung. Zwoelf Entwuerfe, vier
+# Klassen zu je drei Stimmen.
+#
+# `instruction` ist englisch, weil MOSS-VoiceGenerator laut Modellkarte
+# Chinesisch und Englisch kann -- Deutsch steht dort nicht. `text` ist der Satz,
+# den der Entwurf spricht; er wird spaeter woertlich das ref.txt des
+# Mimic-Profils. Deshalb enthaelt er Aussage, Frage oder Ausruf und liegt bei
+# rund zehn Sekunden -- derselbe Bereich, in dem die Phase-0-Referenzen liegen.
+#
+# `rolle` ist nur fuer das Ohr beim Auswaehlen: was war gesucht.
+stimmen:
+  - id: bot_kalt
+    klasse: roboter
+    rolle: "kalter Wartungsroboter, keine Emotion"
+    instruction: "A cold synthetic male machine voice, flat affect, even pacing, slightly metallic, no emotion at all."
+    text: "Unit online. Diagnostic sequence complete. No faults detected. Awaiting instruction."
+  - id: bot_defekt
+    klasse: roboter
+    rolle: "beschaedigte Maschine, stockend"
+    instruction: "A damaged robot voice, halting and uneven, occasional stutter, low pitch, mechanical strain."
+    text: "System integrity at forty percent. I can still walk. I cannot promise for how long."
+  - id: bot_kollektiv
+    klasse: roboter
+    rolle: "Kollektiv, mehrere Stimmen in einer"
+    instruction: "A deep resonant synthetic voice speaking as a collective, hollow and layered, calm and deliberate."
+    text: "We have reached consensus. The probability favours your survival. We proceed together."
+  - id: golem_lehm
+    klasse: schwer
+    rolle: "Golem, karg und schwer"
+    instruction: "A very deep, slow, heavy male voice, gravelly and earthen, few words, no warmth, immense weight."
+    text: "The work is done. The stone holds. Say the word and I stop."
+  - id: schmied
+    klasse: schwer
+    rolle: "alter Handwerker, rau"
+    instruction: "An old man's rough working voice, hoarse from smoke, unhurried, matter of fact, slight rasp."
+    text: "Thirty years at this anvil. The metal tells you when it is ready. You only have to listen."
+  - id: wache
+    klasse: schwer
+    rolle: "Torwache, laut und knapp"
+    instruction: "A loud commanding male guard voice, clipped military delivery, hard consonants, no patience."
+    text: "Halt. State your business. The gate closes at dusk and I will not open it twice."
+  - id: klinisch
+    klasse: kuehl
+    rolle: "klinische KI, Lob das kippt"
+    instruction: "A calm clinical female voice, pleasant and measured, faintly condescending, perfect articulation."
+    text: "Well done. That was almost the correct answer. We will make a note of your progress."
+  - id: modron
+    klasse: kuehl
+    rolle: "logische Konstruktion, dritte Person"
+    instruction: "A precise artificial voice, neutral gender, clipped and analytical, constant rhythm, no inflection on emphasis."
+    text: "Observation. The subject has entered the chamber. Query. Was this the intended outcome."
+  - id: kurator
+    klasse: kuehl
+    rolle: "leiser Erzaehler, Archiv"
+    instruction: "A soft measured male narrator, close-mic intimacy, low volume, careful diction, scholarly calm."
+    text: "This record predates the collapse. Handle it gently. There is only the one copy left."
+  - id: haendler
+    klasse: warm
+    rolle: "Haendler, geschwaetzig"
+    instruction: "A lively middle-aged merchant voice, warm and fast, sing-song salesman rhythm, friendly pressure."
+    text: "Ah, a customer! Come closer, look at this one, finest work you will find on this side of the river."
+  - id: kind_geist
+    klasse: warm
+    rolle: "Kindergeist, unheimlich freundlich"
+    instruction: "A young child's voice, bright and friendly, slightly hollow and distant, unsettling calm underneath."
+    text: "Do you want to play with me? Nobody has come down here in a very long time."
+  - id: kapitaen
+    klasse: warm
+    rolle: "Kaeptn, seemaennisch"
+    instruction: "A weathered sea captain's voice, booming and jovial, salt-worn, rolling delivery, gruff affection."
+    text: "Storm's coming in from the west, lad. Tie it down twice and we will laugh about it tomorrow."

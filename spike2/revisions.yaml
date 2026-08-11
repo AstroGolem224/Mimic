@@ -1,0 +1,15 @@
+# Feste HF-Commits, ermittelt 2026-08-11 ueber die HF-API. Kein `main`.
+# Aendert sich hier etwas, sind alle Zahlen aus spike2/ von einem anderen Modell.
+checkpoints:
+  moss_voicegen:
+    repo: OpenMOSS-Team/MOSS-VoiceGenerator
+    revision: 97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4
+  moss_realtime:
+    repo: OpenMOSS-Team/MOSS-TTS-Realtime
+    revision: 75682787d8e2fcc73faca37ba2931453ca9c4022
+  qwen:
+    repo: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    revision: fd4b254389122332181a7c3db7f27e918eec64e3
+  dots_mf:
+    repo: dots-studio/dots.tts-mf
+    revision: 25c53fb462e57087e52237daa5ea30df1c5cc328
