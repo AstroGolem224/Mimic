@@ -32,6 +32,7 @@ WURZEL = pathlib.Path(__file__).resolve().parent.parent
 STIMMEN = yaml.safe_load((WURZEL / "stimmen.yaml").read_text())["stimmen"]
 AUS = WURZEL / "out" / "entwurf"
 KANDIDATEN = 3
+VERSUCHE = 3
 
 # Aus der Modellkarte uebernommen. Das Modell ist laut eigener Warnung
 # empfindlich gegen diese Werte -- nicht ohne Grund daran drehen.
@@ -83,20 +84,47 @@ def main() -> None:
                 continue
             gespraech = [prozessor.build_user_message(text=stimme["text"], instruction=stimme["instruction"])]
             for k in range(KANDIDATEN):
-                stapel = prozessor([gespraech], mode="generation")
-                ausgabe = modell.generate(
-                    input_ids=stapel["input_ids"].to(geraet),
-                    attention_mask=stapel["attention_mask"].to(geraet),
-                    **HYPER,
-                )
-                for nachricht in prozessor.decode(ausgabe):
-                    welle = nachricht.audio_codes_list[0]
-                    ziel = AUS / f"{stimme['id']}_{k}.wav"
-                    # soundfile statt torchaudio.save: torchaudio 2.9 leitet save() an
-                    # torchcodec weiter, das hier nicht installiert ist. soundfile ist
-                    # ohnehin Abhaengigkeit und schreibt dieselbe WAV.
-                    sf.write(ziel, welle.float().cpu().numpy(), rate)
-                    print(f"{ziel.name}  {welle.shape[-1] / rate:.1f}s")
+                ziel = AUS / f"{stimme['id']}_{k}.wav"
+                if ziel.exists():
+                    print(f"{ziel.name}  liegt schon da")
+                    continue
+                # Der Wurf geht manchmal daneben, auf zwei Arten. Entweder
+                # kommt eine Nachricht ohne einen einzigen Audio-Code zurueck,
+                # oder der Strom ist so verstuemmelt, dass schon das Zerlegen
+                # im Prozessor bricht:
+                #
+                #   RuntimeError: split_with_sizes expects split_sizes to sum
+                #   exactly to 66 (input tensor's size at dimension 0), but got
+                #   split_sizes=[60]
+                #
+                # Beides ist kein Fehler im Aufruf, sondern das Sampling bei
+                # temperature 1.5. Also nochmal werfen, hoechstens VERSUCHE mal,
+                # dann diesen Kandidaten auslassen.
+                wellen = []
+                for versuch in range(VERSUCHE):
+                    stapel = prozessor([gespraech], mode="generation")
+                    ausgabe = modell.generate(
+                        input_ids=stapel["input_ids"].to(geraet),
+                        attention_mask=stapel["attention_mask"].to(geraet),
+                        **HYPER,
+                    )
+                    try:
+                        wellen = [n.audio_codes_list[0] for n in prozessor.decode(ausgabe) if n.audio_codes_list]
+                    except RuntimeError as fehler:
+                        print(f"{ziel.name}  Wurf zerlegt sich nicht: {fehler}")
+                        wellen = []
+                    if wellen:
+                        break
+                    print(f"{ziel.name}  Fehlwurf, Versuch {versuch + 1} von {VERSUCHE}")
+                if not wellen:
+                    print(f"{ziel.name}  AUSGELASSEN nach {VERSUCHE} leeren Wuerfen")
+                    continue
+                welle = wellen[0]
+                # soundfile statt torchaudio.save: torchaudio 2.9 leitet save() an
+                # torchcodec weiter, das hier nicht installiert ist. soundfile ist
+                # ohnehin Abhaengigkeit und schreibt dieselbe WAV.
+                sf.write(ziel, welle.float().cpu().numpy(), rate)
+                print(f"{ziel.name}  {welle.shape[-1] / rate:.1f}s")
 
 
 if __name__ == "__main__":
