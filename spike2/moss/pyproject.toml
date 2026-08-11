@@ -1,0 +1,31 @@
+# Eigene Umgebung, weil sich die Abhaengigkeiten beissen: MOSS verlangt
+# transformers 5.x, das Hauptprojekt haengt auf 4.57.6 und torch 2.8.
+# Ein gemeinsames Environment waere ein Nachmittag Dependency-Krieg statt
+# ein Nachmittag Hoeren.
+[project]
+name = "spike2-moss"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    # Nicht ">=5.0.0". Mit 5.15.0 scheitert das Laden des Audio-Tokenizers:
+    # "Unrecognized model in OpenMOSS-Team/MOSS-Audio-Tokenizer. Should have a
+    # `model_type` key in its config.json." Die config.json hat keinen -- sie
+    # traegt nur eine auto_map. Die Modellkarte nennt 5.0.0, also 5.0.0.
+    "transformers==5.0.0",
+    "accelerate",
+    "soundfile",
+    "librosa",
+    "pyyaml",
+    "huggingface_hub",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
