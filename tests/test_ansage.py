@@ -255,6 +255,63 @@ class Sitzungstitel(unittest.TestCase):
         self.assertEqual(ansage.TITEL_GRENZE, len(ansage.sitzungstitel(pfad)))
 
 
+class FrischeAntwort(unittest.TestCase):
+    """Der Stop-Hook feuert, bevor die Antwort im Transkript steht."""
+
+    def test_kennung_kommt_mit(self):
+        pfad = transkript(assistent("erste", uuid="a"), assistent("zweite", uuid="b"))
+        self.assertEqual(("zweite", "b"), ansage.letzte_antwort_mit_kennung(pfad))
+
+    def test_wartet_bis_die_neue_antwort_erscheint(self):
+        pfad = transkript(assistent("die alte Antwort ist hier.", uuid="alt"))
+        laufzeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (laufzeit / f"mimic-ansage.{pfad.stem}.zuletzt").write_text("alt\n", encoding="utf-8")
+        gesprochen = []
+
+        def nachschieben(_dauer):
+            with open(pfad, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(assistent("die neue Antwort ist da.", uuid="neu")) + "\n")
+
+        with (unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(laufzeit)}),
+              unittest.mock.patch.object(ansage.time, "sleep", side_effect=nachschieben),
+              unittest.mock.patch.object(ansage, "sprechen",
+                                         side_effect=lambda satz: gesprochen.append(satz) or 0)):
+            self.assertEqual(0, ansage.melden(str(pfad)))
+        self.assertEqual(["Fertig. die neue Antwort ist da."], gesprochen)
+        # Die Kennung ist fortgeschrieben, sonst spraeche die naechste Ansage dasselbe.
+        self.assertEqual("neu", (laufzeit / f"mimic-ansage.{pfad.stem}.zuletzt")
+                         .read_text(encoding="utf-8").strip())
+
+    def test_ohne_neue_antwort_wird_geschwiegen(self):
+        pfad = transkript(assistent("unveraendert seit vorhin.", uuid="alt"))
+        laufzeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (laufzeit / f"mimic-ansage.{pfad.stem}.zuletzt").write_text("alt\n", encoding="utf-8")
+        gesprochen = []
+        # Die Uhr springt sofort ueber die Frist: kein echtes Warten im Test.
+        zeiten = iter([0.0, ansage.WARTE_FRIST_S + 1])
+        with (unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(laufzeit)}),
+              unittest.mock.patch.object(ansage.time, "monotonic", side_effect=lambda: next(zeiten)),
+              unittest.mock.patch.object(ansage, "sprechen",
+                                         side_effect=lambda satz: gesprochen.append(satz) or 0)):
+            self.assertEqual(0, ansage.melden(str(pfad)))
+        self.assertEqual([], gesprochen)
+
+
+class Vorspann(unittest.TestCase):
+    def test_titel_wird_nicht_gedoppelt(self):
+        # Sobald eine Antwort die Ansage zitiert, steht der Titel schon im Text.
+        pfad = transkript({"type": "custom-title", "customTitle": "Stimmen bauen",
+                           "sessionId": "abc"},
+                          assistent("Stimmen bauen. Fertig. Alles gruen."))
+        self.assertEqual("Stimmen bauen. Fertig. Alles gruen.",
+                         ansage.ansagetext({"hook_event_name": "Stop",
+                                            "transcript_path": str(pfad)}))
+
+    def test_rest_vom_gestrichenen_bezeichner_faellt_weg(self):
+        self.assertEqual("Drin. Ab jetzt gilt das hier.",
+                         ansage.zusammenfassen("Drin, `30a5628`. Ab jetzt gilt das hier."))
+
+
 class Verdraengen(unittest.TestCase):
     """Die neue Ansage loest die laufende ab, statt zu schweigen."""
 

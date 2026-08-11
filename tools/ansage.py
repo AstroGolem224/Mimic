@@ -50,6 +50,8 @@ from pathlib import Path
 
 GRENZE = 650            # Zeichen; darueber wird die Ansage zum Vortrag
 TITEL_GRENZE = 60       # der Sitzungstitel steht VOR der Meldung, also kurz halten
+WARTE_FRIST_S = 10.0    # so lange wartet die Ansage auf die frische Antwort
+WARTE_TAKT_S = 0.2
 MINDEST = 150           # darunter lieber anschneiden als abbrechen
 TAIL_BYTES = 1 << 20    # so weit wird ins Transkript zurueckgelesen
 KOPFHOERER_FRIST_S = 20
@@ -144,6 +146,33 @@ def sitzungstitel(pfad: Path) -> str:
     return ""
 
 
+def letzte_antwort_mit_kennung(pfad: Path) -> tuple[str, str]:
+    """Wie `letzte_antwort`, dazu die uuid des Eintrags.
+
+    Die Kennung entscheidet, ob seit der letzten Ansage ueberhaupt etwas Neues
+    dazugekommen ist -- der Textvergleich taugt dafuer nicht, zwei Antworten
+    koennen gleich anfangen.
+    """
+    for zeile in reversed(_endzeilen(pfad)):
+        if not zeile.strip():
+            continue
+        try:
+            eintrag = json.loads(zeile)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(eintrag, dict) or eintrag.get("isSidechain"):
+            continue
+        if eintrag.get("type") != "assistant":
+            continue
+        nachricht = eintrag.get("message")
+        if not isinstance(nachricht, dict):
+            continue
+        text = _bloecke_zu_text(nachricht.get("content")).strip()
+        if text:                # reine Werkzeugzuege ueberspringen
+            return text, str(eintrag.get("uuid") or "")
+    return "", ""
+
+
 def letzte_antwort(pfad: Path) -> str:
     """Text der letzten Assistentennachricht aus dem JSONL-Transkript.
 
@@ -189,6 +218,11 @@ _AUSZEICHNUNG = re.compile(r"[`*_#>]+")
 # Nach dem Streichen bleiben Luecken vor Satzzeichen und leere Klammerpaare.
 _LUECKE_VOR_SATZZEICHEN = re.compile(r"\s+([,.;:!?])")
 _LEERE_KLAMMER = re.compile(r"\(\s*\)|\[\s*\]")
+# "Drin, 30a5628." wird nach dem Streichen zu "Drin,." -- das Komma stand vor
+# dem gestrichenen Wort. Klauselzeichen unmittelbar vor einem Satzende sind
+# immer so ein Rest, ebenso doppelte Satzpunkte.
+_KLAUSEL_VOR_SATZENDE = re.compile(r"[,;:]+(?=\s*[.!?])")
+_DOPPELTES_SATZENDE = re.compile(r"([.!?])[.,;:]+")
 # Ein Wort, das die Stimme als Wort spricht. Bleibt nach dem Streichen keines
 # uebrig, war die Zeile nur ein Rahmen um einen Bezeichner ("Siehe:" plus Pfad).
 _WORTHALTIG = re.compile(r"[^\W\d_]{3,}")
@@ -242,6 +276,8 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
             zeile = zeile[:schnitt + 1]
         zeile = _LEERE_KLAMMER.sub(" ", zeile)
         zeile = _LUECKE_VOR_SATZZEICHEN.sub(r"\1", " ".join(zeile.split()))
+        zeile = _KLAUSEL_VOR_SATZENDE.sub("", zeile)
+        zeile = _DOPPELTES_SATZENDE.sub(r"\1", zeile)
         zeile = zeile.rstrip(_RANDZEICHEN).lstrip(_RANDZEICHEN)
         # Was von der Zeile bleibt, muss noch etwas aussagen: eine Zeile, die
         # nur aus einem Befehl bestand, ist jetzt leer oder ein Rumpf wie "in".
@@ -288,6 +324,27 @@ def _vorspann(pfad: object) -> str:
     return titel if titel[-1] in ".!?" else f"{titel}."
 
 
+def _mit_vorspann(vorspann: str, kern: str) -> str:
+    """Titel davor -- ausser der Text faengt schon damit an.
+
+    Das passiert, sobald eine Antwort die Ansage selbst zitiert; doppelt
+    gesprochen klingt es wie ein Aussetzer.
+    """
+    if not vorspann:
+        return kern
+    # Der Vergleich laeuft hinter "Fertig.", denn genau dort steht der Titel,
+    # wenn die Antwort die Ansage zitiert hat.
+    rumpf = kern[len(FERTIG):].lstrip() if kern.startswith(FERTIG) else kern
+    marke = vorspann.casefold().rstrip(".!?")
+    if kern.casefold().startswith(marke):
+        return kern
+    if rumpf.casefold().startswith(marke):
+        # Das Zitat bringt Titel UND Fertigmeldung schon mit; das eigene
+        # "Fertig." davor waere das zweite in einem Satz.
+        return rumpf
+    return f"{vorspann} {kern}".strip()
+
+
 def ansagetext(nutzlast: dict) -> str:
     """Der Satz, den Mimic sprechen soll -- aus dem Hook-JSON abgeleitet."""
     ereignis = nutzlast.get("hook_event_name")
@@ -297,13 +354,13 @@ def ansagetext(nutzlast: dict) -> str:
     if ereignis == "Notification":
         meldung = str(nutzlast.get("message") or "").strip()
         kern = f"Claude wartet. {zusammenfassen(meldung)}".strip() if meldung else "Claude wartet."
-        return f"{vorspann} {kern}".strip()
+        return _mit_vorspann(vorspann, kern)
 
     antwort = letzte_antwort(Path(pfad)) if isinstance(pfad, str) and pfad else ""
     stand = zusammenfassen(antwort)
     if not stand:
-        return f"{vorspann} {OHNE_INHALT}".strip()
-    return f"{vorspann} {FERTIG} {stand}".strip()
+        return _mit_vorspann(vorspann, OHNE_INHALT)
+    return _mit_vorspann(vorspann, f"{FERTIG} {stand}")
 
 
 # ------------------------------------------------------------------ Sprechen
@@ -525,10 +582,50 @@ def einhaengen(pfad: Path, programm: str) -> tuple[int, str]:
     return 0, f"{pfad}: {' und '.join(ergaenzt)} eingehaengt."
 
 
-def abkoppeln(text: str) -> None:
+def _zuletzt_datei(pfad: str) -> Path:
+    return _laufzeit() / f"mimic-ansage.{Path(pfad).stem[:64]}.zuletzt"
+
+
+def melden(pfad: str) -> int:
+    """Auf die frische Antwort warten, dann sprechen. Laeuft abgekoppelt.
+
+    Claude Code ruft den Stop-Hook auf, BEVOR die letzte Assistentennachricht
+    im Transkript steht -- gemessen am 2026-08-11: die Datei wuchs zwischen
+    Hook-Aufruf und Antwort noch um mehrere Kilobyte. Wer sofort liest, bekommt
+    die vorige Antwort und meldet dauerhaft einen Stand hinterher.
+
+    Deshalb wird die zuletzt angesagte uuid gemerkt und gewartet, bis eine
+    andere erscheint. Kommt in der Frist nichts Neues, wird geschwiegen: eine
+    Wiederholung ist schlechter als Stille.
+    """
+    datei = _zuletzt_datei(pfad)
+    try:
+        vorher = datei.read_text(encoding="utf-8").strip()
+    except OSError:
+        vorher = ""
+    frist = time.monotonic() + WARTE_FRIST_S
+    while True:
+        antwort, kennung = letzte_antwort_mit_kennung(Path(pfad))
+        if kennung and kennung != vorher:
+            break
+        if time.monotonic() > frist:
+            _protokoll("nichts_neues", antwort, wartete_s=int(WARTE_FRIST_S))
+            return 0
+        time.sleep(WARTE_TAKT_S)
+
+    stand = zusammenfassen(antwort)
+    satz = _mit_vorspann(_vorspann(pfad), f"{FERTIG} {stand}" if stand else OHNE_INHALT)
+    try:
+        datei.write_text(kennung + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    return sprechen(satz)
+
+
+def abkoppeln(*argumente: str) -> None:
     """Dasselbe Skript als eigenstaendige Sitzung starten und sofort zurueckkehren."""
     try:
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--sagen", text],
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *argumente],
                          start_new_session=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
@@ -560,6 +657,8 @@ def main(argv: list[str] | None = None) -> int:
     zerleger.add_argument("--einhaengen", nargs="?", const="", metavar="SETTINGS_JSON",
                           help="Hook in eine settings.json eintragen "
                                "(Vorgabe: ~/.claude/settings.json)")
+    zerleger.add_argument("--melden", metavar="TRANSKRIPT",
+                          help="auf die frische Antwort warten und sie sprechen (abgekoppelt)")
     zerleger.add_argument("--stimme", action="store_true",
                           help="das wirksame Stimmprofil ausgeben")
     args = zerleger.parse_args(argv)
@@ -577,6 +676,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.sagen is not None:
         return sprechen(args.sagen)
 
+    if args.melden is not None:
+        return melden(args.melden)
+
     nutzlast = hook_nutzlast()
     text = ansagetext(nutzlast)
     pfad = nutzlast.get("transcript_path")
@@ -590,7 +692,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if os.environ.get("MIMIC_ANSAGE_STILL") == "1":
         return 0
-    abkoppeln(text)
+    # Beim Stop wartet der abgekoppelte Prozess auf die Antwort; hier ist sie
+    # oft noch nicht geschrieben. Die Nachfrage traegt ihren Text dagegen im
+    # Hook-JSON, da gibt es nichts zu warten.
+    if nutzlast.get("hook_event_name") != "Notification" and isinstance(pfad, str) and pfad:
+        abkoppeln("--melden", pfad)
+    else:
+        abkoppeln("--sagen", text)
     return 0
 
 
