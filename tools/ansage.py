@@ -42,6 +42,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -281,15 +282,70 @@ def _protokoll(ereignis: str, text: str = "", **felder: object) -> None:
         pass
 
 
+def _laufzeit() -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+
+
 def _sperre():
     """Exklusive Sperre auf die Audioausgabe, oder None, wenn schon jemand spricht."""
-    laufzeit = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     try:
-        griff = open(Path(laufzeit) / "mimic-ansage.lock", "w")
+        griff = open(_laufzeit() / "mimic-ansage.lock", "w")
         fcntl.flock(griff, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return griff
     except OSError:
         return None
+
+
+def _ist_ansage_prozess(pid: int) -> bool:
+    """Laeuft unter dieser PID wirklich eine Ansage -- oder schon etwas anderes?
+
+    PIDs werden wiederverwendet. Ohne diese Pruefung koennte eine veraltete
+    Datei dazu fuehren, dass ein beliebiger fremder Prozess ein Signal bekommt.
+    """
+    if pid <= 1:
+        return False
+    try:
+        befehl = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+    # Argumentweise und auf den Dateinamen genau: eine Teilzeichenkettensuche
+    # ueber die ganze Kommandozeile haelt auch `pytest test_ansage.py` fuer
+    # eine Ansage.
+    namen = {teil.rsplit(b"/", 1)[-1] for teil in befehl.split(b"\0") if teil}
+    return bool(namen & {b"mimic-ansage", b"ansage.py"})
+
+
+def _verdraenge_laufende_ansage() -> None:
+    """Die vorige Ansage beenden, damit die neue drankommt.
+
+    Eine Ansage von 650 Zeichen braucht Erzeugung plus Sprechzeit; bei zuegiger
+    Arbeit ist die naechste Antwort laengst fertig, bevor die vorige zu Ende
+    gesprochen ist. Wer dann schweigt, meldet dauerhaft den vorletzten Stand.
+    Aktuell schlaegt vollstaendig: die laufende Ansage wird abgebrochen.
+
+    Signal an die Prozessgruppe, nicht an die PID: der sprechende Prozess ist
+    per start_new_session Gruppenfuehrer, und `mimic say` haengt als Kind daran.
+    """
+    datei = _laufzeit() / "mimic-ansage.pid"
+    try:
+        pid = int(datei.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return
+    if pid == os.getpid() or not _ist_ansage_prozess(pid):
+        return
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        _protokoll("verdraengt", pid=pid)
+    except OSError:
+        return
+
+
+def _merke_pid(griff) -> None:
+    """Eigene PID hinterlegen, solange die Sperre gehalten wird."""
+    try:
+        (_laufzeit() / "mimic-ansage.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _mimic() -> str | None:
@@ -309,8 +365,19 @@ def sprechen(text: str) -> int:
     """Vordergrundpfad: Kopfhoerer sicherstellen, dann sprechen. Immer 0."""
     griff = _sperre()
     if griff is None:
-        _protokoll("verworfen", text, grund="sperre")
-        return 0
+        # Nicht schweigen, sondern die veraltete Ansage abloesen. Zwei
+        # Versuche mit kurzer Pause: der verdraengte Prozess braucht einen
+        # Moment, bis sein Signal durch ist und die Sperre faellt.
+        _verdraenge_laufende_ansage()
+        for _ in range(20):
+            time.sleep(0.05)
+            griff = _sperre()
+            if griff is not None:
+                break
+        if griff is None:
+            _protokoll("verworfen", text, grund="sperre")
+            return 0
+    _merke_pid(griff)
     _protokoll("spricht", text)
 
     kopfhoerer = Path(__file__).resolve().parent / "kopfhoerer.sh"

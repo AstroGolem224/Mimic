@@ -218,6 +218,34 @@ class Stimme(unittest.TestCase):
             self.assertEqual(ansage.stimme(), "glados")
 
 
+class Verdraengen(unittest.TestCase):
+    """Die neue Ansage loest die laufende ab, statt zu schweigen."""
+
+    def test_fremde_pid_wird_nicht_signalisiert(self):
+        # PIDs werden wiederverwendet: ohne die cmdline-Pruefung bekaeme ein
+        # beliebiger fremder Prozess ein SIGTERM.
+        self.assertFalse(ansage._ist_ansage_prozess(os.getpid()))
+        self.assertFalse(ansage._ist_ansage_prozess(1))
+        self.assertFalse(ansage._ist_ansage_prozess(0))
+
+    def test_verdraengen_ohne_pid_datei_tut_nichts(self):
+        laufzeit = str(Path(self.enterContext(tempfile.TemporaryDirectory())))
+        with unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": laufzeit}):
+            ansage._verdraenge_laufende_ansage()        # darf nicht werfen
+
+    def test_verdraengen_signalisiert_nur_echte_ansagen(self):
+        laufzeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (laufzeit / "mimic-ansage.pid").write_text("4242\n", encoding="utf-8")
+        gesendet = []
+        with (unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(laufzeit)}),
+              unittest.mock.patch.object(ansage, "_ist_ansage_prozess", return_value=True),
+              unittest.mock.patch.object(ansage.os, "getpgid", return_value=4242),
+              unittest.mock.patch.object(ansage.os, "killpg",
+                                         side_effect=lambda pgid, sig: gesendet.append(pgid))):
+            ansage._verdraenge_laufende_ansage()
+        self.assertEqual([4242], gesendet)
+
+
 class Einhaengen(unittest.TestCase):
     """Fremde Einstellungen sind heilig -- hier darf nichts verlorengehen."""
 
