@@ -27,9 +27,13 @@ from huggingface_hub import snapshot_download
 WURZEL = pathlib.Path(__file__).resolve().parent.parent
 REVISIONEN = yaml.safe_load((WURZEL / "revisions.yaml").read_text())["checkpoints"]
 
-# Eigener Eintrag, weil der Tokenizer ein eigenes Repo mit eigener Historie ist.
-TOKENIZER_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer"
-TOKENIZER_REVISION = "3cd226ba2947efa357ef453bcad111b6eafba782"
+# Eigene Eintraege, weil die Tokenizer eigene Repos mit eigener Historie sind.
+# v1 gehoert zu VoiceGenerator (24 kHz mono), v2 zu Local-Transformer-v1.5
+# (48 kHz stereo). Wer sie vertauscht, bekommt Rauschen, keinen Fehler.
+TOKENIZER = {
+    "v1": ("OpenMOSS-Team/MOSS-Audio-Tokenizer", "3cd226ba2947efa357ef453bcad111b6eafba782"),
+    "v2": ("OpenMOSS-Team/MOSS-Audio-Tokenizer-v2", "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"),
+}
 
 
 def hole(schluessel: str) -> str:
@@ -37,5 +41,6 @@ def hole(schluessel: str) -> str:
     return snapshot_download(repo_id=eintrag["repo"], revision=eintrag["revision"])
 
 
-def hole_tokenizer() -> str:
-    return snapshot_download(repo_id=TOKENIZER_REPO, revision=TOKENIZER_REVISION)
+def hole_tokenizer(fassung: str = "v1") -> str:
+    repo, revision = TOKENIZER[fassung]
+    return snapshot_download(repo_id=repo, revision=revision)

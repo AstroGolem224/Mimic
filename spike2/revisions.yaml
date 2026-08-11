@@ -7,6 +7,11 @@ checkpoints:
   moss_realtime:
     repo: OpenMOSS-Team/MOSS-TTS-Realtime
     revision: 75682787d8e2fcc73faca37ba2931453ca9c4022
+  # Die Sprech-Engine fuer den Dreiervergleich: 4B, 31 Sprachen, natives
+  # 48-kHz-Stereo. Braucht MOSS-Audio-Tokenizer-v2, nicht v1.
+  moss_local_v15:
+    repo: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+    revision: be7766a6735b98bd793f7c79fb720b4d0f5d13b8
   qwen:
     repo: Qwen/Qwen3-TTS-12Hz-1.7B-Base
     revision: fd4b254389122332181a7c3db7f27e918eec64e3
