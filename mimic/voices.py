@@ -266,8 +266,17 @@ def load_voice(name: str, voices_dir: Path | None = None) -> VoiceProfile:
         raise VoiceError("unknown_voice", "ungueltiger Stimmname")
     root = voices_dir or default_voices_dir()
     try:
-        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    except FileNotFoundError:
+        # O_NOFOLLOW auch hier: ohne das begann die Symlink-Sicherung erst
+        # UNTERHALB des Stimmenverzeichnisses. Ein Symlink an `voices` selbst
+        # haette auf ein fremdes Verzeichnis gezeigt, und ein Ziel mit Modus
+        # 0700 besteht danach jede weitere Pruefung. Deckt die letzte
+        # Pfadkomponente ab; symlinkende Elternverzeichnisse blieben ein Fall
+        # fuer openat2(RESOLVE_NO_SYMLINKS) und sind hier nicht das Modell.
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        # Nicht nur FileNotFoundError: mit O_NOFOLLOW meldet ein Symlink an
+        # dieser Stelle ENOTDIR, und ein roher OSError durch die Schnittstelle
+        # waere fuer jeden Aufrufer ein Absturz statt einer Absage.
         raise VoiceError("unknown_voice", f"Stimme {name!r} existiert nicht") from None
     profile_fd = wav_fd = txt_fd = None
     try:

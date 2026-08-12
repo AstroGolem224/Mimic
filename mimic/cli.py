@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import textwrap
 import wave
 from pathlib import Path
@@ -47,6 +48,13 @@ def service_error(response: http.client.HTTPResponse) -> int:
     return 1
 
 
+def _umask() -> int:
+    """Die eigene umask lesen, ohne sie zu veraendern -- os.umask kann nur setzen."""
+    aktuell = os.umask(0o022)
+    os.umask(aktuell)
+    return aktuell
+
+
 def say(args: argparse.Namespace) -> int:
     try:
         response = request("POST", "/speak", {"text": args.text, "voice": args.voice, "mode": args.mode})
@@ -66,7 +74,18 @@ def say(args: argparse.Namespace) -> int:
     try:
         if args.output:
             destination = Path(args.output)
-            temporary = Path(str(destination) + ".tmp")
+            # Exklusiv angelegt statt fester Name: `ausgabe.wav.tmp` haette
+            # eine gleichnamige fremde Datei truncierend geoeffnet und sie im
+            # finally-Zweig anschliessend geloescht.
+            handle, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp",
+                                            dir=destination.parent)
+            os.close(handle)
+            temporary = Path(name)
+            # mkstemp legt mit 0600 an, und os.replace vererbt das an die
+            # Zieldatei. Vorher entstand sie ueber die umask, also meist 0644.
+            # Ohne diese Zeile aendert ein Fehlerfix stillschweigend die Rechte
+            # jeder exportierten WAV -- eine Ausgabedatei ist kein Geheimnis.
+            os.chmod(temporary, 0o666 & ~_umask())
             output = wave.open(str(temporary), "wb")
             output.setnchannels(head["channels"])
             output.setsampwidth(2)

@@ -10,6 +10,7 @@ gemeldet zu haben.
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -171,6 +172,116 @@ class EntwurfTests(unittest.TestCase):
         with self.assertRaises(ValueError) as gefangen:
             Entwurf().starten("tief", "Ein Satz.", 1, motor="gibtsnicht")
         self.assertIn("unbekannter Motor", str(gefangen.exception))
+
+    def test_zu_langer_probesatz_faellt_vor_dem_gpu_lauf_durch(self):
+        """Sonst rechnet das Modell eine Minute fuer ein Profil, das nie laedt.
+
+        Der Probesatz wird woertlich das ref.txt, und load_voice lehnt mehr als
+        MAX_TEXT_BYTES ab. Die Pruefung gehoert deshalb vor den Start, nicht
+        hinter das Ergebnis.
+        """
+        from mimic.entwurf import Entwurf
+        from mimic.voices import MAX_TEXT_BYTES
+
+        with self.assertRaises(ValueError) as gefangen:
+            Entwurf().starten("tief", "ä" * MAX_TEXT_BYTES, 1)
+        self.assertIn("zu lang", str(gefangen.exception))
+
+    def test_prozessgruppe_wird_ganz_beendet(self):
+        """terminate() traf frueher nur das Kind. Torch und die HF-Downloader
+        starten Enkel, die danach weiterliefen und VRAM festhielten."""
+        from mimic import entwurf
+
+        with tempfile.TemporaryDirectory() as ordner:
+            heim = Path(ordner)
+            alt = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = str(heim)
+            marke = heim / "enkel-lebt"
+            # Das Kind startet einen Enkel, der eine Datei anlegt und dann lange
+            # schlaeft. Ueberlebt der Enkel das Abbrechen, laeuft er weiter.
+            stub = self._stub(heim, f"sh -c 'echo da > {marke}; sleep 30' &\nsleep 30")
+            try:
+                with mock.patch.object(entwurf, "python_pfad", lambda motor=None: stub), \
+                     mock.patch.object(entwurf, "skript_pfad", lambda motor=None: heim / "egal.py"):
+                    lauf = entwurf.Entwurf()
+                    lauf.starten("tief", "Ein Satz.", 1)
+                    for _ in range(200):
+                        if marke.exists():
+                            break
+                        time.sleep(0.01)
+                    self.assertTrue(marke.exists(), "der Enkel ist nie gestartet")
+                    enkel = subprocess.run(["pgrep", "-f", f"sleep 30"],
+                                           capture_output=True, text=True).stdout.split()
+                    lauf.abbrechen()
+                    time.sleep(0.5)
+                    uebrig = subprocess.run(["pgrep", "-f", "sleep 30"],
+                                            capture_output=True, text=True).stdout.split()
+                    self.assertFalse(set(enkel) & set(uebrig),
+                                     "ein Enkelprozess hat den Abbruch ueberlebt")
+                    lauf.schliessen()
+            finally:
+                if alt is None:
+                    os.environ.pop("XDG_DATA_HOME", None)
+                else:
+                    os.environ["XDG_DATA_HOME"] = alt
+
+
+class StimmenwurzelTests(unittest.TestCase):
+    """Die Symlink-Sicherung in load_voice begann frueher erst UNTERHALB des
+    Stimmenverzeichnisses. Ein Symlink an `voices` selbst wurde verfolgt, und
+    ein Zielverzeichnis mit Modus 0700 bestand danach jede weitere Pruefung."""
+
+    def test_stimmenverzeichnis_als_symlink_wird_abgelehnt(self):
+        from mimic.voices import VoiceError, load_voice
+
+        with tempfile.TemporaryDirectory() as ordner:
+            heim = Path(ordner)
+            echt = heim / "echt"
+            profil = echt / "stimme"
+            profil.mkdir(parents=True)
+            echt.chmod(0o700)
+            profil.chmod(0o700)
+            (profil / "ref.txt").write_text("egal")
+            (profil / "ref.txt").chmod(0o600)
+            (profil / "ref.wav").write_bytes(b"RIFF")
+            (profil / "ref.wav").chmod(0o600)
+            gefaelscht = heim / "voices"
+            gefaelscht.symlink_to(echt)
+
+            with self.assertRaises(VoiceError) as gefangen:
+                load_voice("stimme", gefaelscht)
+            # Der Grund ist zweitrangig -- entscheidend ist, dass dem Symlink
+            # nicht gefolgt wird und kein Profil herauskommt.
+            self.assertIn(gefangen.exception.reason,
+                          ("unknown_voice", "invalid_voice_profile"))
+
+
+class KoerperTypenTests(unittest.TestCase):
+    """`bool("false")` ist True. Ein Koerper mit {"force": "false"} haette
+    deshalb ein bestehendes Stimmprofil ueberschrieben."""
+
+    def _handler(self):
+        from mimic.gui import _GuiHandler
+        return _GuiHandler
+
+    def test_force_nimmt_nur_echte_wahrheitswerte(self):
+        handler = self._handler()
+        self.assertIs(False, handler._feld_ja({}, "force"))
+        self.assertIs(True, handler._feld_ja({"force": True}, "force"))
+        for boese in ("false", "true", 0, 1, None, [], {}):
+            with self.assertRaises(ValueError, msg=f"{boese!r} wurde angenommen"):
+                handler._feld_ja({"force": boese}, "force")
+
+    def test_text_und_zahl_werden_nicht_umgebogen(self):
+        handler = self._handler()
+        self.assertEqual("hallo", handler._feld_text({"name": "hallo"}, "name"))
+        for boese in (1, None, ["a"], {"a": 1}, True):
+            with self.assertRaises(ValueError, msg=f"{boese!r} wurde zu Text"):
+                handler._feld_text({"name": boese}, "name")
+        self.assertEqual(3, handler._feld_zahl({"anzahl": 3}, "anzahl", 1))
+        for boese in ("3", 3.0, None, True):
+            with self.assertRaises(ValueError, msg=f"{boese!r} wurde zur Zahl"):
+                handler._feld_zahl({"anzahl": boese}, "anzahl", 1)
 
 
 if __name__ == "__main__":

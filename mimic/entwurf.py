@@ -31,12 +31,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .voices import MAX_TEXT_BYTES
 
 # Der cu128-Build ist auf PyPI nicht zu haben, und sm_120 braucht ihn.
 TORCH = ["torch==2.9.1", "torchaudio==2.9.1"]
@@ -180,6 +183,13 @@ class Entwurf:
             raise ValueError("Probesatz fehlt")
         if not 1 <= anzahl <= MAX_KANDIDATEN:
             raise ValueError(f"1 bis {MAX_KANDIDATEN} Kandidaten")
+        # Vor dem GPU-Lauf pruefen, nicht danach: der Probesatz wird woertlich
+        # das ref.txt, und load_voice lehnt mehr als MAX_TEXT_BYTES ab. Sonst
+        # rechnet das Modell eine Minute, nur damit das Uebernehmen scheitert.
+        if len(text.encode()) > MAX_TEXT_BYTES:
+            raise ValueError("Probesatz ist zu lang fuer ein Stimmprofil")
+        if len(beschreibung.encode()) > MAX_TEXT_BYTES:
+            raise ValueError("Beschreibung ist zu lang")
         if not umgebung_da(eintrag.name):
             raise RuntimeError(f"Umgebung fuer {eintrag.anzeige} fehlt -- einmal "
                                f"`mimic setup --entwurf {eintrag.name}`")
@@ -203,7 +213,11 @@ class Entwurf:
                 [str(python_pfad(eintrag.name)), str(skript_pfad(eintrag.name)),
                  json.dumps(auftrag)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True)
+                stderr=subprocess.STDOUT, text=True,
+                # Eigene Prozessgruppe: terminate() traefe sonst nur den
+                # Python-Prozess. Torch und die HF-Downloader starten Kinder,
+                # die nach einem Abbruch weiterlebten und VRAM festhielten.
+                start_new_session=True)
             self.prozess, self.ordner = prozess, ordner
             self.beschreibung, self.text = beschreibung, text
             self.motor = eintrag.name
@@ -268,12 +282,19 @@ class Entwurf:
         prozess, self.prozess = self.prozess, None
         if prozess is None:
             return
-        prozess.terminate()
-        try:
-            prozess.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            prozess.kill()
-            prozess.wait()
+        # Ganze Gruppe, nicht nur das Kind -- siehe start_new_session oben.
+        # ProcessLookupError heisst: war schon tot, das ist kein Fehler.
+        for signal_nummer in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(prozess.pid, signal_nummer)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                prozess.wait(timeout=5)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+        prozess.wait()
 
     def abbrechen(self) -> None:
         with self.lock:

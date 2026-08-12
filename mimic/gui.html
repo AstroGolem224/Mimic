@@ -190,7 +190,12 @@ header{
   display:flex;flex-direction:column;gap:7px;
   scrollbar-width:thin;scrollbar-color:rgba(47,227,211,.25) transparent;
 }
+/* Ein <button>, kein <div>: mit einem div war die Stimmenauswahl per Tastatur
+   gar nicht erreichbar -- die Hauptfunktion des Fensters nur mit der Maus.
+   Die vier Zeilen darunter nehmen dem Knopf sein Standardaussehen wieder ab. */
 .stimme{
+  width:100%;text-align:left;font:inherit;color:inherit;
+  border:0;appearance:none;
   position:relative;cursor:pointer;user-select:none;
   padding:10px 13px 10px 17px;border-radius:11px;
   background:linear-gradient(150deg,rgba(255,255,255,.036),rgba(0,0,0,.20));
@@ -752,8 +757,10 @@ function zeichneStimmen(){
   }
   if(!stimmen.includes(gewaehlt)) gewaehlt = stimmen[0];
   stimmen.forEach((name, i) => {
-    const el = document.createElement("div");
+    const el = document.createElement("button");
+    el.type = "button";
     el.className = "stimme" + (name === gewaehlt ? " aktiv" : "");
+    el.setAttribute("aria-pressed", name === gewaehlt ? "true" : "false");
     el.style.animationDelay = (i * 26) + "ms";
     el.innerHTML = `<b></b><s>Profil</s>`;
     el.querySelector("b").textContent = name;
@@ -1018,6 +1025,7 @@ async function tick(neuLesen){
 
 /* ── Stimmenwerkstatt ─────────────────────────────────────────────── */
 let charaktere = [], inventar = [], deckel = 90, letzteAufnahme = null, frischeStimme = "";
+let letzterAufnahmefehler = "";   // damit derselbe Grund nicht bei jedem Puls neu gesetzt wird
 
 function schubladeAuf(an){
   $("schublade").classList.toggle("auf", an);
@@ -1344,6 +1352,19 @@ function zeigeAufnahme(stand){
                              : s <= 60 ? "über dem gemessenen Bereich" : "der Dienst lehnt das ab";
     return;
   }
+  // Der Aufnehmer kann von selbst sterben -- kein Aufnahmegeraet, Quelle belegt.
+  // Der Dienst meldet den Grund in `abbruch`; ohne diesen Zweig blieb die letzte
+  // Meldung ("noch zu kurz") stehen und der eigentliche Fehler war unsichtbar.
+  if(stand.abbruch && stand.abbruch !== letzterAufnahmefehler){
+    letzterAufnahmefehler = stand.abbruch;
+    letzteAufnahme = null;
+    $("kUrteil").className = "hinweis schlimm";
+    $("kUrteil").textContent = stand.abbruch;
+    $("kAudio").style.display = "none";
+    $("kEntscheid").style.display = "none";
+    return;
+  }
+  if(!stand.abbruch) letzterAufnahmefehler = "";
   const fertig = stand.fertig;
   if(fertig && fertig !== letzteAufnahme){
     letzteAufnahme = fertig;

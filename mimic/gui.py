@@ -771,6 +771,36 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         self._json(403, {"message": "Token fehlt oder ist falsch"})
         return False
 
+    # -- Felder aus dem JSON-Koerper, streng typisiert --
+    #
+    # `bool("false")` ist in Python True. Ein Koerper mit {"force": "false"}
+    # haette also ein bestehendes Stimmprofil ueberschrieben -- genau das
+    # Gegenteil dessen, was dort steht. Dasselbe Muster bei str() und int():
+    # str({"a": 1}) ergibt klaglos einen Namen, int("3") eine Anzahl. Deshalb
+    # wird der Typ geprueft statt umgebogen; ein falscher Typ ist ein
+    # Nutzerfehler und bekommt 400.
+    @staticmethod
+    def _feld_text(wunsch: dict, name: str, vorgabe: str = "") -> str:
+        wert = wunsch.get(name, vorgabe)
+        if not isinstance(wert, str):
+            raise ValueError(f"{name} muss Text sein")
+        return wert
+
+    @staticmethod
+    def _feld_zahl(wunsch: dict, name: str, vorgabe: int) -> int:
+        wert = wunsch.get(name, vorgabe)
+        # bool ist in Python ein int -- True waere sonst die Anzahl 1.
+        if type(wert) is not int:
+            raise ValueError(f"{name} muss eine ganze Zahl sein")
+        return wert
+
+    @staticmethod
+    def _feld_ja(wunsch: dict, name: str) -> bool:
+        wert = wunsch.get(name, False)
+        if type(wert) is not bool:
+            raise ValueError(f"{name} muss true oder false sein")
+        return wert
+
     def _koerper(self) -> dict:
         laenge = int(self.headers.get("Content-Length") or 0)
         if laenge <= 0 or laenge > MAX_TEXT_ZEICHEN * 4:
@@ -898,10 +928,10 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                 # verhungert -- also erst den Sprechauftrag zu Ende.
                 if self.sitzung.auftrag["running"]:
                     raise RuntimeError("es laeuft ein Sprechauftrag")
-                entwurf.starten(str(wunsch.get("beschreibung", "")),
-                                str(wunsch.get("text", "")),
-                                int(wunsch.get("anzahl", 3)),
-                                str(wunsch.get("motor", VORGABE_MOTOR)))
+                entwurf.starten(self._feld_text(wunsch, "beschreibung"),
+                                self._feld_text(wunsch, "text"),
+                                self._feld_zahl(wunsch, "anzahl", 3),
+                                self._feld_text(wunsch, "motor", VORGABE_MOTOR))
                 self._json(200, {"ok": True, **entwurf.stand()})
             elif pfad == "/api/design/cancel":
                 entwurf.abbrechen()
@@ -924,7 +954,7 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
 
     def _entwurf_behalten(self, entwurf: Entwurf, wunsch: dict) -> None:
         try:
-            datei = entwurf.datei(int(wunsch.get("nummer", -1)))
+            datei = entwurf.datei(self._feld_zahl(wunsch, "nummer", -1))
         except (ValueError, TypeError, KeyError):
             raise ValueError("kein solcher Kandidat") from None
         stand = entwurf.stand()
@@ -933,8 +963,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         # Der Probesatz wird woertlich das ref.txt: dots.tts bekommt Referenz
         # und Transkript als Paar, ein anderer Text dort macht den Klon kaputt.
         try:
-            dauer, hinweis = profil_aus_datei(str(wunsch.get("name", "")), datei,
-                                              stand["text"], bool(wunsch.get("force")))
+            dauer, hinweis = profil_aus_datei(self._feld_text(wunsch, "name"), datei,
+                                              stand["text"], self._feld_ja(wunsch, "force"))
         except VoiceError as fehler:
             code = 409 if "existiert schon" in fehler.message else 400
             self._json(code, {"message": fehler.message, "reason": fehler.reason})
@@ -948,17 +978,17 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             if pfad == "/api/record/start":
                 if self.sitzung.auftrag["running"]:
                     raise RuntimeError("es laeuft ein Sprechauftrag")
-                aufnahme.starten(str(wunsch.get("name", "")), bool(wunsch.get("force")))
+                aufnahme.starten(self._feld_text(wunsch, "name"), self._feld_ja(wunsch, "force"))
                 self._json(200, {"ok": True, **aufnahme.stand()})
             elif pfad == "/api/record/stop":
                 self._json(200, {"ok": True, **aufnahme.stoppen()})
             elif pfad == "/api/record/keep":
-                self._json(200, {"ok": True, **aufnahme.behalten(str(wunsch.get("text", "")))})
+                self._json(200, {"ok": True, **aufnahme.behalten(self._feld_text(wunsch, "text"))})
             elif pfad == "/api/record/discard":
                 aufnahme.verwerfen()
                 self._json(200, {"ok": True})
             elif pfad == "/api/voice/delete":
-                stimme_loeschen(str(wunsch.get("name", "")))
+                stimme_loeschen(self._feld_text(wunsch, "name"))
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"message": "unbekannter Endpunkt"})

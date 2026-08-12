@@ -5,7 +5,7 @@ name = "mimic-tts"
 # Inhalt. Bleibt die Nummer stehen, installiert `uv tool install --force`
 # klaglos das alte Wheel weiter -- der Reiter fehlte deshalb im Fenster,
 # obwohl das Repo ihn laengst hatte.
-version = "0.9.1"
+version = "0.9.2"
 description = "Lokaler, socket-aktivierter Voice-Cloning-TTS-Dienst"
 requires-python = ">=3.12,<3.13"
 dependencies = [
