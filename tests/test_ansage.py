@@ -73,15 +73,70 @@ class LetzteAntwort(unittest.TestCase):
         self.assertEqual(ansage.letzte_antwort(pfad), "das Ende")
 
 
+class Sprechbar(unittest.TestCase):
+    """Pfade werden gesprochen wie ein Mensch sie vorliest, nicht gestrichen."""
+
+    def test_pfad_wird_buchstabiert(self):
+        # Nur der fuehrende Schraegstrich wird gesprochen, innere sind Pausen.
+        self.assertEqual(ansage.sprechbar("/run/user/1000/mimic-ansage.stimme"),
+                         "slash run user 1000 mimic ansage punkt stimme")
+
+    def test_relativer_pfad(self):
+        self.assertEqual(ansage.sprechbar("tools/ansage.py"), "tools ansage punkt py")
+
+    def test_tilde_und_versteckter_ordner(self):
+        self.assertEqual(ansage.sprechbar("~/.local/bin"), "tilde punkt local bin")
+
+    def test_zeilennummer_wird_ausgesprochen(self):
+        self.assertEqual(ansage.sprechbar("mimic/cli.py:195"), "mimic cli punkt py Zeile 195")
+
+    def test_uuid_wird_zur_kennung(self):
+        # 36 Zeichen vorzulesen stiftet keinen Nutzen.
+        self.assertEqual(ansage.sprechbar("stimme.080205dd-44d5-4c94-9ad5-977813115da7"),
+                         "stimme punkt eine Kennung")
+
+    def test_commit_hash_wird_zur_kennung(self):
+        self.assertEqual(ansage.sprechbar("5341a99"), "eine Kennung")
+
+    def test_unterstrich_wird_zur_luecke(self):
+        self.assertEqual(ansage.sprechbar("test_ansage.py"), "test ansage punkt py")
+
+
+class Blockbeschreibung(unittest.TestCase):
+    """Codebloecke werden gedeutet, nicht vorgelesen."""
+
+    def test_shell_nennt_die_befehle(self):
+        block = "```bash\necho geth > datei\n```"
+        self.assertEqual(ansage.blockbeschreibung(block),
+                         "Ein Bash-Block mit 1 Zeile, ruft echo auf.")
+
+    def test_shell_mit_mehreren_befehlen(self):
+        block = "```bash\ngit add datei\ngit commit\npython3 pruefen.py\n```"
+        self.assertEqual(ansage.blockbeschreibung(block),
+                         "Ein Bash-Block mit 3 Zeilen, ruft git und python3 auf.")
+
+    def test_python_nennt_die_definitionen(self):
+        block = "```python\ndef stimme():\n    return 1\n\ndef stimmdatei():\n    return 2\n```"
+        self.assertEqual(ansage.blockbeschreibung(block),
+                         "Ein Python-Block mit 4 Zeilen, definiert stimme und stimmdatei.")
+
+    def test_ohne_sprache_nur_der_umfang(self):
+        self.assertEqual(ansage.blockbeschreibung("```\na\nb\n```"), "Ein Codeblock mit 2 Zeilen.")
+
+    def test_leerer_block(self):
+        self.assertEqual(ansage.blockbeschreibung("```bash\n```"), "Ein leerer Bash-Block.")
+
+
 class Zusammenfassen(unittest.TestCase):
-    def test_codeblock_faellt_weg(self):
+    def test_codeblock_wird_beschrieben(self):
         text = "Der Test laeuft.\n```python\nprint('nicht sprechen')\n```\nAlles gruen."
         ergebnis = ansage.zusammenfassen(text)
         self.assertNotIn("print", ergebnis)
-        self.assertEqual(ergebnis, "Der Test laeuft. Alles gruen.")
+        self.assertEqual(ergebnis, "Der Test laeuft. Ein Python-Block mit 1 Zeile. Alles gruen.")
 
     def test_unbeendeter_codeblock_frisst_den_rest(self):
-        self.assertEqual(ansage.zusammenfassen("Fertig.\n```\nkaputt"), "Fertig.")
+        self.assertEqual(ansage.zusammenfassen("Fertig.\n```\nkaputt"),
+                         "Fertig. Ein Codeblock mit 1 Zeile.")
 
     def test_auszeichnung_und_links(self):
         text = "## Ergebnis\n- **Zwei** Fehler behoben\n- Der Rest passt"
@@ -93,52 +148,67 @@ class Zusammenfassen(unittest.TestCase):
         text = "Die Vorgabe steht in `VORGABE_STIMME` und greift sofort."
         self.assertEqual(ansage.zusammenfassen(text), "Die Vorgabe steht in und greift sofort.")
 
-    def test_dateiname_und_verzeichnis_im_fliesstext_fallen_weg(self):
+    def test_dateiname_und_verzeichnis_im_fliesstext_werden_gesprochen(self):
         text = "Der Filter sitzt in tools/ansage.py und deckt auch ~/.local/bin ab."
-        ergebnis = ansage.zusammenfassen(text)
-        self.assertNotIn("ansage", ergebnis)
-        self.assertNotIn("local", ergebnis)
-        self.assertIn("Der Filter sitzt in", ergebnis)
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Der Filter sitzt in tools ansage punkt py und deckt auch "
+                         "tilde punkt local bin ab.")
 
-    def test_dateilink_faellt_ganz_weg(self):
-        # Der Linktext ist bei uns der Dateiname -- ihn zu behalten hiesse,
-        # genau das vorzulesen, was nicht vorgelesen werden soll.
+    def test_dateilink_spricht_seinen_linktext(self):
         text = "Geaendert in [cli.py](mimic/cli.py:195), Tests bleiben gruen."
-        ergebnis = ansage.zusammenfassen(text)
-        self.assertNotIn("cli", ergebnis)
-        self.assertIn("Tests bleiben gruen", ergebnis)
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Geaendert in cli punkt py, Tests bleiben gruen.")
 
-    def test_satzzeichen_ruecken_nach_dem_streichen_zusammen(self):
-        text = "Fertig in `mimic/worker.py` , alles gruen."
-        self.assertEqual(ansage.zusammenfassen(text), "Fertig in, alles gruen.")
+    def test_pfad_in_backticks_wird_gesprochen(self):
+        text = "Fertig in `mimic/worker.py`, alles gruen."
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Fertig in mimic worker punkt py, alles gruen.")
 
     def test_zeile_nur_aus_bezeichnern_faellt_weg(self):
         text = "Fertig. `mimic say --voice forge`\nDer Rest bleibt."
         self.assertEqual(ansage.zusammenfassen(text), "Fertig. Der Rest bleibt.")
 
-    def test_tabellen_und_trennlinien(self):
+    def test_tabelle_wird_beschrieben(self):
         text = "Stand:\n| A | B |\n|---|---|\n| 1 | 2 |\n---\nPasst."
-        self.assertEqual(ansage.zusammenfassen(text), "Passt.")
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Stand: Eine Tabelle mit 1 Zeile. Passt.")
 
-    def test_pfadzeile_faellt_weg(self):
-        self.assertEqual(ansage.zusammenfassen("Geaendert:\nmimic/cli.py\nLaeuft."), "Laeuft.")
+    def test_pfadzeile_wird_gesprochen(self):
+        self.assertEqual(ansage.zusammenfassen("Geaendert:\nmimic/cli.py\nLaeuft."),
+                         "Geaendert: mimic cli punkt py. Laeuft.")
 
-    def test_ankuendigung_ins_leere_faellt_weg(self):
-        """"Am PC:" kuendigt den Codeblock an, der oben schon weggefallen ist."""
+    def test_ankuendigung_traegt_jetzt_ihren_block(self):
+        """"Am PC:" kuendigt den Block an -- der wird beschrieben, nicht gestrichen."""
         text = "Erledigt. Am PC:\n```bash\ngit pull\n```\nDanach laeuft es."
-        self.assertEqual(ansage.zusammenfassen(text), "Erledigt. Danach laeuft es.")
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Erledigt. Am PC: Ein Bash-Block mit 1 Zeile, ruft git auf. "
+                         "Danach laeuft es.")
 
     def test_doppelpunkt_trennt_keinen_satz(self):
         """Einleitung und Aussage gehoeren zusammen, sonst endet die Ansage am Anlauf."""
         text = "Der Grund ist simpel: der Dienst lief nicht."
         self.assertEqual(ansage.zusammenfassen(text), text)
 
-    def test_url_wird_nicht_buchstabiert(self):
+    def test_satzpunkt_hinter_dem_pfad_bleibt_satzzeichen(self):
+        """Sonst endet der Satz auf "punkt punkt" -- einmal gesprochen, einmal gesetzt."""
+        self.assertEqual(ansage.zusammenfassen("Die Datei liegt unter /etc/hosts."),
+                         "Die Datei liegt unter slash etc hosts.")
+
+    def test_freistehende_kennung_wird_nicht_buchstabiert(self):
+        """Ein Hash im Fliesstext ist derselbe Fall wie einer im Pfad."""
+        text = "Commit 5341a99 steht, Zweig main ist sauber."
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Commit eine Kennung steht, Zweig main ist sauber.")
+
+    def test_zahl_und_wort_bleiben_unangetastet(self):
+        text = "Die Grenze steht bei 420 Zeichen, 3 Tests decken sie ab."
+        self.assertEqual(ansage.zusammenfassen(text), text)
+
+    def test_url_wird_zur_domain(self):
+        """Der ganze Pfad einer Adresse taugt nicht zum Vorlesen, die Domain schon."""
         text = "Skill steht: https://github.com/AstroGolem224/Mimic/pull/2 ist offen."
-        ergebnis = ansage.zusammenfassen(text)
-        self.assertNotIn("http", ergebnis)
-        self.assertNotIn("github", ergebnis)
-        self.assertIn("ist offen", ergebnis)
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Skill steht: ein Link auf github punkt com ist offen.")
 
     def test_ungekuerzt_kommt_alles_durch(self):
         """GRENZE=0 ist der Normalfall: gesprochen wird der ganze Fliesstext."""
@@ -197,7 +267,10 @@ class Stueckeln(unittest.TestCase):
 
     def test_leere_eingabe(self):
         self.assertEqual(ansage.zusammenfassen(""), "")
-        self.assertEqual(ansage.zusammenfassen("```\nnur code\n```"), "")
+        # Eine Antwort, die nur aus Code besteht, meldet ihren Umfang --
+        # Stille waere hier nicht weniger falsch, nur leiser.
+        self.assertEqual(ansage.zusammenfassen("```\nnur code\n```"),
+                         "Ein Codeblock mit 1 Zeile.")
 
 
 class Ansagetext(unittest.TestCase):

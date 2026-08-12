@@ -219,19 +219,33 @@ def letzte_antwort(pfad: Path) -> str:
 
 
 _CODEBLOCK = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
-# Der Linktext ist hier fast immer der Dateiname -- ihn zu behalten hiesse,
-# genau das vorzulesen, was nicht vorgelesen werden soll.
-_LINK = re.compile(r"\[[^\]]*\]\([^)]*\)")
+# Der Linktext ist hier fast immer der Dateiname -- gesprochen wird er, das
+# Ziel in Klammern nicht: es wiederholt ihn nur in laengerer Form.
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL = re.compile(r"<?https?://\S+>?")
-# Alles in Backticks ist Bezeichner, Befehl oder Pfad. Die Stimme buchstabiert
-# es, und das zerhackt den Sprachfluss mehr, als der Inhalt wert ist -- wer den
-# genauen Namen braucht, liest ihn im Terminal nach.
+# In Backticks steht Bezeichner, Befehl oder Pfad. Der Pfad wird gesprochen,
+# der Rest gestrichen: eine buchstabierte Option zerhackt den Sprachfluss
+# mehr, als ihr Inhalt wert ist.
 _INLINE_CODE = re.compile(r"`[^`]*`")
 # Dateiartig ohne Backticks: Pfade mit Schraegstrich oder Tilde und einzelne
 # Dateinamen mit bekannter Endung, jeweils mit optionaler :Zeilennummer.
 _DATEIARTIG = re.compile(
-    r"(?<!\w)(?:~?[\w.@-]*/[\w./@-]+|[\w-]+\.(?:py|sh|md|json|jsonl|toml|txt|ya?ml"
+    # Der letzte Punkt gehoert dem Satz, nicht dem Pfad: "/etc/hosts." endet
+    # sonst auf einem gesprochenen "punkt" vor dem gesetzten Satzzeichen.
+    r"(?<!\w)(?:~?[\w.@-]*/[\w./@-]*[\w@-]|[\w-]+\.(?:py|sh|md|json|jsonl|toml|txt|ya?ml"
     r"|html|css|js|ts|tsx|wav|mp3|service|socket))(?::\d+)?")
+_TABELLE = re.compile(r"^\|.*(?:\n\|.*)*", re.MULTILINE)
+_TRENNZEILE = re.compile(r"^[\s|:-]+$")
+_ZEILENNUMMER = re.compile(r":(\d+)$")
+# Was niemand vorgelesen bekommen will: UUIDs, Commit-Hashes, Pruefsummen.
+# Erkennungsmerkmal ist die Mischung aus Ziffern und Buchstaben in einer Form,
+# die entweder lang ist oder vollstaendig aus Hex-Zeichen besteht.
+_KENNUNG = re.compile(r"(?i)^(?=.*\d)(?=.*[a-z])(?:[0-9a-f-]{12,}|[0-9a-f]{6,})$")
+# Dieselbe Kennung, aber freistehend im Fliesstext statt in einem Pfad.
+_KENNUNG_IM_TEXT = re.compile(
+    r"(?i)(?<![\w-])(?=[0-9a-f-]*\d)(?=[0-9a-f-]*[a-f])(?:[0-9a-f-]{12,}|[0-9a-f]{6,})(?![\w-])")
+_DEFINITION = re.compile(r"^\s*(?:def|class|function|fn)\s+(\w+)", re.MULTILINE)
+_SCHALEN = ("bash", "sh", "shell", "zsh", "fish", "console")
 _AUSZEICHNUNG = re.compile(r"[`*_#>]+")
 # Nach dem Streichen bleiben Luecken vor Satzzeichen und leere Klammerpaare.
 _LUECKE_VOR_SATZZEICHEN = re.compile(r"\s+([,.;:!?])")
@@ -257,20 +271,103 @@ def _kappen(text: str, grenze: int) -> str:
     return text[:grenze].rsplit(" ", 1)[0] + " ..."
 
 
+def sprechbar(bezeichner: str) -> str:
+    """Einen Pfad oder Dateinamen so schreiben, wie ein Mensch ihn vorliest.
+
+    Der fuehrende Schraegstrich wird gesprochen, die inneren werden zur
+    Sprechpause -- "slash run user 1000" statt viermal "slash". Punkte bleiben
+    hoerbar, weil sie die Endung ankuendigen; Binde- und Unterstrich sind
+    stumme Worttrenner. Kennungen ohne Aussage werden nicht buchstabiert.
+    """
+    rest = bezeichner.strip()
+    nachsatz = ""
+    treffer = _ZEILENNUMMER.search(rest)
+    if treffer:
+        nachsatz = f" Zeile {treffer.group(1)}"
+        rest = rest[:treffer.start()]
+
+    teile = ["slash"] if rest.startswith("/") else []
+    for stueck in re.split(r"([./])", rest):
+        if not stueck or stueck == "/":
+            continue
+        if stueck == ".":
+            teile.append("punkt")
+        elif _KENNUNG.match(stueck):
+            teile.append("eine Kennung")
+        else:
+            teile.append(stueck.replace("~", "tilde ").replace("-", " ").replace("_", " "))
+    return " ".join((" ".join(teile) + nachsatz).split())
+
+
+def _und(namen: list[str]) -> str:
+    return " und ".join(namen) if len(namen) < 3 else ", ".join(namen[:-1]) + " und " + namen[-1]
+
+
+def blockbeschreibung(block: str) -> str:
+    """Einen Codeblock in einen Satz fassen, statt ihn vorzulesen.
+
+    Gedeutet wird, was ohne Verstehen des Codes zu holen ist: Sprache, Umfang
+    und die Namen an der Oberflaeche -- aufgerufene Befehle in der Schale,
+    definierte Namen sonst. Mehr waere geraten.
+    """
+    kopf, _, rumpf = block.partition("\n")
+    sprache = kopf.strip("` ").split()[0].lower() if kopf.strip("` ") else ""
+    name = f"{sprache.capitalize()}-Block" if sprache else "Codeblock"
+    zeilen = [zeile for zeile in rumpf.replace("```", "").splitlines() if zeile.strip()]
+    if not zeilen:
+        return f"Ein leerer {name}."
+
+    umfang = f"mit {len(zeilen)} Zeile{'n' if len(zeilen) != 1 else ''}"
+    if sprache in _SCHALEN:
+        befehle = []
+        for zeile in zeilen:
+            wort = zeile.split()[0]
+            if wort.isidentifier() or wort.replace("3", "").isalpha():
+                if wort not in befehle:
+                    befehle.append(wort)
+        # Zwei Namen reichen als Ausweis; eine vollstaendige Liste waere wieder
+        # das Vorlesen, das hier gerade vermieden wird.
+        if befehle:
+            return f"Ein {name} {umfang}, ruft {_und(befehle[:2])} auf."
+    else:
+        definiert = _DEFINITION.findall(rumpf)
+        if definiert:
+            return f"Ein {name} {umfang}, definiert {_und(definiert[:2])}."
+    return f"Ein {name} {umfang}."
+
+
+def _domain(adresse: str) -> str:
+    return adresse.strip("<>").split("//", 1)[-1].split("/", 1)[0].split("@")[-1]
+
+
+def _inline_uebersetzen(treffer: re.Match) -> str:
+    """Backticks: Pfade werden gesprochen, Bezeichner und Befehle fallen weg."""
+    inhalt = treffer.group(0).strip("` ")
+    return sprechbar(inhalt) if _DATEIARTIG.fullmatch(inhalt) else " "
+
+
+def _tabellenbeschreibung(tabelle: str) -> str:
+    zeilen = [zeile for zeile in tabelle.splitlines() if zeile.strip()]
+    daten = [zeile for zeile in zeilen[1:] if not _TRENNZEILE.match(zeile)]
+    return f"Eine Tabelle mit {len(daten)} Zeile{'n' if len(daten) != 1 else ''}."
+
+
 def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     """Aus einer Markdown-Antwort einen sprechbaren Satz machen.
 
-    Gesprochen wird nur Prosa. Codebloecke, Tabellen, URLs, Trennlinien und
-    alles Dateiartige liest keine Stimme sinnvoll vor, also fallen sie weg,
-    bevor gekuerzt wird -- sonst besteht die Ansage aus dem Anfang eines Diffs,
-    aus einer buchstabierten GitHub-Adresse oder aus Pfaden, die den Satzfluss
-    zerhacken.
+    Was keine Stimme woertlich vorlesen kann, wird uebersetzt statt gestrichen:
+    Codebloecke und Tabellen zu einem Satz ueber ihren Inhalt, Pfade in die
+    Form, in der ein Mensch sie vorliest, Adressen auf ihre Domain. Gestrichen
+    wird nur noch, was auch beschrieben nichts hergibt -- Bezeichner und
+    Befehle in Backticks, die kein Pfad sind.
     """
-    text = _CODEBLOCK.sub(" ", text)
-    text = _LINK.sub(" ", text)
-    text = _URL.sub(" ", text)
-    text = _INLINE_CODE.sub(" ", text)
-    text = _DATEIARTIG.sub(" ", text)
+    text = _CODEBLOCK.sub(lambda t: blockbeschreibung(t.group(0)), text)
+    text = _TABELLE.sub(lambda t: _tabellenbeschreibung(t.group(0)), text)
+    text = _LINK.sub(lambda t: sprechbar(t.group(1)), text)
+    text = _URL.sub(lambda t: "ein Link auf " + sprechbar(_domain(t.group(0))), text)
+    text = _INLINE_CODE.sub(_inline_uebersetzen, text)
+    text = _DATEIARTIG.sub(lambda t: sprechbar(t.group(0)), text)
+    text = _KENNUNG_IM_TEXT.sub("eine Kennung", text)
 
     saetze: list[str] = []
     for zeile in text.splitlines():
@@ -281,17 +378,10 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
             continue            # Tabellenzeile oder Trennlinie
         zeile = _AUFZAEHLUNG.sub("", zeile)
         zeile = _AUSZEICHNUNG.sub("", zeile).strip()
-        # Ein Doppelpunkt am Zeilenende kuendigt etwas an -- fast immer den
-        # Codeblock, die Tabelle oder die Liste, die oben schon weggefallen
-        # ist. Gesprochen bliebe davon ein Anlauf ins Leere. Weg faellt aber
-        # nur die Ankuendigung, nicht die ganze Zeile: "Erledigt. Am PC:"
-        # traegt einen fertigen Satz und erst danach den Anlauf.
-        # Vor dem rstrip pruefen, das den Doppelpunkt sonst wegnaehme.
-        if zeile.endswith(":"):
-            schnitt = max(zeile.rfind(zeichen) for zeichen in ".!?")
-            if schnitt < 0:
-                continue
-            zeile = zeile[:schnitt + 1]
+        # Ein Doppelpunkt am Zeilenende kuendigt an, was frueher weggestrichen
+        # wurde und jetzt als Beschreibung folgt -- "Am PC:" traegt seinen
+        # Block also wieder. Er bleibt stehen und bekommt keinen Punkt.
+        ankuendigung = zeile.endswith(":")
         zeile = _LEERE_KLAMMER.sub(" ", zeile)
         zeile = _LUECKE_VOR_SATZZEICHEN.sub(r"\1", " ".join(zeile.split()))
         zeile = _KLAUSEL_VOR_SATZENDE.sub("", zeile)
@@ -301,7 +391,10 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
         # nur aus einem Befehl bestand, ist jetzt leer oder ein Rumpf wie "in".
         if not _WORTHALTIG.search(zeile) or _PFADARTIG.match(zeile):
             continue
-        saetze.append(zeile if zeile[-1] in ".!?" else zeile + ".")
+        if ankuendigung:
+            saetze.append(zeile + ":")   # das rstrip oben nimmt ihn sonst weg
+        else:
+            saetze.append(zeile if zeile[-1] in ".!?" else zeile + ".")
 
     fluss = " ".join(" ".join(saetze).split())
     if not fluss:

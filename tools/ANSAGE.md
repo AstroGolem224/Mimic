@@ -102,9 +102,25 @@ ueberleben keinen Neustart; danach spricht wieder die Vorgabe `forge`.
 | `KOPFHOERER_MAC` | Überschreibt `~/.config/mimic/kopfhoerer`. |
 
 Länge der Ansage: `GRENZE` in `tools/ansage.py`, aktuell 420 Zeichen. Gekürzt
-wird an der Satzgrenze; Codeblöcke, Tabellen, URLs und Dateipfade fliegen
-vorher raus — sonst liest die Stimme den Anfang eines Diffs vor oder
-buchstabiert eine GitHub-Adresse.
+wird an der Satzgrenze.
+
+Was die Stimme nicht wörtlich vorlesen kann, wird übersetzt statt gestrichen —
+`sprechbar()` und `blockbeschreibung()` erledigen das, `--vorschau` zeigt das
+Ergebnis ohne Ton:
+
+| Im Text | Gesprochen |
+|---|---|
+| `/run/user/1000/mimic-ansage.stimme` | »slash run user 1000 mimic ansage punkt stimme« |
+| `mimic/cli.py:195` | »mimic cli punkt py Zeile 195« |
+| `5341a99`, UUIDs | »eine Kennung« |
+| ein Bash-Codeblock | »Ein Bash-Block mit 2 Zeilen, ruft git und python3 auf.« |
+| ein Python-Codeblock | »Ein Python-Block mit 4 Zeilen, definiert stimme und stimmdatei.« |
+| eine Tabelle | »Eine Tabelle mit 8 Zeilen.« |
+| `https://github.com/…/pull/2` | »ein Link auf github punkt com« |
+
+Nur der führende Schrägstrich wird gesprochen, innere sind Sprechpausen.
+Gestrichen wird noch, was auch beschrieben nichts hergibt: Bezeichner und
+Befehle in Backticks, die kein Pfad sind (`VORGABE_STIMME`, `--stimme`).
 
 Zwei Regeln halten die Ansage bei vollständigen Gedanken, statt sie am Budget
 abzuschneiden:
@@ -113,9 +129,8 @@ abzuschneiden:
   vorher schon `MINDEST` Zeichen Substanz gesprochen wurden. Sonst wird er
   angeschnitten — ein kurzer Auftakt wie »Gemerged.« gefolgt von Stille wäre
   keine Meldung.
-- Ein Doppelpunkt beendet keinen Satz. Zeilen, die auf einen Doppelpunkt
-  enden, kündigen fast immer den Codeblock oder die Tabelle an, die schon
-  weggefallen ist; von ihnen bleibt nur, was davor an fertigem Satz stand.
+- Ein Doppelpunkt beendet keinen Satz und bleibt stehen: »Am PC:« kündigt den
+  Block an, der jetzt als Beschreibung folgt.
 
 ## Was noch offen ist
 
