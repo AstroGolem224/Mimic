@@ -199,7 +199,12 @@ class EntwurfTests(unittest.TestCase):
             marke = heim / "enkel-lebt"
             # Das Kind startet einen Enkel, der eine Datei anlegt und dann lange
             # schlaeft. Ueberlebt der Enkel das Abbrechen, laeuft er weiter.
-            stub = self._stub(heim, f"sh -c 'echo da > {marke}; sleep 30' &\nsleep 30")
+            # Eindeutige Marke im Kommando: ein blosses "sleep 30" traefe per
+            # pgrep auch fremde Prozesse auf der Maschine und machte den Test
+            # von der Laune des Systems abhaengig.
+            kennung = f"mimic-test-{os.getpid()}"
+            stub = self._stub(heim, f"sh -c 'echo da > {marke}; exec sleep 3000 {kennung}' &\n"
+                                    f"sleep 3000 {kennung}")
             try:
                 with mock.patch.object(entwurf, "python_pfad", lambda motor=None: stub), \
                      mock.patch.object(entwurf, "skript_pfad", lambda motor=None: heim / "egal.py"):
@@ -210,11 +215,11 @@ class EntwurfTests(unittest.TestCase):
                             break
                         time.sleep(0.01)
                     self.assertTrue(marke.exists(), "der Enkel ist nie gestartet")
-                    enkel = subprocess.run(["pgrep", "-f", f"sleep 30"],
+                    enkel = subprocess.run(["pgrep", "-f", kennung],
                                            capture_output=True, text=True).stdout.split()
                     lauf.abbrechen()
                     time.sleep(0.5)
-                    uebrig = subprocess.run(["pgrep", "-f", "sleep 30"],
+                    uebrig = subprocess.run(["pgrep", "-f", kennung],
                                             capture_output=True, text=True).stdout.split()
                     self.assertFalse(set(enkel) & set(uebrig),
                                      "ein Enkelprozess hat den Abbruch ueberlebt")
@@ -286,3 +291,54 @@ class KoerperTypenTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WorkerWacheTests(unittest.TestCase):
+    """Der schwerste Befund aus dem Codex-Review vom 2026-08-12.
+
+    Die Frist in _execute prueft erst, NACHDEM generate_stream einen Chunk
+    geliefert hat. Blockiert schon der Aufruf selbst, greift nichts -- und der
+    Worker ist der einzige Modellbesitzer. Er nimmt weiter Auftraege an, die
+    dann fuer immer warten.
+    """
+
+    def test_haengender_modellaufruf_reisst_den_worker_ab(self):
+        import threading
+        from unittest import mock
+
+        from mimic import worker
+
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.fatal = threading.Event()
+
+        fertig = threading.Event()
+        with mock.patch.object(worker, "REQUEST_TIMEOUT", 0.05), \
+             mock.patch.object(worker, "WACHE_ZUSCHLAG_S", 0.0), \
+             mock.patch.object(worker, "wake_listener") as geweckt:
+            wache = threading.Thread(target=engine._wache, args=(fertig, "sprechen"), daemon=True)
+            wache.start()
+            wache.join(timeout=5)
+        self.assertFalse(wache.is_alive(), "die Wache haengt selbst")
+        self.assertTrue(engine.fatal.is_set(), "fatal wurde nicht gesetzt")
+        self.assertTrue(geweckt.called, "der Listener wurde nicht geweckt")
+
+    def test_ein_fertiger_lauf_loest_die_wache_nicht_aus(self):
+        """Ein langsamer, aber lebendiger Lauf darf den Worker nie abreissen."""
+        import threading
+        from unittest import mock
+
+        from mimic import worker
+
+        engine = worker.Engine.__new__(worker.Engine)
+        engine.fatal = threading.Event()
+
+        fertig = threading.Event()
+        with mock.patch.object(worker, "REQUEST_TIMEOUT", 5.0), \
+             mock.patch.object(worker, "WACHE_ZUSCHLAG_S", 0.0), \
+             mock.patch.object(worker, "wake_listener") as geweckt:
+            wache = threading.Thread(target=engine._wache, args=(fertig, "sprechen"), daemon=True)
+            wache.start()
+            fertig.set()                     # so, wie es der finally-Zweig tut
+            wache.join(timeout=5)
+        self.assertFalse(engine.fatal.is_set(), "die Wache hat einen gesunden Lauf abgerissen")
+        self.assertFalse(geweckt.called)

@@ -31,6 +31,10 @@ MIN_VRAM_MIB = int(os.environ.get("MIMIC_MIN_VRAM_MIB", "8000"))
 MODEL_VRAM_MIB = int(os.environ.get("MIMIC_MODEL_VRAM_MIB", "6222"))
 IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
+# Aufschlag der Wache auf REQUEST_TIMEOUT. Sie greift nur, wenn das Modell gar
+# nicht antwortet -- ein langsamer, aber lebendiger Lauf soll sie nie ausloesen.
+# 60 s deckt den gemessenen Kaltstart (7.1 s) samt reichlich Luft ab.
+WACHE_ZUSCHLAG_S = float(os.environ.get("MIMIC_WACHE_ZUSCHLAG", "60"))
 MAX_WAITING = 4
 PAUSE_MS = int(os.environ.get("MIMIC_PAUSE_MS", "180"))  # Atempause zwischen Saetzen
 SOFT_LIMIT = 0.75      # ab hier rollt der weiche Anschlag ein
@@ -149,6 +153,27 @@ class Engine:
                 continue
         return False
 
+    def _wache(self, fertig: threading.Event, operation: str) -> None:
+        """Reisst den Prozess ab, wenn ein Modellaufruf gar nicht zurueckkommt.
+
+        Die Frist in _execute prueft erst, NACHDEM generate_stream einen Chunk
+        geliefert hat. Blockiert schon das Erzeugen des Generators oder ein
+        spaeteres yield in CUDA, greift weder REQUEST_TIMEOUT noch der Abbruch
+        -- und weil es nur einen Modellbesitzer gibt, nimmt der Worker weiter
+        Auftraege an, die dann fuer immer warten. Der einzige Ausweg von aussen
+        ist derselbe wie bei jedem anderen toedlichen Fehler: fatal setzen und
+        den Listener wecken, damit die Socket-Aktivierung neu startet.
+
+        Grosszuegig bemessen, weil ein Kaltstart mitzaehlt: die Frist gilt fuer
+        Laden UND Rechnen zusammen.
+        """
+        if fertig.wait(REQUEST_TIMEOUT + WACHE_ZUSCHLAG_S):
+            return
+        print(f"worker=wache operation={operation} outcome=timeout "
+              f"frist_s={REQUEST_TIMEOUT + WACHE_ZUSCHLAG_S:.0f}", file=sys.stderr, flush=True)
+        self.fatal.set()
+        wake_listener()
+
     def _run(self) -> None:
         while True:
             with self.condition:
@@ -162,10 +187,14 @@ class Engine:
                     warm_request = self.warm_request
                     self.warm_request = None
                     self.warming_mode = warm_request["mode"]
-            if job is None:
-                self._warm(warm_request)
-                continue
+            fertig = threading.Event()
+            wache = threading.Thread(target=self._wache, name="mimic-worker-wache", daemon=True,
+                                     args=(fertig, "warm" if job is None else "sprechen"))
+            wache.start()
             try:
+                if job is None:
+                    self._warm(warm_request)
+                    continue
                 self._execute(job)
             except Exception as exc:
                 reason = exc.reason if isinstance(exc, WorkerRefusal) else "worker_unavailable"
@@ -178,6 +207,9 @@ class Engine:
                 self.fatal.set()
                 wake_listener()
             finally:
+                # Auch der `continue` im Warmlaufzweig laeuft hier durch --
+                # sonst schluege die Wache nach jedem Warmlauf zu.
+                fertig.set()
                 self.write_status("warm" if self.state == "warm" else "kalt")
 
     def _warm(self, request: dict | None) -> None:
