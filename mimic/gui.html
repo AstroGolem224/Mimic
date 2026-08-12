@@ -78,7 +78,10 @@ body{
 .huelle{
   position:relative;height:100%;
   display:grid;
-  grid-template-columns:262px minmax(0,1fr);
+  /* 330 statt 262: seit dem dritten Knopf in der Fusszeile reichten 262 nicht
+     mehr, "Entwerfen" wurde abgeschnitten. Gerechnet fuer drei Knoepfe mit
+     .19em Sperrung und der engeren Polsterung aus `.rail footer .knopf`. */
+  grid-template-columns:330px minmax(0,1fr);
   grid-template-rows:auto minmax(0,1fr) auto auto;
   gap:14px;padding:16px 18px 18px;
 }
@@ -220,6 +223,11 @@ header{
 @keyframes auf{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:none}}
 
 .rail footer{padding:9px 11px 11px;border-top:1px solid rgba(150,225,230,.07)}
+/* Enger als die Vorgabe 11px/19px, sonst passen die drei Knoepfe nicht neben-
+   einander. `flex-wrap` ist das Netz: bei einer laengeren Beschriftung oder
+   einer anderen Schrift rutscht einer in die zweite Zeile, statt zu verschwinden. */
+.rail footer{flex-wrap:wrap}
+.rail footer .knopf{padding:11px 12px;min-width:88px}
 
 /* ── Editor ─────────────────────────────────────────────────────────── */
 .werk{grid-row:2/3;display:flex;flex-direction:column;overflow:hidden}
@@ -547,6 +555,10 @@ audio{width:100%;height:34px;border-radius:9px;filter:saturate(.7) contrast(1.05
     <footer style="display:flex;gap:7px">
       <button class="knopf" id="bNeu" style="flex:1">Neu lesen</button>
       <button class="knopf" id="bKlon" style="flex:1">Klonen</button>
+      <!-- Eigener Knopf, obwohl er dieselbe Schublade oeffnet wie Klonen: der
+           Entwurfsreiter war hinter "Klonen" nicht zu finden -- wer eine Stimme
+           erfinden will, sucht nicht unter dem Wort fuers Nachmachen. -->
+      <button class="knopf" id="bEntwurfAuf" style="flex:1">Entwerfen</button>
     </footer>
   </section>
 
@@ -717,7 +729,8 @@ function serverTot(){
   setzeStatus(TOT_TEXT, "fehler");
   $("sSub").textContent = "kein Neuladen möglich";
   for(const id of ["bSpiel", "bSpeichern", "bStopp", "bWarm", "bNeu", "bKlon",
-                   "bRec", "bBehalten", "bNochmal", "bVerwerfen", "bProbe"])
+                   "bEntwurfAuf", "bRec", "bBehalten", "bNochmal", "bVerwerfen",
+                   "bProbe", "bEntwerfen", "bEntwurfStop"])
     $(id).disabled = true;
 }
 
@@ -1007,6 +1020,10 @@ function schubladeAuf(an){
   if(an){ inventarLaden(); $("kName").focus(); }
 }
 $("bKlon").onclick = () => schubladeAuf(true);
+$("bEntwurfAuf").onclick = () => {
+  schubladeAuf(true);
+  document.querySelector('#reiter button[data-blatt=entwerfen]').click();
+};
 $("bZu").onclick = () => schubladeAuf(false);
 $("schleier").onclick = () => schubladeAuf(false);
 
