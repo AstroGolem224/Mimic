@@ -6,6 +6,7 @@ import argparse
 import http.client
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -343,11 +344,36 @@ def design(args: argparse.Namespace) -> int:
 
         print("\nLasse das Timbre den zweisprachigen Referenztext sprechen.")
         ziel = datenverzeichnis() / "entwuerfe" / "eingedeutscht.wav"
-        try:
-            eindeutschen(gewaehlt, ziel, REFERENZTEXT_ZWEISPRACHIG)
-        except RuntimeError as fehler:
-            print(f"Eindeutschen fehlgeschlagen: {fehler}", file=sys.stderr)
-            return 1
+        # Bis zu drei Wuerfe, weil die Laenge das Ergebnis entscheidet und das
+        # Modell sie nicht steuert: derselbe Text kam als 13.2 s und als 23.0 s
+        # zurueck, je nach Sprechtempo des Timbres. Aus der 23-s-Referenz machte
+        # dots.tts 8.5 s Gebrumm -- Phase 0 hat denselben Verfall ab etwa 15 s
+        # gemessen. 8 bis 15 s ist der einzige erprobte Bereich.
+        bester = None
+        for versuch in range(1, 4):
+            try:
+                eindeutschen(gewaehlt, ziel, REFERENZTEXT_ZWEISPRACHIG)
+            except RuntimeError as fehler:
+                print(f"Eindeutschen fehlgeschlagen: {fehler}", file=sys.stderr)
+                return 1
+            dauer_roh = _dauer(ziel)
+            if 8 <= dauer_roh <= 15:
+                bester = None
+                break
+            abstand = min(abs(dauer_roh - 8), abs(dauer_roh - 15))
+            if bester is None or abstand < bester[0]:
+                behalten = ziel.with_suffix(".bester.wav")
+                shutil.copyfile(ziel, behalten)
+                bester = (abstand, behalten, dauer_roh)
+            if versuch < 3:
+                print(f"  {dauer_roh:.1f} s liegt ausserhalb 8-15 s, neuer Wurf "
+                      f"({versuch} von 3)")
+        if bester is not None:
+            _, behalten, dauer_roh = bester
+            shutil.copyfile(behalten, ziel)
+            behalten.unlink(missing_ok=True)
+            print(f"  kein Wurf im erprobten Bereich. Bester: {dauer_roh:.1f} s -- "
+                  "dots.tts kann daraus Gebrumm machen.")
 
         _vorspielen(ziel)
         if not _ja("  als Referenz nehmen? [J/n] "):
