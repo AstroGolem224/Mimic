@@ -272,6 +272,108 @@ def importieren(args: argparse.Namespace) -> int:
     return 0
 
 
+def _vorspielen(pfad: Path) -> None:
+    subprocess.run(["pw-cat", "-p", str(pfad)], check=False)
+
+
+def _ja(frage: str) -> bool:
+    try:
+        return input(frage).strip().lower() in ("", "j", "ja", "y")
+    except EOFError:
+        return False
+
+
+def design(args: argparse.Namespace) -> int:
+    """Eine Stimme aus einer Beschreibung, ohne Aufnahme.
+
+    Drei Schritte: entwerfen (VoiceGenerator, englisch), eindeutschen (4B,
+    Sprachmarke German), Profil anlegen. Der mittlere Schritt ist der Grund,
+    dass es ueberhaupt geht -- ohne ihn klingt jeder deutsche Satz englisch.
+    """
+    import time
+
+    from .entwurf import (Entwurf, REFERENZTEXT_ZWEISPRACHIG, STANDARDTEXT,
+                          datenverzeichnis, eindeutschen, umgebung_da)
+
+    if not umgebung_da():
+        print("Generator-Umgebung fehlt -- einmal `mimic setup --entwurf`", file=sys.stderr)
+        return 1
+
+    entwurf = Entwurf()
+    try:
+        entwurf.starten(args.beschreibung, STANDARDTEXT, args.anzahl)
+    except (ValueError, RuntimeError) as fehler:
+        print(f"{fehler}", file=sys.stderr)
+        return 1
+
+    print(f"Entwerfe {args.anzahl} Kandidaten. Beim ersten Mal laedt das Modell nach.")
+    gesehen = 0
+    while True:
+        stand = entwurf.stand()
+        for kandidat in stand["kandidaten"][gesehen:]:
+            print(f"  {kandidat['nummer']}: {kandidat['dauer']} s")
+        gesehen = len(stand["kandidaten"])
+        if not stand["laeuft"]:
+            break
+        time.sleep(1.0)
+
+    stand = entwurf.stand()
+    if stand["fehler"]:
+        print(f"Entwerfen fehlgeschlagen: {stand['fehler']}", file=sys.stderr)
+        entwurf.schliessen()
+        return 1
+    if not stand["kandidaten"]:
+        print("kein einziger Kandidat entstanden -- Beschreibung aendern und nochmal",
+              file=sys.stderr)
+        entwurf.schliessen()
+        return 1
+
+    try:
+        gewaehlt = None
+        for kandidat in stand["kandidaten"]:
+            pfad = Path(kandidat["datei"])
+            print(f"\nKandidat {kandidat['nummer']}")
+            _vorspielen(pfad)
+            if _ja("  behalten? [J/n] "):
+                gewaehlt = pfad
+                break
+        if gewaehlt is None:
+            print("keiner behalten, nichts angelegt")
+            return 1
+
+        print("\nLasse das Timbre den zweisprachigen Referenztext sprechen.")
+        ziel = datenverzeichnis() / "entwuerfe" / "eingedeutscht.wav"
+        try:
+            eindeutschen(gewaehlt, ziel, REFERENZTEXT_ZWEISPRACHIG)
+        except RuntimeError as fehler:
+            print(f"Eindeutschen fehlgeschlagen: {fehler}", file=sys.stderr)
+            return 1
+
+        _vorspielen(ziel)
+        if not _ja("  als Referenz nehmen? [J/n] "):
+            print("verworfen, nichts angelegt")
+            return 1
+
+        try:
+            dauer, hinweis = profil_aus_datei(args.voice, ziel, REFERENZTEXT_ZWEISPRACHIG,
+                                              args.force)
+        except VoiceError as exc:
+            nachsatz = " -- --force zum Ueberschreiben" if "existiert schon" in exc.message else ""
+            print(f"{exc.reason}: {exc.message}{nachsatz}", file=sys.stderr)
+            return 1
+    finally:
+        # Raeumt Ordner und einen etwa noch laufenden Prozess weg, auch bei
+        # Strg-C mitten im Hoeren.
+        entwurf.schliessen()
+
+    if hinweis:
+        print(f"  Hinweis: {hinweis}")
+    profil = default_voices_dir() / args.voice
+    print(f"  {dauer:.1f} s\n  {profil}/ref.wav\n  {profil}/ref.txt\n"
+          f"  Probe:  mimic say \"Test\" --voice {args.voice}")
+    return 0
+
+
 def record(args: argparse.Namespace) -> int:
     from .charaktere import CHARAKTERE
 
@@ -485,6 +587,14 @@ def parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--text", help="woertliches Transkript der Datei")
     import_parser.add_argument("--force", action="store_true", help="bestehendes Profil ersetzen")
     import_parser.set_defaults(function=importieren)
+    design_parser = commands.add_parser("design")
+    design_parser.add_argument("beschreibung",
+                               help="englische Beschreibung der Stimme -- der Generator "
+                                    "kann Chinesisch und Englisch, kein Deutsch")
+    design_parser.add_argument("--voice", required=True, help="Name des neuen Profils")
+    design_parser.add_argument("--anzahl", type=int, default=3)
+    design_parser.add_argument("--force", action="store_true")
+    design_parser.set_defaults(function=design)
     return result
 
 

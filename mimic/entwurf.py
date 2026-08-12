@@ -39,6 +39,18 @@ STANDARDTEXT = ("The gate is sealed and the corridor behind us is quiet. "
                 "Then move, now, before the lights come back!")
 STANDARDBESCHREIBUNG = "A calm, low male voice, unhurried, warm but not soft."
 
+# Was das 4B spricht, damit aus dem englischen Entwurf eine deutschfaehige
+# Referenz wird. Zweisprachig mit Absicht: Aussage, Frage und Ausruf, ein
+# englisches Lehnwort in deutscher Lautschrift ("Brahnsch"), und ein
+# Sprachwechsel mitten in der Aeusserung. Genau die Faelle, an denen ein Klon
+# scheitert -- was die Referenz nie gesprochen hat, kann sie nicht vorgeben.
+# Von Matthias vorgegeben, woertlich uebernommen.
+REFERENZTEXT_ZWEISPRACHIG = (
+    'Ich habe den "Brahnsch" gestern Abend noch einmal geprüft, ruhig und ohne Eile. '
+    'The tests are green, but the build still fails — how much time do we really have? '
+    'Dann fangen wir eben sofort an, jetzt gleich!'
+)
+
 MAX_KANDIDATEN = 4
 # Wanduhrfrist fuer einen ganzen Auftrag. Vier Kandidaten mit je bis zu drei
 # Wuerfen sind gemessen rund zwei Minuten; das Dreifache als Deckel faengt ein
@@ -88,6 +100,57 @@ def umgebung_bauen(melden=print) -> None:
 
 def skript_pfad() -> Path:
     return Path(__file__).resolve().parent / "entwerfen.py"
+
+
+def eindeutschen_pfad() -> Path:
+    return Path(__file__).resolve().parent / "eindeutschen.py"
+
+
+def eindeutschen(referenz: Path, ziel: Path, text: str, melden=print) -> Path:
+    """Laesst das 4B das Timbre der Referenz auf Deutsch sprechen. Blockiert.
+
+    Der Schritt zwischen Entwurf und Profil, und er ist nicht wegzulassen:
+    MOSS-VoiceGenerator kann kein Deutsch, ein englischer Kandidat direkt als
+    ref.wav klingt in jedem deutschen Satz englisch. Siehe eindeutschen.py und
+    spike2/ERGEBNIS.md, Kriterium C.
+
+    Anders als `Entwurf` kein Faden und kein Zustand: es gibt genau eine
+    Ausgabe und niemand will danebenstehen und zusehen. stderr wandert in
+    stdout, aus demselben Grund wie dort -- eine zweite unbediente Pipe laeuft
+    voll und der Prozess blockiert in write().
+    """
+    if not umgebung_da():
+        raise RuntimeError("Generator-Umgebung fehlt -- einmal `mimic setup --entwurf`")
+    auftrag = {"referenz": str(referenz), "text": " ".join(text.split()), "aus": str(ziel)}
+    prozess = subprocess.Popen(
+        [str(python_pfad()), str(eindeutschen_pfad()), json.dumps(auftrag)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    geplapper: list[str] = []
+    fehler = ""
+    for zeile in prozess.stdout:
+        try:
+            ereignis = json.loads(zeile)
+        except json.JSONDecodeError:
+            if zeile.strip():
+                geplapper.append(zeile.strip())
+                del geplapper[:-5]
+            continue
+        art = ereignis.get("kind")
+        if art == "laden":
+            melden(f"  Modell laedt ({ereignis.get('geraet')}) ...")
+        elif art == "fertig":
+            melden(f"  {ereignis.get('dauer')} s, {ereignis.get('rate')} Hz")
+        elif art == "fehler":
+            fehler = str(ereignis.get("grund", ""))
+    prozess.wait()
+    try:
+        prozess.stdout.close()
+    except OSError:
+        pass
+    if prozess.returncode != 0 or not ziel.is_file():
+        raise RuntimeError(fehler or (" / ".join(geplapper))[-300:]
+                           or f"Abbruch mit Code {prozess.returncode}")
+    return ziel
 
 
 class Entwurf:
