@@ -39,7 +39,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .charaktere import CHARAKTERE
-from .cli import _dauer, open_request, profil_anlegen, request, speichern
+from .cli import (_dauer, open_request, profil_anlegen, profil_aus_datei, request,
+                  speichern)
+from .entwurf import (MAX_KANDIDATEN, STANDARDBESCHREIBUNG, STANDARDTEXT, Entwurf,
+                      umgebung_da)
 from .protocol import read_frame
 from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
                      default_voices_dir, load_voice)
@@ -615,6 +618,7 @@ class Sitzung:
         self.aktive = AktiveVerbindung(self.abbruch)
         self.thread: threading.Thread | None = None
         self.aufnahme = Aufnahme()
+        self.entwurf = Entwurf()
         self.auftrag: dict = {"running": False, "index": 0, "total": 0, "voice": "",
                               "mode": "", "message": "", "ok": True, "download": False}
         self.pegel: list[float] = []
@@ -724,6 +728,7 @@ class Sitzung:
     def schliessen(self) -> None:
         self.stoppen()
         self.aufnahme.schliessen()
+        self.entwurf.schliessen()
         if self.thread is not None:
             self.thread.join(2.0)
 
@@ -805,6 +810,12 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._referenz()
         elif pfad == "/api/take":
             self._take()
+        elif pfad == "/api/design/state":
+            self._json(200, {**self.sitzung.entwurf.stand(), "umgebung": umgebung_da(),
+                             "standard": {"beschreibung": STANDARDBESCHREIBUNG,
+                                          "text": STANDARDTEXT, "max": MAX_KANDIDATEN}})
+        elif pfad == "/api/design/audio":
+            self._entwurf_audio()
         else:
             self._json(404, {"message": "unbekannter Endpunkt"})
 
@@ -837,6 +848,16 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             return
         self._wav_datei(datei, "take.wav")
 
+    def _entwurf_audio(self) -> None:
+        from urllib.parse import parse_qs, urlsplit
+        roh = parse_qs(urlsplit(self.path).query).get("nummer", [""])[0]
+        try:
+            datei = self.sitzung.entwurf.datei(int(roh))
+        except (ValueError, KeyError):
+            self._json(404, {"message": "kein solcher Kandidat"})
+            return
+        self._wav_datei(datei, f"entwurf_{roh}.wav")
+
     def do_POST(self) -> None:
         pfad = self.path.split("?", 1)[0]
         if not self._erlaubt():
@@ -855,8 +876,62 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._warm()
         elif pfad.startswith("/api/record/") or pfad == "/api/voice/delete":
             self._profilpflege(pfad, wunsch)
+        elif pfad.startswith("/api/design/"):
+            self._entwerfen(pfad, wunsch)
         else:
             self._json(404, {"message": "unbekannter Endpunkt"})
+
+    def _entwerfen(self, pfad: str, wunsch: dict) -> None:
+        """Entwurfsreiter. Fehlerklassen wie bei _profilpflege."""
+        entwurf = self.sitzung.entwurf
+        try:
+            if pfad == "/api/design/start":
+                # Generator und Worker teilen sich die Karte. Beide gleichzeitig
+                # rechnen zu lassen heisst, dass eins von beidem im VRAM
+                # verhungert -- also erst den Sprechauftrag zu Ende.
+                if self.sitzung.auftrag["running"]:
+                    raise RuntimeError("es laeuft ein Sprechauftrag")
+                entwurf.starten(str(wunsch.get("beschreibung", "")),
+                                str(wunsch.get("text", "")),
+                                int(wunsch.get("anzahl", 3)))
+                self._json(200, {"ok": True, **entwurf.stand()})
+            elif pfad == "/api/design/cancel":
+                entwurf.abbrechen()
+                self._json(200, {"ok": True})
+            elif pfad == "/api/design/keep":
+                self._entwurf_behalten(entwurf, wunsch)
+            else:
+                self._json(404, {"message": "unbekannter Endpunkt"})
+                return
+        except ValueError as fehler:
+            self._json(400, {"message": str(fehler)})
+            return
+        except RuntimeError as fehler:
+            self._json(409, {"message": str(fehler)})
+            return
+        except OSError as fehler:
+            self._json(500, {"message": f"Dateisystem: {fehler}"})
+            return
+        self.sitzung.stimmen(frisch=True)
+
+    def _entwurf_behalten(self, entwurf: Entwurf, wunsch: dict) -> None:
+        try:
+            datei = entwurf.datei(int(wunsch.get("nummer", -1)))
+        except (ValueError, TypeError, KeyError):
+            raise ValueError("kein solcher Kandidat") from None
+        stand = entwurf.stand()
+        if stand["laeuft"]:
+            raise RuntimeError("erst den laufenden Entwurf abwarten")
+        # Der Probesatz wird woertlich das ref.txt: dots.tts bekommt Referenz
+        # und Transkript als Paar, ein anderer Text dort macht den Klon kaputt.
+        try:
+            dauer, hinweis = profil_aus_datei(str(wunsch.get("name", "")), datei,
+                                              stand["text"], bool(wunsch.get("force")))
+        except VoiceError as fehler:
+            code = 409 if "existiert schon" in fehler.message else 400
+            self._json(code, {"message": fehler.message, "reason": fehler.reason})
+            return
+        self._json(200, {"ok": True, "dauer_s": round(dauer, 1), "hinweis": hinweis})
 
     def _profilpflege(self, pfad: str, wunsch: dict) -> None:
         """Aufnahme und Loeschen. ValueError = Nutzerfehler, RuntimeError = Ablauf."""

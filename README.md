@@ -95,6 +95,39 @@ lässt das Profil vom Dienst gegenprüfen), *Nochmal* oder *Verwerfen*. Ein
 abgebrochener erster Versuch lässt kein leeres Verzeichnis zurück. Nach dem
 Speichern sprichst du direkt einen Probesatz mit der frischen Stimme.
 
+Reiter *Entwerfen*: eine Stimme aus einer Beschreibung erzeugen, statt sie
+einzusprechen. Beschreibung (englisch — [MOSS-VoiceGenerator][moss] kann laut
+Modellkarte Englisch und Chinesisch, Deutsch nicht) plus Probesatz, drei
+Kandidaten je Lauf. Der Probesatz wird wörtlich das `ref.txt` des Profils,
+steht also unter denselben Anforderungen wie ein eingesprochener Referenztext:
+Aussage, Frage, Ausruf, rund zehn Sekunden. Jeder Kandidat lässt sich anhören
+und unter einem Namen behalten — von da an ist es eine Stimme wie jede andere.
+
+Der Generator läuft **nicht** im Worker. Er verlangt `transformers 5.0.0`,
+dots.tts sitzt auf 4.57.6; zwei davon gibt es nicht in einem Prozess. Also
+eine eigene Umgebung und ein Subprozess, der nur während des Entwurfs lebt
+(`mimic/entwurf.py` steuert, `mimic/entwerfen.py` läuft drüben und importiert
+darum nichts aus dem Paket). Das Modell belegt sein VRAM nur dann, wenn
+wirklich entworfen wird. Gemessen am 2026-08-11: drei Kandidaten in rund 45 s
+bei warmem Dateicache, rund 100 s beim ersten Lauf nach dem Neustart; die
+Entwürfe waren 6.9 bis 12 s lang. Sprechauftrag und Entwurf schließen sich
+gegenseitig aus — sie teilen sich die Karte.
+
+Der Subprozess bekommt **eine** Pipe: `stderr` läuft in `stdout` mit. Getrennt
+blockiert er nach 64 KB im `write()` und steht endgültig — transformers und
+tqdm schütten ihre Fortschrittsbalken nach stderr, und ein Lesefaden, der nur
+stdout bedient, leert diese Pipe nie. Das Fehlerbild ist tückisch, weil nichts
+abstürzt: der Entwurf bleibt einfach für immer bei »Modell lädt«.
+
+Die Umgebung kommt einmalig und ausdrücklich, weil sie mehrere GB lädt und
+Minuten braucht, während `mimic setup` sonst in Sekunden durchläuft:
+
+```bash
+uv run mimic setup --entwurf
+```
+
+[moss]: https://huggingface.co/OpenMOSS-Team/MOSS-VoiceGenerator
+
 Reiter *Verwalten*: alle Profile mit Dauer und Referenztext, defekte mit
 Grund. Referenz anhören, Probesatz sprechen, löschen — Löschen ist
 zweistufig, der erste Klick schärft nur. Ein bestehendes Profil neu

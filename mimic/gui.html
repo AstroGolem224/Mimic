@@ -597,6 +597,7 @@ Zeile ohne Kopf erbt den Sprecher von oben.
   </div>
   <div class="reiter" id="reiter">
     <button data-blatt="neu" class="an">Neu aufnehmen</button>
+    <button data-blatt="entwerfen">Entwerfen</button>
     <button data-blatt="verwalten">Verwalten</button>
   </div>
 
@@ -648,6 +649,33 @@ Zeile ohne Kopf erbt den Sprecher von oben.
     <div class="reihe" id="kProbe" style="display:none">
       <button class="knopf" id="bProbe">Probesatz sprechen</button>
     </div>
+  </div>
+
+  <div class="blatt-s aus" id="blattEntwerfen">
+    <div class="feldgruppe">
+      <u>Beschreibung der Stimme</u>
+      <textarea id="eBeschreibung" spellcheck="false" rows="3"
+                placeholder="A cold synthetic male machine voice, flat affect…"></textarea>
+      <div class="hinweis">Englisch. Der Generator kann laut Modellkarte Englisch und
+        Chinesisch — eine deutsche Beschreibung wird zwar nicht abgelehnt, aber auch
+        nicht verstanden.</div>
+    </div>
+
+    <div class="prompt">
+      <div class="regie">Probesatz: was der Entwurf spricht. Er wird wörtlich das
+        <em>ref.txt</em> des Profils — Aussage, Frage und Ausruf, rund zehn Sekunden.</div>
+      <textarea id="eText" spellcheck="false"></textarea>
+      <div class="zaehler"><span id="eZeichen">0 Zeichen</span>
+        <span id="eSchaetzung">~0 s bei normalem Tempo</span></div>
+    </div>
+
+    <div class="reihe" style="gap:7px">
+      <button class="knopf" id="bEntwerfen">Entwerfen</button>
+      <button class="knopf gefahr" id="bEntwurfStop" style="margin-left:0;display:none">Abbrechen</button>
+      <span class="hinweis" id="eStand"></span>
+    </div>
+
+    <div id="eKandidaten"></div>
   </div>
 
   <div class="blatt-s aus" id="blattVerwalten"></div>
@@ -987,7 +1015,91 @@ $("reiter").onclick = e => {
   if(!knopf) return;
   [...$("reiter").children].forEach(b => b.classList.toggle("an", b === knopf));
   $("blattNeu").classList.toggle("aus", knopf.dataset.blatt !== "neu");
+  $("blattEntwerfen").classList.toggle("aus", knopf.dataset.blatt !== "entwerfen");
   $("blattVerwalten").classList.toggle("aus", knopf.dataset.blatt !== "verwalten");
+  if(knopf.dataset.blatt === "entwerfen") entwurfPuls();
+};
+
+/* ── Entwerfen ────────────────────────────────────────────────────────
+   Der Generator laeuft als Subprozess in eigener Umgebung und meldet je
+   Kandidat. Gepulst wird nur, solange der Reiter offen und etwas unterwegs
+   ist -- ein Modell, das nichts tut, muss nicht alle 900 ms gefragt werden. */
+let entwurfUhr = null, entwurfStandard = null;
+
+async function entwurfPuls(){
+  let stand;
+  try{ stand = await api("/api/design/state"); }
+  catch(fehler){ $("eStand").textContent = "" + fehler; return; }
+
+  if(entwurfStandard === null){
+    entwurfStandard = stand.standard;
+    if(!$("eBeschreibung").value) $("eBeschreibung").value = stand.standard.beschreibung;
+    if(!$("eText").value){ $("eText").value = stand.standard.text; entwurfZaehlen(); }
+  }
+  const bereit = stand.umgebung;
+  $("bEntwerfen").disabled = !bereit || stand.laeuft;
+  $("bEntwurfStop").style.display = stand.laeuft ? "" : "none";
+  $("eStand").textContent = !bereit
+    ? "Generator-Umgebung fehlt — einmal: mimic setup --entwurf"
+    : stand.fehler ? "Fehler: " + stand.fehler
+    : stand.laeuft ? (stand.phase === "laden" ? "Modell lädt… " : "entwirft… ") + stand.sekunden + " s"
+    : stand.kandidaten.length ? stand.kandidaten.length + " Kandidaten" : "";
+  zeichneKandidaten(stand.kandidaten);
+
+  clearTimeout(entwurfUhr);
+  if(stand.laeuft && !$("blattEntwerfen").classList.contains("aus"))
+    entwurfUhr = setTimeout(entwurfPuls, 900);
+}
+
+function zeichneKandidaten(kandidaten){
+  const behaelter = $("eKandidaten");
+  if(behaelter.dataset.stand === String(kandidaten.length)) return;   // nicht bei jedem Puls neu bauen
+  behaelter.dataset.stand = String(kandidaten.length);
+  behaelter.innerHTML = "";
+  kandidaten.forEach(k => {
+    const zeile = document.createElement("div");
+    zeile.className = "feldgruppe";
+    zeile.innerHTML = `<u>Kandidat ${k.nummer + 1} — ${k.dauer} s</u>
+      <audio controls preload="metadata" src="/api/design/audio?nummer=${k.nummer}&t=${encodeURIComponent(T)}"></audio>
+      <div class="reihe" style="gap:7px">
+        <input type="text" placeholder="Profilname" spellcheck="false" autocomplete="off" maxlength="32">
+        <button class="knopf">Behalten</button>
+      </div>
+      <div class="hinweis"></div>`;
+    const feld = zeile.querySelector("input"), knopf = zeile.querySelector("button");
+    const hinweis = zeile.querySelector(".hinweis");
+    knopf.onclick = async () => {
+      knopf.disabled = true;
+      try{
+        const wert = await api("/api/design/keep", {nummer: k.nummer, name: feld.value});
+        hinweis.textContent = `gespeichert, ${wert.dauer_s} s` + (wert.hinweis ? " — " + wert.hinweis : "");
+        inventarLaden();
+      }catch(fehler){ hinweis.textContent = "" + fehler; knopf.disabled = false; }
+    };
+    behaelter.appendChild(zeile);
+  });
+}
+
+function entwurfZaehlen(){
+  const text = $("eText").value.trim();
+  const worte = text ? text.split(/\s+/).length : 0;
+  $("eZeichen").textContent = text.length + " Zeichen";
+  $("eSchaetzung").textContent = "~" + (worte / 2.6).toFixed(0) + " s bei normalem Tempo";
+}
+$("eText").oninput = entwurfZaehlen;
+
+$("bEntwerfen").onclick = async () => {
+  $("bEntwerfen").disabled = true;
+  $("eKandidaten").dataset.stand = "";
+  try{
+    await api("/api/design/start", {beschreibung: $("eBeschreibung").value,
+                                    text: $("eText").value, anzahl: 3});
+  }catch(fehler){ $("eStand").textContent = "" + fehler; }
+  entwurfPuls();
+};
+$("bEntwurfStop").onclick = async () => {
+  try{ await api("/api/design/cancel", {}); }catch(fehler){ $("eStand").textContent = "" + fehler; }
+  entwurfPuls();
 };
 
 async function inventarLaden(){
@@ -1207,6 +1319,8 @@ if(location.hash.startsWith("#werkstatt")){
   schubladeAuf(true);
   if(location.hash.endsWith("verwalten"))
     document.querySelector('#reiter button[data-blatt=verwalten]').click();
+  else if(location.hash.endsWith("entwerfen"))
+    document.querySelector('#reiter button[data-blatt=entwerfen]').click();
 }
 </script>
 </body>
