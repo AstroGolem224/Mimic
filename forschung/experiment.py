@@ -20,7 +20,7 @@ MAX_SATZ_ZEICHEN = 80      # Vorgabe des Dienstes: 80 (seit Nachtlauf 2026-08-10
 PAUSE_MS = 180             # Atempause zwischen Saetzen, Vorgabe: 180
 SPEAKER_SCALE = 1.0        # None = Wert aus dem Stimmprofil (Profile stehen auf 1.0)
 MODUS = "soar"             # "mf" oder "soar"; Laeufe sind nur im selben Modus vergleichbar
-NOTIZ = "soar: beste lage nach nachtlauf 3 -- basis-mittel 0.9128 aus 5 laeufen, keine lage besser"
+NOTIZ = "soar: beste lage unveraendert nach nachtlauf 4 -- min_satz-achse und scale-extreme erschoepft"
 # ────────────────────────────────────────────────────────────────────────
 
 BUDGET_S = 300.0           # Zeitbudget wie im autoresearch-Original
