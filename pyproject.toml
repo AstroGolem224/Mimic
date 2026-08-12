@@ -1,6 +1,11 @@
 [project]
 name = "mimic-tts"
-version = "0.7.0"
+# Bei jeder Aenderung am Paket hochzaehlen, auch wenn nichts veroeffentlicht
+# wird: uv schluesselt sein Wheel-Cache auf Name und Version, nicht auf den
+# Inhalt. Bleibt die Nummer stehen, installiert `uv tool install --force`
+# klaglos das alte Wheel weiter -- der Reiter fehlte deshalb im Fenster,
+# obwohl das Repo ihn laengst hatte.
+version = "0.8.0"
 description = "Lokaler, socket-aktivierter Voice-Cloning-TTS-Dienst"
 requires-python = ">=3.12,<3.13"
 dependencies = [
