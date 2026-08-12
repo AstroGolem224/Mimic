@@ -248,6 +248,22 @@ class Stimme(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": laufzeit}, clear=True):
             self.assertEqual(ansage.stimme(), "glados")
 
+    def test_sitzungsdatei_gilt_nur_fuer_ihre_sitzung(self):
+        # Der Bug: eine Persona in Sitzung A stellte auch Sitzung B um.
+        laufzeit = self.leeres_laufzeitverzeichnis()
+        (Path(laufzeit) / "mimic-ansage.stimme.aaa").write_text("glados\n", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": laufzeit}, clear=True):
+            self.assertEqual(ansage.stimme("aaa"), "glados")
+            self.assertEqual(ansage.stimme("bbb"), "forge")
+
+    def test_sitzungsdatei_sticht_die_gemeinsame(self):
+        laufzeit = self.leeres_laufzeitverzeichnis()
+        (Path(laufzeit) / "mimic-ansage.stimme").write_text("geth\n", encoding="utf-8")
+        (Path(laufzeit) / "mimic-ansage.stimme.aaa").write_text("glados\n", encoding="utf-8")
+        with unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": laufzeit}, clear=True):
+            self.assertEqual(ansage.stimme("aaa"), "glados")
+            self.assertEqual(ansage.stimme("bbb"), "geth")
+
 
 class Sitzungstitel(unittest.TestCase):
     """Mehrere Sitzungen teilen sich die Ausgabe -- der Titel ordnet sie zu."""

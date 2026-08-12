@@ -89,9 +89,14 @@ starten, dann zeigt `/hooks`, was aktiv ist.
 |---|---|
 | `MIMIC_ANSAGE_STIMME` | Stimmprofil, sticht alles andere. Jedes Profil aus `mimic voices` geht. |
 
-Ohne diese Variable gilt `$XDG_RUNTIME_DIR/mimic-ansage.stimme` -- die Datei
-schreiben die Persona-Skills beim Umschalten. Sie liegt im Laufzeitverzeichnis
-und ueberlebt keinen Neustart; danach spricht wieder die Vorgabe `forge`.
+Ohne diese Variable gilt `$XDG_RUNTIME_DIR/mimic-ansage.stimme.<session_id>`
+-- die Datei schreiben die Persona-Skills beim Umschalten, eine je Sitzung.
+Fehlt sie, greift die sitzungslose `mimic-ansage.stimme` als gemeinsame
+Vorgabe fuer alle Sitzungen. Beide liegen im Laufzeitverzeichnis und
+ueberleben keinen Neustart; danach spricht wieder die Vorgabe `forge`.
+
+`tools/ansage.py --stimme` zeigt, was fuer die laufende Sitzung gilt,
+`--stimme --sitzung <id>` das fuer eine andere.
 
 | `MIMIC_ANSAGE_STILL=1` | Schweigt, ohne den Hook auszubauen. Für lange Sitzungen am Schreibtisch. |
 | `KOPFHOERER_MAC` | Überschreibt `~/.config/mimic/kopfhoerer`. |

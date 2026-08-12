@@ -71,29 +71,40 @@ OHNE_INHALT = "Fertig. Keine Zusammenfassung im Transkript."
 VORGABE_STIMME = "forge"        # Stimme der Standard-Persona
 
 
-def stimmdatei() -> Path:
-    # Eine Datei fuer alle Sitzungen -- zwei parallele Sitzungen mit
-    # verschiedenen Personas teilen sich die Stimme. Bei Bedarf nach
-    # session_id schluesseln, das Hook-JSON enthaelt sie.
+def stimmdatei(sitzung: str = "") -> Path:
+    """Mit Sitzung die Datei dieser Sitzung, ohne die gemeinsame.
+
+    Eine Persona gilt fuer die Sitzung, in der sie gewaehlt wurde -- die
+    sitzungslose Datei wirkte auf alle Sitzungen zugleich und stellte
+    nebenher laufenden Sitzungen die Stimme um. Sie bleibt als Rueckfall
+    fuer Handaufrufe ohne Sitzung.
+    """
     laufzeit = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    return Path(laufzeit) / "mimic-ansage.stimme"
+    kennung = re.sub(r"[^A-Za-z0-9._-]", "", sitzung)[:64]
+    name = f"mimic-ansage.stimme.{kennung}" if kennung else "mimic-ansage.stimme"
+    return Path(laufzeit) / name
 
 
-def stimme() -> str:
-    """Umgebung schlaegt Persona-Datei schlaegt Vorgabe.
+def stimme(sitzung: str = "") -> str:
+    """Umgebung schlaegt Sitzungsdatei schlaegt gemeinsame Datei schlaegt Vorgabe.
 
-    Die Datei schreiben die Persona-Skills beim Umschalten. Sie liegt im
-    Laufzeitverzeichnis und ueberlebt keinen Neustart -- danach gilt wieder
+    Die Dateien schreiben die Persona-Skills beim Umschalten. Sie liegen im
+    Laufzeitverzeichnis und ueberleben keinen Neustart -- danach gilt wieder
     VORGABE_STIMME. Genau deshalb muss die Vorgabe die Standard-Persona sein.
     """
     aus_umgebung = os.environ.get("MIMIC_ANSAGE_STIMME", "").strip()
     if aus_umgebung:
         return aus_umgebung
-    try:
-        aus_datei = stimmdatei().read_text(encoding="utf-8").strip()
-    except OSError:
-        aus_datei = ""
-    return aus_datei or VORGABE_STIMME
+    dateien = [stimmdatei(sitzung)] if sitzung else []
+    dateien.append(stimmdatei())
+    for datei in dateien:
+        try:
+            aus_datei = datei.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if aus_datei:
+            return aus_datei
+    return VORGABE_STIMME
 
 
 # ---------------------------------------------------------------- Text bauen
@@ -481,18 +492,27 @@ def _verdraenge_laufende_ansage() -> None:
     Signal an die Prozessgruppe, nicht an die PID: der sprechende Prozess ist
     per start_new_session Gruppenfuehrer, und `mimic say` haengt als Kind daran.
     """
-    datei = _laufzeit() / "mimic-ansage.pid"
-    try:
-        pid = int(datei.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return
-    if pid == os.getpid() or not _ist_ansage_prozess(pid):
+    pid, _ = _besitzer()
+    if not pid or pid == os.getpid() or not _ist_ansage_prozess(pid):
         return
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)
         _protokoll("verdraengt", pid=pid)
     except OSError:
         return
+
+
+def abbrechen() -> int:
+    """Die laufende Ansage sofort verstummen lassen (Tastenkuerzel-Pfad)."""
+    pid, _ = _besitzer()
+    if not pid or pid == os.getpid() or not _ist_ansage_prozess(pid):
+        return 0
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        _protokoll("abgebrochen", pid=pid)
+    except OSError:
+        pass
+    return 0
 
 
 def _merke_pid(sitzung: str = "") -> None:
@@ -568,7 +588,7 @@ def sprechen(text: str, sitzung: str = "", griff=None) -> int:
     programm = _mimic()
     if not programm:
         return 0
-    gewaehlt = stimme()
+    gewaehlt = stimme(sitzung)
     stuecke = _stuecke(text)
     for nummer, stueck in enumerate(stuecke, 1):
         begonnen = time.monotonic()
@@ -761,12 +781,20 @@ def main(argv: list[str] | None = None) -> int:
                                "(Vorgabe: ~/.claude/settings.json)")
     zerleger.add_argument("--melden", metavar="TRANSKRIPT",
                           help="auf die frische Antwort warten und sie sprechen (abgekoppelt)")
+    zerleger.add_argument("--abbrechen", action="store_true",
+                          help="laufende Ansage sofort beenden")
     zerleger.add_argument("--stimme", action="store_true",
                           help="das wirksame Stimmprofil ausgeben")
+    zerleger.add_argument("--sitzung", default="", metavar="ID",
+                          help="Sitzung, deren Stimme gilt (Vorgabe: die laufende)")
     args = zerleger.parse_args(argv)
+    sitzung = args.sitzung or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+
+    if args.abbrechen:
+        return abbrechen()
 
     if args.stimme:
-        print(stimme())
+        print(stimme(sitzung))
         return 0
 
     if args.einhaengen is not None:
@@ -776,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
         return code
 
     if args.sagen is not None:
-        return sprechen(args.sagen)
+        return sprechen(args.sagen, sitzung)
 
     if args.melden is not None:
         return melden(args.melden)
@@ -800,7 +828,9 @@ def main(argv: list[str] | None = None) -> int:
     if nutzlast.get("hook_event_name") != "Notification" and isinstance(pfad, str) and pfad:
         abkoppeln("--melden", pfad)
     else:
-        abkoppeln("--sagen", text)
+        # Die Nachfrage traegt keine Transkriptdatei -- die Sitzung kommt aus
+        # dem Hook-JSON, sonst spraeche sie mit der Stimme einer anderen.
+        abkoppeln("--sagen", text, "--sitzung", str(nutzlast.get("session_id") or ""))
     return 0
 
 
