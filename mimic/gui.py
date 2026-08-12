@@ -41,8 +41,8 @@ from pathlib import Path
 from .charaktere import CHARAKTERE
 from .cli import (_dauer, open_request, profil_anlegen, profil_aus_datei, request,
                   speichern)
-from .entwurf import (MAX_KANDIDATEN, STANDARDBESCHREIBUNG, STANDARDTEXT, Entwurf,
-                      umgebung_da)
+from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
+                      VORGABE_MOTOR, Entwurf, umgebungen_da)
 from .protocol import read_frame
 from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
                      default_voices_dir, load_voice)
@@ -811,9 +811,16 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         elif pfad == "/api/take":
             self._take()
         elif pfad == "/api/design/state":
-            self._json(200, {**self.sitzung.entwurf.stand(), "umgebung": umgebung_da(),
+            bereit = umgebungen_da()
+            self._json(200, {**self.sitzung.entwurf.stand(),
+                             "umgebung": any(bereit.values()),
+                             "motoren": [{"name": m.name, "anzeige": m.anzeige,
+                                          "hinweis": m.hinweis, "rate": m.rate,
+                                          "bereit": bereit[m.name]}
+                                         for m in MOTOREN.values()],
                              "standard": {"beschreibung": STANDARDBESCHREIBUNG,
-                                          "text": STANDARDTEXT, "max": MAX_KANDIDATEN}})
+                                          "text": STANDARDTEXT, "max": MAX_KANDIDATEN,
+                                          "motor": VORGABE_MOTOR}})
         elif pfad == "/api/design/audio":
             self._entwurf_audio()
         else:
@@ -893,7 +900,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                     raise RuntimeError("es laeuft ein Sprechauftrag")
                 entwurf.starten(str(wunsch.get("beschreibung", "")),
                                 str(wunsch.get("text", "")),
-                                int(wunsch.get("anzahl", 3)))
+                                int(wunsch.get("anzahl", 3)),
+                                str(wunsch.get("motor", VORGABE_MOTOR)))
                 self._json(200, {"ok": True, **entwurf.stand()})
             elif pfad == "/api/design/cancel":
                 entwurf.abbrechen()

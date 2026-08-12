@@ -96,22 +96,40 @@ abgebrochener erster Versuch lässt kein leeres Verzeichnis zurück. Nach dem
 Speichern sprichst du direkt einen Probesatz mit der frischen Stimme.
 
 Reiter *Entwerfen*: eine Stimme aus einer Beschreibung erzeugen, statt sie
-einzusprechen. Beschreibung (englisch — [MOSS-VoiceGenerator][moss] kann laut
-Modellkarte Englisch und Chinesisch, Deutsch nicht) plus Probesatz, drei
+einzusprechen. Motor wählen, Beschreibung (englisch) plus Probesatz, drei
 Kandidaten je Lauf. Der Probesatz wird wörtlich das `ref.txt` des Profils,
 steht also unter denselben Anforderungen wie ein eingesprochener Referenztext:
 Aussage, Frage, Ausruf, rund zehn Sekunden. Jeder Kandidat lässt sich anhören
 und unter einem Namen behalten — von da an ist es eine Stimme wie jede andere.
 
-Der Generator läuft **nicht** im Worker. Er verlangt `transformers 5.0.0`,
-dots.tts sitzt auf 4.57.6; zwei davon gibt es nicht in einem Prozess. Also
-eine eigene Umgebung und ein Subprozess, der nur während des Entwurfs lebt
-(`mimic/entwurf.py` steuert, `mimic/entwerfen.py` läuft drüben und importiert
-darum nichts aus dem Paket). Das Modell belegt sein VRAM nur dann, wenn
-wirklich entworfen wird. Gemessen am 2026-08-11: drei Kandidaten in rund 45 s
-bei warmem Dateicache, rund 100 s beim ersten Lauf nach dem Neustart; die
-Entwürfe waren 6.9 bis 12 s lang. Sprechauftrag und Entwurf schließen sich
-gegenseitig aus — sie teilen sich die Karte.
+Zwei Motoren, beide Apache-2.0, beide sprechen Deutsch **nativ**:
+
+| | Modell | Rate | Urteil vom 2026-08-12 |
+|---|---|---|---|
+| `voxcpm` | [VoxCPM2][voxcpm], 2B | 48 kHz | die schöneren Stimmen; Aussprache streut (»Weg« als Straße statt als fort, gelegentlich ein englisch gelesenes Wort). Vorgabe |
+| `qwen` | [Qwen3-TTS VoiceDesign][qwen], 1.7B | 24 kHz | fehlerfreies Deutsch, dafür halbe Bandbreite als `ref.wav` |
+
+48 kHz ist die Rate, die dots.tts ohnehin liefert — ein VoxCPM-Entwurf geht
+also ohne Wandlung als Referenz durch.
+
+**Was hier vorher stand und warum es weg ist.** Bis zum 2026-08-12 entwarf
+MOSS-VoiceGenerator, und ein zweites Modell deutschte den englischen Entwurf
+ein. Das Ergebnis klang wie ein Nicht-Deutschsprecher, der deutschen Text
+phonetisch vorliest. Die Ursache ist strukturell: MOSS-VoiceGenerator hat laut
+eigenem Paper nur Chinesisch und Englisch gesehen, die entworfene Stimme *ist*
+englisch konzipiert, und jeder Zero-Shot-Klon erbt Akzent und Tempo seiner
+Referenz. Drei Stufen stapelten drei Lecks. Ein Modell, das von vornherein
+Deutsch kann, spart beide Zwischenstufen — `eindeutschen.py` ist mit ihnen
+gegangen.
+
+Kein Motor läuft im Worker: beide bringen eigene torch- und
+transformers-Pins mit, dots.tts sitzt auf 4.57.6. Also je eine eigene Umgebung
+und ein Subprozess, der nur während des Entwurfs lebt (`mimic/entwurf.py`
+steuert, `mimic/entwerfen_<motor>.py` läuft drüben und importiert darum nichts
+aus dem Paket). Das Modell belegt sein VRAM nur dann, wenn wirklich entworfen
+wird. Gemessen: drei Kandidaten in rund 45 s bei warmem Dateicache, Entwürfe
+9.4 bis 13.8 s lang. Sprechauftrag und Entwurf schließen sich gegenseitig aus
+— sie teilen sich die Karte.
 
 Der Subprozess bekommt **eine** Pipe: `stderr` läuft in `stdout` mit. Getrennt
 blockiert er nach 64 KB im `write()` und steht endgültig — transformers und

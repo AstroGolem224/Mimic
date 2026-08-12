@@ -1,0 +1,40 @@
+# Eingefroren am 2026-08-12, VOR der ersten Erzeugung. Vier Beschreibungen,
+# an denen VoxCPM2 und Qwen3-TTS-VoiceDesign gegeneinander antreten.
+#
+# Die Frage ist nicht mehr "kann das Modell eine Stimme erfinden" -- das kann
+# MOSS-VoiceGenerator auch. Die Frage ist, ob die erfundene Stimme **deutsch
+# klingt**. Deshalb ist `text` deutsch und bleibt bei allen Beschreibungen
+# gleich: was sich unterscheidet, soll die Stimme sein, nicht der Satz.
+#
+# `beschreibung` ist englisch. VoxCPM2 nimmt sie in Klammern vor dem Text,
+# Qwen als eigenes `instruct`-Feld; beide Modelle verstehen die Beschreibung
+# laut Doku auf Englisch, den Zieltext aber in 30 bzw. 10 Sprachen.
+#
+# Dieselben vier Rollen wie im MOSS-Lauf vom 2026-08-11, damit der Vergleich
+# gegen das bereits Gehoerte moeglich bleibt.
+
+# Rund zehn Sekunden, Aussage, Frage und Ausruf -- dieselbe Bauart wie die
+# Referenztexte in mimic/charaktere.py. Wird woertlich das ref.txt, falls ein
+# Entwurf Profil werden soll.
+probesatz: >-
+  Das Tor ist verriegelt, und hinter uns ist der Gang endlich still.
+  Wie lange haben wir, bis es jemand merkt?
+  Dann los, sofort, bevor das Licht zurueckkommt!
+
+# Zweiter Text, kuerzer, mit den Fallen aus texte.yaml: Umlaute, ein Ausruf,
+# und "Weg" als Homograph, an dem Qwen beim Klonversuch gescheitert ist.
+prueftext: "Weg da! Der Träger hält keine zehn Sekunden mehr!"
+
+entwuerfe:
+  - id: erzaehlerin
+    rolle: "warm, ruhig, weiblich"
+    beschreibung: "A warm, unhurried female voice, low and even, telling a story to one person in a quiet room."
+  - id: greis
+    rolle: "alt, duenn, unstet"
+    beschreibung: "An old man's voice, thin and slightly unsteady, breath audible between phrases, gentle but tired."
+  - id: verschwoerer
+    rolle: "gepresst, fast gefluestert"
+    beschreibung: "A hushed male voice speaking close to the microphone, urgent and conspiratorial, almost whispering."
+  - id: ansagerin
+    rolle: "kuehl, knapp, Durchsage"
+    beschreibung: "A cool, precise female voice, clipped and neutral, announcing over a public address system."

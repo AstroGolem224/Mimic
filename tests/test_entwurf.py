@@ -34,8 +34,8 @@ class EntwurfTests(unittest.TestCase):
             os.environ["XDG_DATA_HOME"] = str(heim)
             stub = self._stub(heim, rumpf)
             try:
-                with mock.patch.object(entwurf, "python_pfad", lambda: stub), \
-                     mock.patch.object(entwurf, "skript_pfad", lambda: heim / "egal.py"):
+                with mock.patch.object(entwurf, "python_pfad", lambda motor=None: stub), \
+                     mock.patch.object(entwurf, "skript_pfad", lambda motor=None: heim / "egal.py"):
                     lauf = entwurf.Entwurf()
                     lauf.starten(beschreibung, text, anzahl)
                     for _ in range(500):
@@ -70,7 +70,7 @@ class EntwurfTests(unittest.TestCase):
         from mimic import entwurf
 
         with tempfile.TemporaryDirectory() as ordner:
-            with mock.patch.object(entwurf, "python_pfad", lambda: Path(ordner) / "gibtsnicht"):
+            with mock.patch.object(entwurf, "python_pfad", lambda motor=None: Path(ordner) / "gibtsnicht"):
                 with self.assertRaises(RuntimeError) as gefangen:
                     entwurf.Entwurf().starten("tief", "Ein Satz.", 1)
         self.assertIn("setup --entwurf", str(gefangen.exception))
@@ -128,8 +128,8 @@ class EntwurfTests(unittest.TestCase):
             os.environ["XDG_DATA_HOME"] = str(heim)
             stub = self._stub(heim, "sleep 5")
             try:
-                with mock.patch.object(entwurf, "python_pfad", lambda: stub), \
-                     mock.patch.object(entwurf, "skript_pfad", lambda: heim / "egal.py"):
+                with mock.patch.object(entwurf, "python_pfad", lambda motor=None: stub), \
+                     mock.patch.object(entwurf, "skript_pfad", lambda motor=None: heim / "egal.py"):
                     lauf = entwurf.Entwurf()
                     lauf.starten("tief", "Ein Satz.", 1)
                     with self.assertRaises(RuntimeError) as gefangen:
@@ -142,17 +142,35 @@ class EntwurfTests(unittest.TestCase):
                 else:
                     os.environ["XDG_DATA_HOME"] = alt
 
-    def test_entwerfen_liegt_neben_entwurf_und_zieht_kein_mimic(self):
-        """entwerfen.py laeuft in einer fremden Umgebung -- ein Import aus dem
+    def test_motorskripte_ziehen_kein_mimic(self):
+        """Die Motorskripte laufen in fremden Umgebungen -- ein Import aus dem
         Paket waere dort ein ModuleNotFoundError, und zwar erst zur Laufzeit."""
-        from mimic.entwurf import skript_pfad
+        from mimic.entwurf import MOTOREN, skript_pfad
 
-        quelle = skript_pfad().read_text()
-        self.assertTrue(skript_pfad().is_file())
-        for zeile in quelle.splitlines():
-            nackt = zeile.strip()
-            self.assertFalse(nackt.startswith(("from .", "from mimic", "import mimic")),
-                             f"entwerfen.py importiert aus dem Paket: {nackt}")
+        for name in MOTOREN:
+            pfad = skript_pfad(name)
+            self.assertTrue(pfad.is_file(), f"{pfad} fehlt")
+            for zeile in pfad.read_text().splitlines():
+                nackt = zeile.strip()
+                self.assertFalse(nackt.startswith(("from .", "from mimic", "import mimic")),
+                                 f"{pfad.name} importiert aus dem Paket: {nackt}")
+
+    def test_jeder_motor_hat_eigene_umgebung_und_skript(self):
+        """Zusammengelegte venvs waeren der Pin-Konflikt, den der Spike gezeigt hat."""
+        from mimic.entwurf import MOTOREN, VORGABE_MOTOR, venv_pfad
+
+        self.assertIn(VORGABE_MOTOR, MOTOREN)
+        pfade = {venv_pfad(name) for name in MOTOREN}
+        self.assertEqual(len(pfade), len(MOTOREN), "zwei Motoren teilen sich eine venv")
+        skripte = {MOTOREN[name].skript for name in MOTOREN}
+        self.assertEqual(len(skripte), len(MOTOREN), "zwei Motoren teilen sich ein Skript")
+
+    def test_unbekannter_motor_wird_abgelehnt(self):
+        from mimic.entwurf import Entwurf
+
+        with self.assertRaises(ValueError) as gefangen:
+            Entwurf().starten("tief", "Ein Satz.", 1, motor="gibtsnicht")
+        self.assertIn("unbekannter Motor", str(gefangen.exception))
 
 
 if __name__ == "__main__":

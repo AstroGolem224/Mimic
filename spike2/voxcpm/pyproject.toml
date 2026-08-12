@@ -1,0 +1,29 @@
+# Vierte Umgebung in spike2/. Grund wie bei den anderen: eigene Pins.
+# voxcpm verlangt laut Modellkarte nur torch >= 2.5 und CUDA >= 12.0 und
+# bringt keine eigene torch-Obergrenze mit -- deshalb hier ohne --no-deps,
+# anders als bei chatterbox.
+[project]
+name = "spike2-voxcpm"
+version = "0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "voxcpm",
+    # <4, weil xxhash 4.0.0 kein manylinux-Wheel fuer x86_64 mitbringt -- nur
+    # aarch64, i686 und Windows. Ohne den Deckel bricht `uv sync` im Resolver
+    # ab, obwohl mit voxcpm selbst alles in Ordnung ist.
+    "xxhash<4",
+    "soundfile",
+    "pyyaml",
+    "huggingface_hub",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }

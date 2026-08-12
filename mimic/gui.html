@@ -665,12 +665,17 @@ Zeile ohne Kopf erbt den Sprecher von oben.
 
   <div class="blatt-s aus" id="blattEntwerfen">
     <div class="feldgruppe">
+      <u>Motor</u>
+      <div class="chips" id="eMotoren"></div>
+      <div class="hinweis" id="eMotorHinweis"></div>
+    </div>
+
+    <div class="feldgruppe">
       <u>Beschreibung der Stimme</u>
       <textarea id="eBeschreibung" spellcheck="false" rows="3"
                 placeholder="A cold synthetic male machine voice, flat affect…"></textarea>
-      <div class="hinweis">Englisch. Der Generator kann laut Modellkarte Englisch und
-        Chinesisch — eine deutsche Beschreibung wird zwar nicht abgelehnt, aber auch
-        nicht verstanden.</div>
+      <div class="hinweis">Englisch. Beide Motoren verstehen die Beschreibung englisch —
+        gesprochen wird der Probesatz trotzdem deutsch.</div>
     </div>
 
     <div class="prompt">
@@ -1041,7 +1046,24 @@ $("reiter").onclick = e => {
    Der Generator laeuft als Subprozess in eigener Umgebung und meldet je
    Kandidat. Gepulst wird nur, solange der Reiter offen und etwas unterwegs
    ist -- ein Modell, das nichts tut, muss nicht alle 900 ms gefragt werden. */
-let entwurfUhr = null, entwurfStandard = null;
+let entwurfUhr = null, entwurfStandard = null, entwurfMotor = null, entwurfMotoren = [];
+
+function zeichneMotoren(){
+  const behaelter = $("eMotoren");
+  behaelter.innerHTML = "";
+  entwurfMotoren.forEach(m => {
+    const el = document.createElement("button");
+    el.className = "chip" + (m.name === entwurfMotor ? " an" : "");
+    el.textContent = m.anzeige + (m.bereit ? "" : " (fehlt)");
+    el.disabled = !m.bereit;
+    el.onclick = () => { entwurfMotor = m.name; zeichneMotoren(); };
+    behaelter.appendChild(el);
+  });
+  const gewaehlt = entwurfMotoren.find(m => m.name === entwurfMotor);
+  $("eMotorHinweis").textContent = gewaehlt
+    ? `${gewaehlt.rate / 1000} kHz — ${gewaehlt.hinweis}`
+    : "keine Umgebung gebaut — einmal: mimic setup --entwurf";
+}
 
 async function entwurfPuls(){
   let stand;
@@ -1052,12 +1074,20 @@ async function entwurfPuls(){
     entwurfStandard = stand.standard;
     if(!$("eBeschreibung").value) $("eBeschreibung").value = stand.standard.beschreibung;
     if(!$("eText").value){ $("eText").value = stand.standard.text; entwurfZaehlen(); }
+    // Vorgabe nur nehmen, wenn ihre Umgebung steht -- sonst der erste Motor,
+    // der gebaut ist. Ein vorgewaehlter Motor ohne venv waere ein toter Knopf.
+    entwurfMotoren = stand.motoren;
+    const vorgabe = entwurfMotoren.find(m => m.name === stand.standard.motor);
+    entwurfMotor = (vorgabe && vorgabe.bereit ? vorgabe
+                    : entwurfMotoren.find(m => m.bereit) || vorgabe || {}).name || null;
   }
-  const bereit = stand.umgebung;
+  entwurfMotoren = stand.motoren;
+  zeichneMotoren();
+  const bereit = entwurfMotor !== null && entwurfMotoren.some(m => m.name === entwurfMotor && m.bereit);
   $("bEntwerfen").disabled = !bereit || stand.laeuft;
   $("bEntwurfStop").style.display = stand.laeuft ? "" : "none";
   $("eStand").textContent = !bereit
-    ? "Generator-Umgebung fehlt — einmal: mimic setup --entwurf"
+    ? "Umgebung fehlt — einmal: mimic setup --entwurf"
     : stand.fehler ? "Fehler: " + stand.fehler
     : stand.laeuft ? (stand.phase === "laden" ? "Modell lädt… " : "entwirft… ") + stand.sekunden + " s"
     : stand.kandidaten.length ? stand.kandidaten.length + " Kandidaten" : "";
@@ -1110,7 +1140,8 @@ $("bEntwerfen").onclick = async () => {
   $("eKandidaten").dataset.stand = "";
   try{
     await api("/api/design/start", {beschreibung: $("eBeschreibung").value,
-                                    text: $("eText").value, anzahl: 3});
+                                    text: $("eText").value, anzahl: 3,
+                                    motor: entwurfMotor});
   }catch(fehler){ $("eStand").textContent = "" + fehler; }
   entwurfPuls();
 };

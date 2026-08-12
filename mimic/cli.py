@@ -13,6 +13,7 @@ import textwrap
 import wave
 from pathlib import Path
 
+from .entwurf import MOTOREN, VORGABE_MOTOR
 from .frontend import UnixHTTPConnection, frontend_socket_path
 from .protocol import read_frame
 from .voices import VOICE_RE, VoiceError, close_voice, default_voices_dir, load_voice
@@ -287,22 +288,29 @@ def _ja(frage: str) -> bool:
 def design(args: argparse.Namespace) -> int:
     """Eine Stimme aus einer Beschreibung, ohne Aufnahme.
 
-    Drei Schritte: entwerfen (VoiceGenerator, englisch), eindeutschen (4B,
-    Sprachmarke German), Profil anlegen. Der mittlere Schritt ist der Grund,
-    dass es ueberhaupt geht -- ohne ihn klingt jeder deutsche Satz englisch.
+    Zwei Schritte: entwerfen, Profil anlegen. Die dritte Stufe von frueher --
+    ein englischer Entwurf, den ein zweites Modell eindeutscht -- ist weg,
+    seit beide Motoren selbst Deutsch koennen. Sie hat den Akzent ohnehin nur
+    weitergereicht statt ihn zu tilgen.
     """
     import time
 
-    from .entwurf import (Entwurf, REFERENZTEXT_ZWEISPRACHIG, STANDARDTEXT,
-                          datenverzeichnis, eindeutschen, umgebung_da)
+    from .entwurf import Entwurf, STANDARDTEXT, motor_holen, umgebung_da
 
-    if not umgebung_da():
-        print("Generator-Umgebung fehlt -- einmal `mimic setup --entwurf`", file=sys.stderr)
+    try:
+        eintrag = motor_holen(args.motor)
+    except ValueError as fehler:
+        print(f"{fehler}", file=sys.stderr)
+        return 1
+    if not umgebung_da(eintrag.name):
+        print(f"Umgebung fuer {eintrag.anzeige} fehlt -- einmal "
+              f"`mimic setup --entwurf {eintrag.name}`", file=sys.stderr)
         return 1
 
     entwurf = Entwurf()
     try:
-        entwurf.starten(args.beschreibung, STANDARDTEXT, args.anzahl)
+        entwurf.starten(args.beschreibung, args.text or STANDARDTEXT, args.anzahl,
+                        eintrag.name)
     except (ValueError, RuntimeError) as fehler:
         print(f"{fehler}", file=sys.stderr)
         return 1
@@ -342,47 +350,11 @@ def design(args: argparse.Namespace) -> int:
             print("keiner behalten, nichts angelegt")
             return 1
 
-        print("\nLasse das Timbre den zweisprachigen Referenztext sprechen.")
-        ziel = datenverzeichnis() / "entwuerfe" / "eingedeutscht.wav"
-        # Bis zu drei Wuerfe, weil die Laenge das Ergebnis entscheidet und das
-        # Modell sie nicht steuert: derselbe Text kam als 13.2 s und als 23.0 s
-        # zurueck, je nach Sprechtempo des Timbres. Aus der 23-s-Referenz machte
-        # dots.tts 8.5 s Gebrumm -- Phase 0 hat denselben Verfall ab etwa 15 s
-        # gemessen. 8 bis 15 s ist der einzige erprobte Bereich.
-        bester = None
-        for versuch in range(1, 4):
-            try:
-                eindeutschen(gewaehlt, ziel, REFERENZTEXT_ZWEISPRACHIG)
-            except RuntimeError as fehler:
-                print(f"Eindeutschen fehlgeschlagen: {fehler}", file=sys.stderr)
-                return 1
-            dauer_roh = _dauer(ziel)
-            if 8 <= dauer_roh <= 15:
-                bester = None
-                break
-            abstand = min(abs(dauer_roh - 8), abs(dauer_roh - 15))
-            if bester is None or abstand < bester[0]:
-                behalten = ziel.with_suffix(".bester.wav")
-                shutil.copyfile(ziel, behalten)
-                bester = (abstand, behalten, dauer_roh)
-            if versuch < 3:
-                print(f"  {dauer_roh:.1f} s liegt ausserhalb 8-15 s, neuer Wurf "
-                      f"({versuch} von 3)")
-        if bester is not None:
-            _, behalten, dauer_roh = bester
-            shutil.copyfile(behalten, ziel)
-            behalten.unlink(missing_ok=True)
-            print(f"  kein Wurf im erprobten Bereich. Bester: {dauer_roh:.1f} s -- "
-                  "dots.tts kann daraus Gebrumm machen.")
-
-        _vorspielen(ziel)
-        if not _ja("  als Referenz nehmen? [J/n] "):
-            print("verworfen, nichts angelegt")
-            return 1
-
+        # Der Probesatz wird woertlich das ref.txt: dots.tts bekommt Referenz
+        # und Transkript als Paar, ein anderer Text dort macht den Klon kaputt.
         try:
-            dauer, hinweis = profil_aus_datei(args.voice, ziel, REFERENZTEXT_ZWEISPRACHIG,
-                                              args.force)
+            dauer, hinweis = profil_aus_datei(args.voice, gewaehlt,
+                                              stand["text"], args.force)
         except VoiceError as exc:
             nachsatz = " -- --force zum Ueberschreiben" if "existiert schon" in exc.message else ""
             print(f"{exc.reason}: {exc.message}{nachsatz}", file=sys.stderr)
@@ -520,17 +492,27 @@ def setup(args: argparse.Namespace) -> int:
     # Hinter einem Schalter, nicht im Regelweg: die Generator-Umgebung laedt
     # mehrere GB und braucht Minuten, waehrend `mimic setup` sonst in Sekunden
     # durchlaeuft und gefahrlos zweimal aufgerufen werden kann.
-    if getattr(args, "entwurf", False):
-        from .entwurf import umgebung_bauen, umgebung_da
+    if getattr(args, "entwurf", None) is not None:
+        from .entwurf import motor_holen, umgebung_bauen, umgebung_da
 
-        if umgebung_da():
-            print("  entwurf      Umgebung steht schon")
-            return 0
-        try:
-            umgebung_bauen()
-        except (RuntimeError, OSError) as fehler:
-            print(f"entwurf: {fehler}", file=sys.stderr)
-            return 1
+        # Ohne Argument beide Motoren, mit Argument nur den genannten. Beide
+        # zusammen sind mehrere GB, aber wer entwerfen will, will meist
+        # vergleichen koennen.
+        gewuenscht = [args.entwurf] if args.entwurf else sorted(MOTOREN)
+        for name in gewuenscht:
+            try:
+                eintrag = motor_holen(name)
+            except ValueError as fehler:
+                print(f"entwurf: {fehler}", file=sys.stderr)
+                return 1
+            if umgebung_da(eintrag.name):
+                print(f"  {eintrag.name:12} steht schon")
+                continue
+            try:
+                umgebung_bauen(eintrag.name)
+            except (RuntimeError, OSError) as fehler:
+                print(f"entwurf {eintrag.name}: {fehler}", file=sys.stderr)
+                return 1
         return 0
 
     quelle = unit_quelle()
@@ -597,8 +579,10 @@ def parser() -> argparse.ArgumentParser:
     voices_parser = commands.add_parser("voices")
     voices_parser.set_defaults(function=voices)
     setup_parser = commands.add_parser("setup")
-    setup_parser.add_argument("--entwurf", action="store_true",
-                              help="nur die Generator-Umgebung bauen (mehrere GB, Minuten)")
+    setup_parser.add_argument("--entwurf", nargs="?", const="", default=None,
+                              metavar="MOTOR",
+                              help="nur die Generator-Umgebungen bauen (mehrere GB, Minuten). "
+                                   f"Ohne Angabe alle: {', '.join(sorted(MOTOREN))}")
     setup_parser.set_defaults(function=setup)
     gui_parser = commands.add_parser("gui")
     gui_parser.set_defaults(function=gui)
@@ -615,9 +599,14 @@ def parser() -> argparse.ArgumentParser:
     import_parser.set_defaults(function=importieren)
     design_parser = commands.add_parser("design")
     design_parser.add_argument("beschreibung",
-                               help="englische Beschreibung der Stimme -- der Generator "
-                                    "kann Chinesisch und Englisch, kein Deutsch")
+                               help="englische Beschreibung der Stimme -- beide Motoren "
+                                    "verstehen die Beschreibung englisch und sprechen "
+                                    "den Probesatz deutsch")
     design_parser.add_argument("--voice", required=True, help="Name des neuen Profils")
+    design_parser.add_argument("--motor", default=None,
+                               help=f"{', '.join(sorted(MOTOREN))} (Vorgabe {VORGABE_MOTOR})")
+    design_parser.add_argument("--text", default=None,
+                               help="Probesatz; wird woertlich das ref.txt")
     design_parser.add_argument("--anzahl", type=int, default=3)
     design_parser.add_argument("--force", action="store_true")
     design_parser.set_defaults(function=design)

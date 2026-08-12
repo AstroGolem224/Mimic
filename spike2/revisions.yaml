@@ -24,3 +24,13 @@ checkpoints:
   chatterbox:
     repo: ResembleAI/chatterbox
     revision: 5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18
+  # Nachgetragen 2026-08-12. Beide entwerfen Stimmen aus einer Beschreibung und
+  # sprechen den Zieltext NATIV deutsch -- anders als MOSS-VoiceGenerator, der
+  # laut eigenem Paper nur Chinesisch und Englisch gesehen hat. Genau daran ist
+  # die erste Entwurfskette gescheitert.
+  voxcpm2:
+    repo: openbmb/VoxCPM2
+    revision: bffb3df5a29440629464e5e839f4d214c8714c3d
+  qwen_voicedesign:
+    repo: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+    revision: 5ecdb67327fd37bb2e042aab12ff7391903235d3

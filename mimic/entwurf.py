@@ -1,13 +1,28 @@
 """Stimmen aus einer Beschreibung entwerfen, statt sie einzusprechen.
 
-Der Generator (MOSS-VoiceGenerator) kann nicht im Worker leben: er verlangt
-transformers 5.0.0, dots.tts haengt auf 4.57.6. Deshalb eine eigene venv und
-ein Subprozess, der nur waehrend des Entwurfs existiert. Das Modell belegt
-seine ~6 GB VRAM also nur dann, wenn wirklich entworfen wird -- ein zweiter
-dauerhaft warmer Dienst waere fuer etwas, das man dreimal am Tag klickt, der
-falsche Preis.
+Zwei Motoren zur Wahl, beide Apache-2.0, beide sprechen Deutsch **nativ**:
 
-Die Umgebung baut `mimic setup --entwurf`; sie liegt neben den Stimmen und
+  voxcpm  openbmb/VoxCPM2, 2B, 48 kHz -- dieselbe Rate wie dots.tts, ein
+          Entwurf ist also ohne Wandlung als ref.wav brauchbar. Die schoeneren
+          Stimmen. Preis: die Aussprache sitzt nicht immer.
+  qwen    Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign, 1.7B, 24 kHz. Fehlerfreies
+          Deutsch im Hoervergleich vom 2026-08-12, dafuer halbe Bandbreite.
+
+Kein Motor kann im Worker leben: beide bringen eigene torch- und
+transformers-Pins mit, dots.tts haengt auf transformers 4.57.6. Deshalb je
+eine eigene venv und ein Subprozess, der nur waehrend des Entwurfs existiert.
+Das Modell belegt sein VRAM also nur dann, wenn wirklich entworfen wird -- ein
+dauerhaft warmer zweiter Dienst waere fuer etwas, das man dreimal am Tag
+klickt, der falsche Preis.
+
+**Vorgaenger:** bis zum 2026-08-12 lief hier MOSS-VoiceGenerator, gefolgt von
+einer Eindeutschungs-Stufe ueber MOSS-TTS-Local 4B. Beides ist entfernt.
+MOSS-VoiceGenerator hat laut eigenem Paper nur Chinesisch und Englisch
+gesehen; die entworfene Stimme war englisch konzipiert, und jeder folgende
+Klonschritt hat den Akzent geerbt statt ihn zu tilgen. Ein Modell, das von
+vornherein Deutsch kann, spart beide Stufen.
+
+Die Umgebungen baut `mimic setup --entwurf`; sie liegen neben den Stimmen und
 nicht im Repo, damit ein `git clean` sie nicht mitnimmt.
 """
 
@@ -20,36 +35,55 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
-# Aus spike2/moss/pyproject.toml uebernommen, wo diese Pins gemessen sind.
-# transformers 5.0.0 exakt: mit 5.15.0 scheitert das Laden des Audio-Tokenizers
-# an einer config.json, die nur eine auto_map traegt und kein `model_type`.
+# Der cu128-Build ist auf PyPI nicht zu haben, und sm_120 braucht ihn.
 TORCH = ["torch==2.9.1", "torchaudio==2.9.1"]
 TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
-PAKETE = ["transformers==5.0.0", "accelerate", "soundfile", "librosa", "huggingface_hub"]
 
-# Rund zehn Sekunden, mit Aussage, Frage und Ausruf -- dieselbe Bauart wie die
-# Referenztexte in charaktere.py, und aus demselben Grund: dots.tts klont
-# Prosodie mit, die Referenz muss die Intonationskurven also abdecken.
-# Englisch, weil MOSS-VoiceGenerator laut Modellkarte Chinesisch und Englisch
-# kann. Deutsch steht dort nicht.
-STANDARDTEXT = ("The gate is sealed and the corridor behind us is quiet. "
-                "How long do you think we have before they notice? "
-                "Then move, now, before the lights come back!")
+
+@dataclass(frozen=True)
+class Motor:
+    """Ein Entwurfsmodell mit eigener Umgebung und eigenem Skript."""
+    name: str
+    anzeige: str
+    skript: str
+    rate: int
+    hinweis: str
+    pakete: list[str] = field(default_factory=list)
+
+
+MOTOREN: dict[str, Motor] = {
+    "voxcpm": Motor(
+        name="voxcpm", anzeige="VoxCPM2", skript="entwerfen_voxcpm.py", rate=48_000,
+        # Ohne Rate: die stellt die Oberflaeche aus `rate` selbst voran.
+        hinweis="wie dots.tts, schoenere Stimmen, Aussprache streut",
+        # xxhash<4: 4.0.0 bringt kein manylinux-Wheel fuer x86_64 mit, nur
+        # aarch64, i686 und Windows -- ohne den Deckel bricht die Aufloesung ab.
+        pakete=["voxcpm", "xxhash<4", "soundfile", "huggingface_hub"]),
+    "qwen": Motor(
+        name="qwen", anzeige="Qwen VoiceDesign", skript="entwerfen_qwen.py", rate=24_000,
+        hinweis="fehlerfreies Deutsch, dafuer halbe Bandbreite als ref.wav",
+        # Obergrenze 4.57.6 wie im Hauptprojekt: qwen-tts vertraegt die 5.x
+        # nicht, die MOSS verlangt hatte.
+        pakete=["qwen-tts>=0.0.5", "transformers>=4.36.0,<=4.57.6", "accelerate",
+                "numpy>=1.26,<2.0", "numba>=0.60.0,<0.61.0", "librosa",
+                "soundfile", "huggingface_hub"]),
+}
+VORGABE_MOTOR = "voxcpm"
+
+# Deutsch, weil beide Motoren Deutsch koennen und der Probesatz woertlich das
+# ref.txt des Profils wird. Rund zehn Sekunden, mit Aussage, Frage und Ausruf
+# -- dieselbe Bauart wie die Referenztexte in charaktere.py und aus demselben
+# Grund: dots.tts klont Prosodie mit, die Referenz muss die Intonationskurven
+# also abdecken. Im Spike vom 2026-08-12 ergab er 9.4 bis 13.8 s.
+STANDARDTEXT = ("Das Tor ist verriegelt, und hinter uns ist der Gang endlich still. "
+                "Wie lange haben wir, bis es jemand merkt? "
+                "Dann los, sofort, bevor das Licht zurueckkommt!")
+# Englisch: beide Modelle verstehen die Beschreibung laut Doku auf Englisch,
+# den Zieltext aber deutsch.
 STANDARDBESCHREIBUNG = "A calm, low male voice, unhurried, warm but not soft."
-
-# Was das 4B spricht, damit aus dem englischen Entwurf eine deutschfaehige
-# Referenz wird. Zweisprachig mit Absicht: Aussage, Frage und Ausruf, ein
-# englisches Lehnwort in deutscher Lautschrift ("Brahnsch"), und ein
-# Sprachwechsel mitten in der Aeusserung. Genau die Faelle, an denen ein Klon
-# scheitert -- was die Referenz nie gesprochen hat, kann sie nicht vorgeben.
-# Von Matthias vorgegeben, woertlich uebernommen.
-REFERENZTEXT_ZWEISPRACHIG = (
-    'Ich habe den "Brahnsch" gestern Abend noch einmal geprüft, ruhig und ohne Eile. '
-    'The tests are green, but the build still fails — how much time do we really have? '
-    'Dann fangen wir eben sofort an, jetzt gleich!'
-)
 
 MAX_KANDIDATEN = 4
 # Wanduhrfrist fuer einen ganzen Auftrag. Vier Kandidaten mit je bis zu drei
@@ -62,32 +96,45 @@ def datenverzeichnis() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "mimic"
 
 
-def venv_pfad() -> Path:
-    return datenverzeichnis() / "entwurf-venv"
+def motor_holen(name: str | None) -> Motor:
+    motor = MOTOREN.get(name or VORGABE_MOTOR)
+    if motor is None:
+        raise ValueError(f"unbekannter Motor {name!r} -- {', '.join(sorted(MOTOREN))}")
+    return motor
 
 
-def python_pfad() -> Path:
-    return venv_pfad() / "bin" / "python"
+def venv_pfad(motor: str = VORGABE_MOTOR) -> Path:
+    # Je Motor eine eigene Umgebung. Zusammenlegen ginge nicht: voxcpm und
+    # qwen-tts bringen unvereinbare Pins mit, genau wie im Spike gemessen.
+    return datenverzeichnis() / f"entwurf-venv-{motor}"
 
 
-def umgebung_da() -> bool:
-    return python_pfad().is_file()
+def python_pfad(motor: str = VORGABE_MOTOR) -> Path:
+    return venv_pfad(motor) / "bin" / "python"
 
 
-def umgebung_bauen(melden=print) -> None:
-    """Legt die Generator-venv an. Dauert Minuten und laedt einige GB."""
+def umgebung_da(motor: str = VORGABE_MOTOR) -> bool:
+    return python_pfad(motor).is_file()
+
+
+def umgebungen_da() -> dict[str, bool]:
+    return {name: umgebung_da(name) for name in MOTOREN}
+
+
+def umgebung_bauen(motor: str = VORGABE_MOTOR, melden=print) -> None:
+    """Legt die venv eines Motors an. Dauert Minuten und laedt einige GB."""
+    eintrag = motor_holen(motor)
     if shutil.which("uv") is None:
         raise RuntimeError("uv fehlt -- ohne das kann die Umgebung nicht gebaut werden")
-    ziel = venv_pfad()
-    melden(f"  Umgebung unter {ziel}")
+    ziel = venv_pfad(eintrag.name)
+    melden(f"  {eintrag.anzeige} unter {ziel}")
     ziel.parent.mkdir(parents=True, exist_ok=True)
+    python = str(python_pfad(eintrag.name))
     schritte = [
         ["uv", "venv", "--python", "3.12", str(ziel)],
-        # torch getrennt und mit eigenem Index: der cu128-Build ist auf PyPI
-        # nicht zu haben, und sm_120 braucht ihn.
-        ["uv", "pip", "install", "--python", str(python_pfad()),
-         "--index-url", TORCH_INDEX, *TORCH],
-        ["uv", "pip", "install", "--python", str(python_pfad()), *PAKETE],
+        # torch getrennt und mit eigenem Index, sonst kommt der CPU-Build.
+        ["uv", "pip", "install", "--python", python, "--index-url", TORCH_INDEX, *TORCH],
+        ["uv", "pip", "install", "--python", python, *eintrag.pakete],
     ]
     for schritt in schritte:
         melden(f"  {' '.join(schritt[:3])} ...")
@@ -95,62 +142,11 @@ def umgebung_bauen(melden=print) -> None:
         if ergebnis.returncode != 0:
             raise RuntimeError(f"{' '.join(schritt[:3])} fehlgeschlagen: "
                                f"{ergebnis.stderr.decode(errors='replace').strip()[:400]}")
-    melden("  fertig -- das Modell selbst (~4 GB) kommt beim ersten Entwurf")
+    melden("  fertig -- das Modell selbst kommt beim ersten Entwurf")
 
 
-def skript_pfad() -> Path:
-    return Path(__file__).resolve().parent / "entwerfen.py"
-
-
-def eindeutschen_pfad() -> Path:
-    return Path(__file__).resolve().parent / "eindeutschen.py"
-
-
-def eindeutschen(referenz: Path, ziel: Path, text: str, melden=print) -> Path:
-    """Laesst das 4B das Timbre der Referenz auf Deutsch sprechen. Blockiert.
-
-    Der Schritt zwischen Entwurf und Profil, und er ist nicht wegzulassen:
-    MOSS-VoiceGenerator kann kein Deutsch, ein englischer Kandidat direkt als
-    ref.wav klingt in jedem deutschen Satz englisch. Siehe eindeutschen.py und
-    spike2/ERGEBNIS.md, Kriterium C.
-
-    Anders als `Entwurf` kein Faden und kein Zustand: es gibt genau eine
-    Ausgabe und niemand will danebenstehen und zusehen. stderr wandert in
-    stdout, aus demselben Grund wie dort -- eine zweite unbediente Pipe laeuft
-    voll und der Prozess blockiert in write().
-    """
-    if not umgebung_da():
-        raise RuntimeError("Generator-Umgebung fehlt -- einmal `mimic setup --entwurf`")
-    auftrag = {"referenz": str(referenz), "text": " ".join(text.split()), "aus": str(ziel)}
-    prozess = subprocess.Popen(
-        [str(python_pfad()), str(eindeutschen_pfad()), json.dumps(auftrag)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    geplapper: list[str] = []
-    fehler = ""
-    for zeile in prozess.stdout:
-        try:
-            ereignis = json.loads(zeile)
-        except json.JSONDecodeError:
-            if zeile.strip():
-                geplapper.append(zeile.strip())
-                del geplapper[:-5]
-            continue
-        art = ereignis.get("kind")
-        if art == "laden":
-            melden(f"  Modell laedt ({ereignis.get('geraet')}) ...")
-        elif art == "fertig":
-            melden(f"  {ereignis.get('dauer')} s, {ereignis.get('rate')} Hz")
-        elif art == "fehler":
-            fehler = str(ereignis.get("grund", ""))
-    prozess.wait()
-    try:
-        prozess.stdout.close()
-    except OSError:
-        pass
-    if prozess.returncode != 0 or not ziel.is_file():
-        raise RuntimeError(fehler or (" / ".join(geplapper))[-300:]
-                           or f"Abbruch mit Code {prozess.returncode}")
-    return ziel
+def skript_pfad(motor: str = VORGABE_MOTOR) -> Path:
+    return Path(__file__).resolve().parent / motor_holen(motor).skript
 
 
 class Entwurf:
@@ -171,18 +167,22 @@ class Entwurf:
         self.gestartet = 0.0
         self.beschreibung = ""
         self.text = ""
+        self.motor = VORGABE_MOTOR
 
-    def starten(self, beschreibung: str, text: str, anzahl: int) -> None:
+    def starten(self, beschreibung: str, text: str, anzahl: int,
+                motor: str = VORGABE_MOTOR) -> None:
         beschreibung = " ".join(beschreibung.split())
         text = " ".join(text.split())
+        eintrag = motor_holen(motor)          # ValueError bei unbekanntem Namen
         if not beschreibung:
             raise ValueError("Beschreibung fehlt")
         if not text:
             raise ValueError("Probesatz fehlt")
         if not 1 <= anzahl <= MAX_KANDIDATEN:
             raise ValueError(f"1 bis {MAX_KANDIDATEN} Kandidaten")
-        if not umgebung_da():
-            raise RuntimeError("Generator-Umgebung fehlt -- einmal `mimic setup --entwurf`")
+        if not umgebung_da(eintrag.name):
+            raise RuntimeError(f"Umgebung fuer {eintrag.anzeige} fehlt -- einmal "
+                               f"`mimic setup --entwurf {eintrag.name}`")
         with self.lock:
             if self.prozess is not None:
                 raise RuntimeError("es laeuft schon ein Entwurf")
@@ -200,11 +200,13 @@ class Entwurf:
             # Gemessen am 2026-08-11: haengt reproduzierbar zwischen "laden" und
             # "bereit", sichtbar als wchan=anon_pipe_write.
             prozess = subprocess.Popen(
-                [str(python_pfad()), str(skript_pfad()), json.dumps(auftrag)],
+                [str(python_pfad(eintrag.name)), str(skript_pfad(eintrag.name)),
+                 json.dumps(auftrag)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True)
             self.prozess, self.ordner = prozess, ordner
             self.beschreibung, self.text = beschreibung, text
+            self.motor = eintrag.name
             self.gestartet = time.monotonic()
             self.ereignisse = [{"kind": "start"}]
         threading.Thread(target=self._lesen, args=(prozess,), daemon=True).start()
@@ -259,6 +261,7 @@ class Entwurf:
             return {"laeuft": laeuft, "sekunden": sekunden if laeuft else 0.0,
                     "kandidaten": list(self.kandidaten), "fehler": self.fehler,
                     "beschreibung": self.beschreibung, "text": self.text,
+                    "motor": self.motor,
                     "phase": self.ereignisse[-1].get("kind", "") if self.ereignisse else ""}
 
     def _toeten(self) -> None:
@@ -307,10 +310,18 @@ def _selbsttest() -> None:
             assert erwartet in str(fehler), f"{beschreibung!r}: {fehler}"
         else:
             raise AssertionError(f"{beschreibung!r}/{anzahl} haette abgelehnt werden muessen")
+    try:
+        entwurf.starten("tief", "satz", 1, motor="gibtsnicht")
+    except ValueError as fehler:
+        assert "unbekannter Motor" in str(fehler), fehler
+    else:
+        raise AssertionError("unbekannter Motor haette abgelehnt werden muessen")
     stand = entwurf.stand()
     assert stand["laeuft"] is False and stand["kandidaten"] == [], stand
-    assert skript_pfad().is_file(), "entwerfen.py liegt nicht neben entwurf.py"
-    assert "mimic" in str(venv_pfad()), venv_pfad()
+    for name in MOTOREN:
+        assert skript_pfad(name).is_file(), f"{MOTOREN[name].skript} fehlt neben entwurf.py"
+        assert "mimic" in str(venv_pfad(name)), venv_pfad(name)
+    assert VORGABE_MOTOR in MOTOREN, VORGABE_MOTOR
     print("Selbsttest ok")
 
 
