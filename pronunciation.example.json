@@ -1,14 +1,22 @@
 {
   "_hinweis": [
+    "VORLAGE, KEINE KOPIERVORLAGE. Gelesen werden nur Eintraege auf oberster",
+    "Ebene: wer diese Datei unveraendert nach ~/.local/share/mimic/ legt, hat",
+    "eine Tabelle, die nichts tut -- '_geprueft' ist fuer apply_pronunciation",
+    "nur ein Wert, der kein Text ist, und wird uebersprungen. Einzelne Zeilen",
+    "herauskopieren, nicht die Datei.",
+    "",
     "Wortweise Ersetzung vor der Synthese, Wortgrenzen werden beachtet. Die",
     "Grossschreibung am Wortanfang wird UEBERNOMMEN, aber NICHT unterschieden:",
-    "verglichen wird case-insensitiv. Ein Eintrag 'Weg' trifft deshalb auch",
-    "'weg' -- und umgekehrt. Gedacht gegen das Fehlerbild aus Kriterium B:",
-    "Anglizismen mit deutscher Beugung, die Mimic anders spricht als Matthias.",
+    "verglichen wird case-insensitiv. Ein Eintrag 'branch' trifft deshalb auch",
+    "'Branch' und liefert dort 'Brahnsch'. Die Wortgrenze rettet dabei mehr,",
+    "als man denkt: 'Branchen' bleibt unberuehrt, weil ein Buchstabe folgt.",
     "",
-    "NUR EINTRAGEN, WAS GEHOERT WURDE. Geraten hilft nicht: 'main' -> 'mane'",
-    "klang falsch (deutsch gelesen 'MAH-ne'), 'mayn' trifft. Das Sprach-Tag ist",
-    "en, englische Schreibweisen funktionieren also besser als deutsche.",
+    "NUR EINTRAGEN, WAS GEHOERT WURDE, und nur, was es BESSER macht. 'gepusht'",
+    "steht unten als geprueft-und-unnoetig: dots.tts trifft es ohne Tabelle,",
+    "jeder Eintrag waere Schaden ohne Nutzen. Geraten hilft ebenfalls nicht --",
+    "'main' -> 'mane' klang falsch (deutsch gelesen 'MAH-ne'), 'mayn' trifft.",
+    "Das Sprach-Tag ist en, englische Schreibweisen funktionieren also besser.",
     "",
     "MEHRERE WOERTER SIND ERLAUBT, und bei Homographen sind sie der einzige",
     "richtige Weg. 'weg' (fort) und 'Weg' (Strasse) sind case-insensitiv nicht",
@@ -21,12 +29,15 @@
   "_geprueft": {
     "main": "mayn",
     "Satzende": "Satz-Ende",
-    "weg da": "weck da"
+    "weg da": "weck da",
+    "gemerged": "gemördscht",
+    "branch": "brahnsch"
+  },
+  "_geprueft_unnoetig": {
+    "gepusht": "ohne Eintrag richtig gesprochen, 2026-08-12 gegen gepuhschd, gepuscht, gepuhscht und ge-puscht gehoert"
   },
   "_kandidaten_ungeprueft": {
     "weg hier": "weck hier",
-    "gemerged": "gemördschd",
-    "gepusht": "gepuhschd",
     "committet": "kommittet",
     "deployment": "diploiment",
     "staging": "steidsching",
