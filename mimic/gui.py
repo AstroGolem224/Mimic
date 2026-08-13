@@ -1098,15 +1098,29 @@ def _fenster(url: str) -> int:
         except KeyboardInterrupt:
             pass
         return 0
-    # Eigenes Profil: ohne --user-data-dir uebergibt Chromium die URL an eine
-    # laufende Instanz und beendet sich sofort -- dann faellt unser Warten aus.
-    profil = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "mimic-gui"
-    profil.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return subprocess.run([programm, f"--app={url}", f"--user-data-dir={profil}",
-                           "--window-size=1280,860", "--class=Mimic",
-                           "--no-first-run", "--no-default-browser-check",
-                           "--disable-features=Translate,MediaRouter"],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    # Frisches Profil je Lauf. Ohne --user-data-dir uebergibt Chromium die URL an
+    # eine laufende Instanz und beendet sich sofort; ein FESTES Profil hat dieselbe
+    # Luecke, sobald auf ihm noch ein Fenster von vorhin steht -- gemessen an einer
+    # Instanz, die einen Tag lang offen war: der Aufruf kam sofort zurueck, das
+    # finally in main() nahm den Server herunter, und das eben geoeffnete Fenster
+    # zeigte ERR_CONNECTION_REFUSED. Ein eigenes Verzeichnis kann niemand belegen,
+    # also blockiert der Aufruf wieder bis zum Schliessen. Das Profil traegt keinen
+    # Zustand (die Oberflaeche benutzt weder localStorage noch Cookies) und faellt
+    # deshalb am Ende weg statt sich im tmpfs zu stapeln -- rund 160 MB pro Fenster.
+    laufzeit = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    laufzeit.mkdir(mode=0o700, parents=True, exist_ok=True)
+    profil = Path(tempfile.mkdtemp(prefix="mimic-gui.", dir=laufzeit))
+    try:
+        return subprocess.run([programm, f"--app={url}", f"--user-data-dir={profil}",
+                               "--window-size=1280,860", "--class=Mimic",
+                               "--no-first-run", "--no-default-browser-check",
+                               "--disable-features=Translate,MediaRouter"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+    finally:
+        # ponytail: nur das eigene Profil. Fremde mimic-gui.* aufzuraeumen wuerde
+        # einem parallel laufenden Fenster den Boden wegziehen; was ein SIGKILL
+        # liegen laesst, raeumt der naechste Neustart mit dem tmpfs ab.
+        shutil.rmtree(profil, ignore_errors=True)
 
 
 def main() -> int:
@@ -1159,6 +1173,29 @@ def demo() -> None:
     sitzung = Sitzung()
     assert len(sitzung.token) >= 24
     assert not sitzung.auftrag["running"]
+
+    # Zwei Fensterlaeufe duerfen sich kein Profil teilen, sonst reicht Chromium
+    # die URL an das alte Fenster weiter und beendet sich sofort.
+    gesehen = []
+
+    def _lauf_ohne_browser(befehl, **_rest):
+        pfad = next(t.split("=", 1)[1] for t in befehl if t.startswith("--user-data-dir="))
+        assert Path(pfad).is_dir(), pfad
+        gesehen.append(pfad)
+        return subprocess.CompletedProcess(befehl, 0)
+
+    echter_browser, echter_lauf = globals()["_browser"], subprocess.run
+    globals()["_browser"] = lambda: "/bin/true"
+    subprocess.run = _lauf_ohne_browser
+    try:
+        assert _fenster("http://127.0.0.1:1/?t=x") == 0
+        assert _fenster("http://127.0.0.1:1/?t=x") == 0
+    finally:
+        globals()["_browser"] = echter_browser
+        subprocess.run = echter_lauf
+    assert len(set(gesehen)) == 2, gesehen
+    assert not [p for p in gesehen if Path(p).exists()], gesehen
+
     sammler = Sammler()
     # Eine halbe Sekunde Sinuston: Stille wuerde lame zu einem winzigen Rahmen
     # zusammenfalten und die Kodierung nicht wirklich pruefen.
