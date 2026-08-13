@@ -106,7 +106,7 @@ Zwei Motoren, beide Apache-2.0, beide sprechen Deutsch **nativ**:
 
 | | Modell | Rate | Urteil vom 2026-08-12 |
 |---|---|---|---|
-| `voxcpm` | [VoxCPM2][voxcpm], 2B | 48 kHz | die schöneren Stimmen; Aussprache streut (»Weg« als Straße statt als fort, gelegentlich ein englisch gelesenes Wort). Vorgabe |
+| `voxcpm` | [VoxCPM2][voxcpm], 2B | 48 kHz | die schöneren Stimmen; Aussprache streut (gelegentlich ein englisch gelesenes Wort). Vorgabe |
 | `qwen` | [Qwen3-TTS VoiceDesign][qwen], 1.7B | 24 kHz | fehlerfreies Deutsch, dafür halbe Bandbreite als `ref.wav` |
 
 48 kHz ist die Rate, die dots.tts ohnehin liefert — ein VoxCPM-Entwurf geht
@@ -166,6 +166,29 @@ Starter für die Arbeitsfläche:
 install -Dm755 systemd/mimic.desktop ~/.local/share/applications/mimic.desktop
 ln -sfn ~/.local/share/applications/mimic.desktop "$(xdg-user-dir DESKTOP)/mimic.desktop"
 ```
+
+## Aussprache
+
+`~/.local/share/mimic/pronunciation.json` ersetzt Wörter **vor** der Synthese;
+[pronunciation.example.json](pronunciation.example.json) trägt Muster und
+Regeln. Zwei Dinge, die man einmal falsch macht:
+
+**Verglichen wird case-insensitiv.** Die Großschreibung am Wortanfang wird in
+die Ersetzung übernommen, aber nicht unterschieden — ein Eintrag `Weg` trifft
+auch `weg`.
+
+**Bei Homographen ist der Kontext die einzige Handhabe.** *weg* (fort) und
+*Weg* (Straße) sind als Wort nicht zu trennen; ein Eintrag `weg` → `weck`
+hätte aus jeder Straße ein Gebäck gemacht. Mehrere Wörter sind erlaubt, also
+trennt `weg da` → `weck da`, was das Wort allein nicht kann. Gemessen am
+2026-08-12: dots.tts sprach »Weg da!« als /veːk/, die Betonung rutschte auf
+*da*. Mit dem Eintrag sitzt sie richtig, und »Der Weg ist lang« bleibt
+unberührt — beides in einer Äußerung gegengehört.
+
+Abschalten geht je Anfrage über `"aussprache": false` — die Vorgabe ist an.
+Sinnvoll für Konsumenten, die ihren Text unverändert gesprochen haben wollen:
+eine Ersetzung ist eine Textänderung, und Kriterium B hat den Klon 12/12-mal
+an der Aussprache einzelner Wörter erkannt.
 
 ## Ansage
 

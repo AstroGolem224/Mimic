@@ -1,20 +1,30 @@
 {
   "_hinweis": [
-    "Wortweise Ersetzung vor der Synthese, Wortgrenzen und Grossschreibung am",
-    "Wortanfang werden beachtet. Gedacht gegen das Fehlerbild aus Kriterium B:",
+    "Wortweise Ersetzung vor der Synthese, Wortgrenzen werden beachtet. Die",
+    "Grossschreibung am Wortanfang wird UEBERNOMMEN, aber NICHT unterschieden:",
+    "verglichen wird case-insensitiv. Ein Eintrag 'Weg' trifft deshalb auch",
+    "'weg' -- und umgekehrt. Gedacht gegen das Fehlerbild aus Kriterium B:",
     "Anglizismen mit deutscher Beugung, die Mimic anders spricht als Matthias.",
     "",
     "NUR EINTRAGEN, WAS GEHOERT WURDE. Geraten hilft nicht: 'main' -> 'mane'",
     "klang falsch (deutsch gelesen 'MAH-ne'), 'mayn' trifft. Das Sprach-Tag ist",
     "en, englische Schreibweisen funktionieren also besser als deutsche.",
     "",
+    "MEHRERE WOERTER SIND ERLAUBT, und bei Homographen sind sie der einzige",
+    "richtige Weg. 'weg' (fort) und 'Weg' (Strasse) sind case-insensitiv nicht",
+    "zu trennen -- ein Eintrag 'weg' -> 'weck' haette aus jeder Strasse ein",
+    "Gebaeck gemacht. Der Kontext trennt, was das Wort allein nicht kann.",
+    "",
     "Pruefen: mimic say \"... WORT ...\" -o a.wav, mit mehreren Schreibweisen,",
     "dann hoeren und die Gewinnerin nach ~/.local/share/mimic/pronunciation.json"
   ],
   "_geprueft": {
-    "main": "mayn"
+    "main": "mayn",
+    "Satzende": "Satz-Ende",
+    "weg da": "weck da"
   },
   "_kandidaten_ungeprueft": {
+    "weg hier": "weck hier",
     "gemerged": "gemördschd",
     "gepusht": "gepuhschd",
     "committet": "kommittet",
