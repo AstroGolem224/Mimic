@@ -166,8 +166,15 @@ def voices(_args: argparse.Namespace) -> int:
             profile = load_voice(name, root)
         except VoiceError:
             continue
+        try:
+            dauer = _dauer(Path(profile.wav_path))
+        except (OSError, wave.Error):
+            close_voice(profile)
+            print(name)
+            continue
         close_voice(profile)
-        print(name)
+        # 8-15 s ist der einzige gemessene Bereich (siehe charaktere.py).
+        print(f"{name:24} {dauer:5.1f} s{'' if 8 <= dauer <= 15 else '  !'}")
     return 0
 
 
