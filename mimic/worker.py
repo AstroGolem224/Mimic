@@ -21,7 +21,8 @@ from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_p
 from .effekte import Effekt
 from .protocol import finish_chunks, write_chunk, encode_frame
 from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
-                     entschaerfe_versalien, load_voice, split_sentences)
+                     entschaerfe_versalien, load_voice, split_sentences,
+                     sprich_zahlen)
 
 REVISIONS = {
     "mf": ("dots-studio/dots.tts-mf", "25c53fb462e57087e52237daa5ea30df1c5cc328"),
@@ -337,8 +338,13 @@ class Engine:
             if not self.emit(job, "H", json.dumps(head, separators=(",", ":")).encode()):
                 outcome = "cancelled"
                 return
-            text = (apply_pronunciation(request["text"])
-                    if request.get("aussprache", True) else request["text"])
+            # Beides am selben Schalter: eine Ersetzung ist eine Textaenderung,
+            # und wer seinen Text unveraendert gesprochen haben will, will auch
+            # seine Ziffern unveraendert. Zahlen NACH der Tabelle, damit ein
+            # Eintrag noch auf die rohe Schreibweise zielen kann.
+            text = request["text"]
+            if request.get("aussprache", True):
+                text = sprich_zahlen(apply_pronunciation(text))
             # Unabhaengig von der Aussprachetabelle: Versalien verhunzt das
             # Modell zuverlaessig, das ist keine Geschmacksfrage.
             text = entschaerfe_versalien(text)

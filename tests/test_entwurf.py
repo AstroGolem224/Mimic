@@ -342,3 +342,44 @@ class WorkerWacheTests(unittest.TestCase):
             wache.join(timeout=5)
         self.assertFalse(engine.fatal.is_set(), "die Wache hat einen gesunden Lauf abgerissen")
         self.assertFalse(geweckt.called)
+
+
+class ZahlwortTests(unittest.TestCase):
+    """dots.tts normalisiert nur zh und en. Deutsche Ziffern kamen roh im
+    Modell an: "1241" wurde als "flossweineinunswansich" gesprochen."""
+
+    def test_zahlwoerter(self):
+        from mimic.voices import zahlwort
+
+        for zahl, wort in [
+            (0, "null"), (1, "eins"), (7, "sieben"), (12, "zwoelf"), (16, "sechzehn"),
+            (21, "einundzwanzig"), (30, "dreissig"), (47, "siebenundvierzig"),
+            (100, "einhundert"), (101, "einhunderteins"), (164, "einhundertvierundsechzig"),
+            (1000, "eintausend"), (1241, "eintausendzweihunderteinundvierzig"),
+            (2026, "zweitausendsechsundzwanzig"),
+            (1_000_000, "eine Million"), (2_000_000, "zwei Millionen"),
+        ]:
+            self.assertEqual(wort, zahlwort(zahl), f"{zahl}")
+
+    def test_saetze(self):
+        from mimic.voices import sprich_zahlen
+
+        for roh, gesprochen in [
+            # Der Fall aus dem Betrieb: Testzaehler.
+            ("1241 passed, 0 failed.", "eintausendzweihunderteinundvierzig passed, null failed."),
+            # Kennungen sind keine Zahlen -- "sechs punkt drei", nicht "dreiundsechzig".
+            ("T-6.3 committet.", "T sechs punkt drei committet."),
+            ("Version 0.9.3 ist raus.", "Version null punkt neun punkt drei ist raus."),
+            # Zahl am Satzende und vor Komma: die fielen in der ersten Fassung durch.
+            ("Sektor 12, Druck bei 3,4 bar.", "Sektor zwoelf, Druck bei drei komma vier bar."),
+            ("Kriterium B: 12/12.", "Kriterium B: zwoelf/zwoelf."),
+            # Tausenderpunkt sieht aus wie eine Kennung, ist aber eine Zahl.
+            ("1.241 Zeilen.", "eintausendzweihunderteinundvierzig Zeilen."),
+        ]:
+            self.assertEqual(gesprochen, sprich_zahlen(roh), f"{roh!r}")
+
+    def test_text_ohne_ziffern_bleibt_unberuehrt(self):
+        from mimic.voices import sprich_zahlen
+
+        for satz in ["Der Weg ist frei.", "Kein Wort mit Ziffern.", ""]:
+            self.assertEqual(satz, sprich_zahlen(satz))

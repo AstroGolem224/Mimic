@@ -386,3 +386,93 @@ def apply_pronunciation(text: str, path: Path | None = None) -> str:
             return value[:1].upper() + value[1:] if match.group()[:1].isupper() else value
         text = pattern.sub(replace, text)
     return text
+
+
+# ── Zahlen ──────────────────────────────────────────────────────────────
+#
+# dots.tts normalisiert Text nur fuer Chinesisch und Englisch
+# (dots_tts/utils/text.py: detect_text_language liefert fuer Deutsch
+# "unknown", normalize_text reicht dann roh durch). Ziffern kommen also
+# unveraendert im Modell an, und es improvisiert: "1241" wurde am 2026-08-12
+# als "flossweineinunswansich" gesprochen, "T-6.3" als "T sechsvudrai".
+#
+# Bewusst klein gehalten: ganze Zahlen, Dezimalzahlen, punktierte Kennungen.
+# Keine Ordnungszahlen -- die haengen im Deutschen an Genus, Kasus und Numerus
+# ("am dritten", "der dritte", "ein Drittel") und waeren ohne Wortartanalyse
+# zwangslaeufig manchmal falsch. Lieber nichts als etwas Falsches.
+
+_EINER = ("null", "eins", "zwei", "drei", "vier", "fuenf", "sechs", "sieben", "acht", "neun",
+          "zehn", "elf", "zwoelf", "dreizehn", "vierzehn", "fuenfzehn", "sechzehn",
+          "siebzehn", "achtzehn", "neunzehn")
+_ZEHNER = ("", "", "zwanzig", "dreissig", "vierzig", "fuenfzig", "sechzig", "siebzig",
+           "achtzig", "neunzig")
+
+
+def _unter_hundert(zahl: int) -> str:
+    if zahl < 20:
+        return _EINER[zahl]
+    zehner, einer = divmod(zahl, 10)
+    if not einer:
+        return _ZEHNER[zehner]
+    # "einundzwanzig", nicht "einsundzwanzig" -- die Eins verliert ihr s.
+    return f"{'ein' if einer == 1 else _EINER[einer]}und{_ZEHNER[zehner]}"
+
+
+def _unter_tausend(zahl: int) -> str:
+    hundert, rest = divmod(zahl, 100)
+    if not hundert:
+        return _unter_hundert(rest)
+    kopf = f"{'ein' if hundert == 1 else _EINER[hundert]}hundert"
+    return kopf if not rest else kopf + _unter_hundert(rest)
+
+
+def zahlwort(zahl: int) -> str:
+    """Eine ganze Zahl als deutsches Zahlwort. Bis knapp unter eine Milliarde."""
+    if zahl < 0:
+        return "minus " + zahlwort(-zahl)
+    if zahl < 1000:
+        return _unter_tausend(zahl)
+    if zahl < 1_000_000:
+        tausend, rest = divmod(zahl, 1000)
+        kopf = f"{'ein' if tausend == 1 else _unter_tausend(tausend)}tausend"
+        return kopf if not rest else kopf + _unter_tausend(rest)
+    if zahl < 1_000_000_000:
+        million, rest = divmod(zahl, 1_000_000)
+        kopf = ("eine Million" if million == 1 else f"{_unter_tausend(million)} Millionen")
+        return kopf if not rest else f"{kopf} {zahlwort(rest)}"
+    # Darueber wird jedes Zahlwort laenger als der Satz. Ziffernweise ist dann
+    # ehrlicher und bleibt verstaendlich.
+    return " ".join(_EINER[int(ziffer)] for ziffer in str(zahl))
+
+
+def _ziffernweise(text: str) -> str:
+    return " ".join(_EINER[int(z)] if z.isdigit() else z for z in text)
+
+
+# Kennung mit Punkten: T-6.3, v1.2.3, 6.3. Ziffernweise mit "punkt", weil ein
+# Versionsstand keine Zahl ist -- "sechs punkt drei", nicht "dreiundsechzig".
+_KENNUNG_PUNKT = re.compile(r"(?<![\w.,])([A-Za-z]{1,5}[-_]?)?(\d+(?:\.\d+)+)(?!\d)")
+# Tausenderpunkte: 1.241, 12.000.000. Sieht aus wie eine Kennung, ist aber eine
+# Zahl -- die Dreiergruppen verraten es.
+_TAUSENDERPUNKT = re.compile(r"(?<![\w.,])\d{1,3}(?:\.\d{3})+(?!\d)")
+_DEZIMAL = re.compile(r"(?<![\w.,])(\d+),(\d+)(?!\d)")
+_GANZZAHL = re.compile(r"(?<![\w.,])\d+(?!\d|[.,]\d)")
+
+
+def sprich_zahlen(text: str) -> str:
+    """Ziffern zu deutschen Woertern, damit das Modell nicht raten muss.
+
+    Reihenfolge ist wichtig: erst die Tausenderpunkte, sonst frisst sie die
+    Kennungsregel; dann Kennungen, dann Dezimalzahlen, zuletzt der Rest.
+    """
+    text = _TAUSENDERPUNKT.sub(lambda t: zahlwort(int(t.group().replace(".", ""))), text)
+
+    def kennung(treffer: re.Match) -> str:
+        kopf = (treffer.group(1) or "").rstrip("-_")
+        ziffern = " punkt ".join(_ziffernweise(teil) for teil in treffer.group(2).split("."))
+        return f"{kopf} {ziffern}".strip()
+
+    text = _KENNUNG_PUNKT.sub(kennung, text)
+    text = _DEZIMAL.sub(lambda t: f"{zahlwort(int(t.group(1)))} komma {_ziffernweise(t.group(2))}",
+                        text)
+    return _GANZZAHL.sub(lambda t: zahlwort(int(t.group())), text)
