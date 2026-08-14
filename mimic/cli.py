@@ -181,14 +181,26 @@ def voices(_args: argparse.Namespace) -> int:
 def _aufnehmen(ziel: Path) -> None:
     """pw-record bis Enter. Kein Timeout -- der Sprecher entscheidet, wann fertig."""
     input("    [Enter] = Aufnahme START ")
-    recorder = subprocess.Popen(
-        ["pw-record", "--rate", "48000", "--channels", "1", "--format", "s16", str(ziel)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # stderr in eine Datei statt nach DEVNULL: ohne Mikrofon oder ohne laufendes
+    # PipeWire stirbt pw-record sonst wortlos, und der Nutzer sieht nur, dass
+    # die Datei leer blieb. Datei statt Pipe, damit sie nicht vollaeuft.
+    meldung = tempfile.TemporaryFile()
     try:
-        input("    ...laeuft. [Enter] = STOPP ")
+        recorder = subprocess.Popen(
+            ["pw-record", "--rate", "48000", "--channels", "1", "--format", "s16", str(ziel)],
+            stdout=subprocess.DEVNULL, stderr=meldung)
+        try:
+            input("    ...laeuft. [Enter] = STOPP ")
+        finally:
+            recorder.terminate()
+            recorder.wait(timeout=5)
+        if not ziel.exists() or ziel.stat().st_size == 0:
+            meldung.seek(0)
+            grund = meldung.read().decode(errors="replace").strip().splitlines()
+            raise OSError("pw-record hat nichts aufgenommen"
+                          + (f": {grund[-1]}" if grund else " und schwieg dazu"))
     finally:
-        recorder.terminate()
-        recorder.wait(timeout=5)
+        meldung.close()
 
 
 def _dauer(pfad: Path) -> float:
@@ -458,7 +470,9 @@ def record(args: argparse.Namespace) -> int:
                 return 1
             break
         speichern(profil, aufnahme, text)
-    except (OSError, wave.Error, subprocess.SubprocessError) as exc:
+    # EOFError gehoert dazu: wave.open wirft ihn auf einer leeren Datei, und
+    # input() wirft ihn bei Strg-D. Beides endete vorher im nackten Traceback.
+    except (OSError, wave.Error, subprocess.SubprocessError, EOFError) as exc:
         print(f"invalid_voice_profile: Aufnahme fehlgeschlagen: {exc}", file=sys.stderr)
         return 1
     finally:

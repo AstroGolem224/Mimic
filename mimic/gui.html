@@ -704,7 +704,9 @@ Zeile ohne Kopf erbt den Sprecher von oben.
 </aside>
 
 <script>
-const T = new URLSearchParams(location.search).get("t") || "";
+// Aus dem Cookie, nicht aus der URL: das Start-Token in der Adresse ist nach
+// dem ersten Aufruf verbraucht, weil es in der Chromium-Kommandozeile steht.
+const T = (document.cookie.match(/(?:^|;\s*)mimic_token=([^;]*)/) || ["", ""])[1];
 const $ = id => document.getElementById(id);
 
 /* Das Fenster kann seinen Server ueberleben -- er endet mit dem Prozess, das
@@ -935,7 +937,7 @@ $("bWarm").onclick = async () => {
   $("bWarm").disabled = true;
   setzeStatus("Warmlauf angefordert…");
   try{
-    const wert = await api("/api/warm", {});
+    const wert = await api("/api/warm", {mode: modus});
     setzeStatus(wert.message || "Warmlauf laeuft", wert.ok ? "gut" : "fehler");
   }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
   finally{ if(!laeuft) $("bWarm").disabled = false; }

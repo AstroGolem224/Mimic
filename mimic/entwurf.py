@@ -252,6 +252,14 @@ class Entwurf:
         except OSError:
             pass
         with self.lock:
+            # Nur den EIGENEN Lauf abraeumen. Abbrechen und sofort neu starten
+            # laesst diesen Faden erst hier ankommen, wenn `starten` den Zustand
+            # laengst dem neuen Lauf gegeben hat -- ohne die Wache loeschte der
+            # Nachzuegler dessen Prozesszeiger, meldete seinen eigenen Abbruch
+            # als dessen Fehler, und der naechste Start legte einen zweiten
+            # Generator daneben.
+            if self.prozess is not prozess:
+                return
             if prozess.returncode != 0 and not self.fehler:
                 # Etwa ein OOM-Kill oder ein fehlendes Paket: dann steht der
                 # Grund nur im Geplapper.

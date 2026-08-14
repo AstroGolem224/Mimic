@@ -618,6 +618,11 @@ class Sitzung:
 
     def __init__(self) -> None:
         self.token = secrets.token_urlsafe(24)
+        # Zweites, EINMALIGES Token nur fuer den ersten Seitenaufruf. Es steht
+        # als ?t= in der Chromium-Kommandozeile, und /proc/<pid>/cmdline ist mit
+        # Modus 0444 fuer jede fremde UID lesbar. Wer es dort spaeter abliest,
+        # haelt einen verbrauchten Wert; das eigentliche `token` war nie in argv.
+        self.start_token: str | None = secrets.token_urlsafe(24)
         self.lock = threading.Lock()
         self.abbruch = threading.Event()
         self.aktive = AktiveVerbindung(self.abbruch)
@@ -768,16 +773,41 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                      json.dumps(wert, ensure_ascii=False).encode())
 
     def _erlaubt(self) -> bool:
-        """Token aus Kopf oder Abfrage. Loopback allein reicht nicht: jeder
-        andere Prozess des Nutzers koennte sonst den Dienst fernsteuern."""
-        gegeben = self.headers.get("X-Mimic-Token", "")
-        if not gegeben and "?" in self.path:
-            from urllib.parse import parse_qs, urlsplit
-            gegeben = parse_qs(urlsplit(self.path).query).get("t", [""])[0]
-        if hmac.compare_digest(gegeben, self.sitzung.token):
+        """Token aus dem Kopf. Loopback allein reicht nicht: jeder andere
+        Prozess des Nutzers koennte sonst den Dienst fernsteuern.
+
+        Das Cookie allein reicht ebenfalls nicht -- der Browser haengt es an
+        jede Anfrage, auch an eine, die eine fremde Seite ausloest. Der Kopf
+        `X-Mimic-Token` ist das Gegenstueck: den kann nur Skript vom selben
+        Ursprung setzen. Deshalb traegt das Cookie den Wert, und die Seite
+        spiegelt ihn in den Kopf (Double Submit)."""
+        if hmac.compare_digest(self.headers.get("X-Mimic-Token", ""), self.sitzung.token):
             return True
         self._json(403, {"message": "Token fehlt oder ist falsch"})
         return False
+
+    def _seite_erlaubt(self) -> str | None:
+        """Nur fuer GET / -- gibt das Cookie zurueck, das gesetzt werden muss.
+
+        Zwei Wege hinein: das einmalige Start-Token aus der URL (erster Aufruf,
+        danach verbraucht) oder das bereits gesetzte Cookie (Neuladen mit F5).
+        """
+        from http.cookies import SimpleCookie
+        from urllib.parse import parse_qs, urlsplit
+
+        keks = SimpleCookie(self.headers.get("Cookie", ""))
+        dabei = keks["mimic_token"].value if "mimic_token" in keks else ""
+        if hmac.compare_digest(dabei, self.sitzung.token):
+            return None                      # schon angemeldet, nichts zu setzen
+
+        gegeben = parse_qs(urlsplit(self.path).query).get("t", [""])[0]
+        with self.sitzung.lock:
+            start = self.sitzung.start_token
+            if start is not None and hmac.compare_digest(gegeben, start):
+                self.sitzung.start_token = None      # einmalig, jetzt verbraucht
+                return self.sitzung.token
+        self._json(403, {"message": "Token fehlt oder ist falsch"})
+        return ""
 
     # -- Felder aus dem JSON-Koerper, streng typisiert --
     #
@@ -821,10 +851,17 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         pfad = self.path.split("?", 1)[0]
         if pfad == "/":
-            if not self._erlaubt():
+            setzen = self._seite_erlaubt()
+            if setzen == "":
                 return
+            kopf = {}
+            if setzen:
+                # SameSite=Strict: eine fremde Seite darf den Wert nicht
+                # mitschicken. Kein HttpOnly -- die Seite muss ihn lesen, um ihn
+                # in den X-Mimic-Token-Kopf zu spiegeln.
+                kopf["Set-Cookie"] = f"mimic_token={setzen}; Path=/; SameSite=Strict"
             seite = (Path(__file__).parent / "gui.html").read_bytes()
-            self._senden(200, "text/html; charset=utf-8", seite)
+            self._senden(200, "text/html; charset=utf-8", seite, kopf)
             return
         if not self._erlaubt():
             return
@@ -918,7 +955,7 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self.sitzung.stoppen()
             self._json(200, {"ok": True})
         elif pfad == "/api/warm":
-            self._warm()
+            self._warm(wunsch)
         elif pfad.startswith("/api/record/") or pfad == "/api/voice/delete":
             self._profilpflege(pfad, wunsch)
         elif pfad.startswith("/api/design/"):
@@ -1060,9 +1097,17 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             return
         self._json(200, {"ok": True})
 
-    def _warm(self) -> None:
+    def _warm(self, wunsch: dict) -> None:
+        # Den Modus der Oberflaeche waermen, nicht einen festen. Fest "soar"
+        # erzwang genau den Neustart, den der Warmlauf verhindern soll: das
+        # Fenster spricht per Vorgabe mf, der Worker haette also erst soar
+        # geladen und beim ersten Satz wieder abgeworfen (mode_restart).
+        modus = wunsch.get("mode") or "mf"
+        if modus not in ("mf", "soar"):
+            self._json(400, {"message": "mode muss mf oder soar sein"})
+            return
         try:
-            antwort = request("POST", "/warm", {"mode": "soar"})
+            antwort = request("POST", "/warm", {"mode": modus})
             try:
                 wert = json.loads(antwort.read() or b"{}")
                 status = antwort.status
@@ -1136,7 +1181,7 @@ def main() -> int:
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_klasse(sitzung))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, name="mimic-gui-server", daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/?t={sitzung.token}"
+    url = f"http://127.0.0.1:{server.server_address[1]}/?t={sitzung.start_token}"
     try:
         return _fenster(url)
     finally:
