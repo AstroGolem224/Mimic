@@ -1,0 +1,80 @@
+{
+  "_hinweis": [
+    "VORLAGE, KEINE KOPIERVORLAGE. Diese Datei gehoert an keine Stelle, an der",
+    "Mimic sie liest -- ein Stimmprofil ist ein Verzeichnis unter",
+    "~/.local/share/mimic/voices/<name>/ mit ref.wav, ref.txt und optional",
+    "settings.json. Fehlt die settings.json, gelten die Vorgaben unten. Wer",
+    "diese Datei unveraendert dorthin kopiert, hat ein Profil, das nichts tut:",
+    "gelesen werden nur die bekannten Schluessel, alles mit Unterstrich davor",
+    "faellt durch, und die Werte hier SIND die Vorgaben. Einzelne Zeilen",
+    "herauskopieren, nicht die Datei.",
+    "",
+    "Alles hier gilt DAUERHAFT fuer diese Stimme. Die Regler in der",
+    "Transportleiste und die Schalter von `mimic say` kommen oben DRAUF, sie",
+    "ersetzen den Profilwert nicht: Profil -3 Halbtoene plus Regler +1 ergibt",
+    "-2. So bleibt eine fest eingestellte Stimme nachstellbar."
+  ],
+
+  "language": "de",
+  "_language": "de oder en. Die Sprache der REFERENZ, nicht die des Textes.",
+
+  "speaker_scale": 1.5,
+  "_speaker_scale": [
+    "0.5 bis 3.0. Wie stark das Modell der Referenz folgt. 1.5 ist der",
+    "gemessene Betriebspunkt; hoeher klingt aehnlicher und bruechiger."
+  ],
+
+  "effekt": "",
+  "_effekt": [
+    "Leer oder ein Name aus effekte.EFFEKTE. Klangfarbe, keine Tonhoehe.",
+    "Freie Filterketten gibt es bewusst nicht: das waere eine Einladung, dem",
+    "Worker beliebige Rechenlast unterzuschieben."
+  ],
+
+  "tonhoehe": 0.0,
+  "_tonhoehe": [
+    "-12 bis 12 Halbtoene. Verschiebt die Stimmlage, die Dauer bleibt.",
+    "Ueber eine Oktave hinaus bleibt von der Referenz nichts uebrig."
+  ],
+
+  "raster": 0.0,
+  "_raster": [
+    "0 aus bis 1 ganz. Zwingt jede Silbe auf den naechsten Halbton und haelt",
+    "sie dort -- die Satzmelodie wird zu Stufen, die Modulation innerhalb der",
+    "Silbe verschwindet. Das ist der Kern des GLaDOS-Klangs: laut Valves",
+    "eigener Anleitung wurde Ellen McLains Aufnahme 'pitch constrained, pitch",
+    "modulation suppressed, and the formant moved up'. Kein Vocoder."
+  ],
+
+  "streuung": 0.0,
+  "_streuung": [
+    "0 bis 4 Halbtoene. Um so viel darf eine erkannte Silbe zufaellig daneben",
+    "liegen. Gewuerfelt wird je Silbe, nicht nach der Uhr -- ein Wackeln",
+    "mitten im gehaltenen Vokal klingt nach Tonband, nicht nach Maschine.",
+    "Derselbe Text klingt zweimal gleich, der Zufall ist wiederholbar."
+  ],
+
+  "formant": 0.0,
+  "_formant": [
+    "-12 bis 12 Halbtoene. Verschiebt die Klangfarbe, ohne die Tonhoehe",
+    "mitzunehmen: nach oben klingt es nach einem kleineren Kopf, also",
+    "blechern. Blosses Umabtasten kann das nicht, es zieht beides gemeinsam."
+  ],
+
+  "_beispiele": {
+    "_hinweis": [
+      "Zwei erprobte Stimmen auf der Referenz eines ruhigen maennlichen",
+      "Sprechers. Die INHALTE dieser Objekte sind die settings.json, nicht",
+      "das Objekt selbst. ref.wav und ref.txt bringt jeder selbst mit -- eine",
+      "Stimmaufnahme ist die Stimme eines Menschen und gehoert niemandem",
+      "sonst, auch nicht in ein Repository."
+    ],
+    "glados_callum": {
+      "tonhoehe": 2.0, "raster": 1.0, "streuung": 1.0, "formant": 3.0
+    },
+    "glados_callum_ht1": {
+      "_hinweis": "dieselben Werte, eine Stimmlage tiefer",
+      "tonhoehe": 1.0, "raster": 1.0, "streuung": 1.0, "formant": 3.0
+    }
+  }
+}

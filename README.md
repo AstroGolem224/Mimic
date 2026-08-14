@@ -217,6 +217,33 @@ install -Dm755 systemd/mimic.desktop ~/.local/share/applications/mimic.desktop
 ln -sfn ~/.local/share/applications/mimic.desktop "$(xdg-user-dir DESKTOP)/mimic.desktop"
 ```
 
+## Stimmeinstellungen
+
+Ein Stimmprofil ist ein Verzeichnis unter `~/.local/share/mimic/voices/<name>/`
+mit `ref.wav`, `ref.txt` und optional `settings.json`. Was dort steht, gilt
+dauerhaft für diese Stimme: Sprache und `speaker_scale`, eine Klangfarbe aus
+`effekte.EFFEKTE` und die vier Klangregler `tonhoehe`, `raster`, `streuung`
+und `formant`. [settings.example.json](settings.example.json) erklärt jeden
+Schlüssel samt Grenzen.
+
+Die Regler in der Transportleiste und die Schalter von `mimic say` kommen auf
+den Profilwert **drauf**, sie ersetzen ihn nicht — Profil −3 Halbtöne plus
+Regler +1 ergibt −2. Eine fest eingestellte Stimme bleibt so nachstellbar.
+
+Der GLaDOS-Klang steckt nicht in einem Effekt, sondern im Raster. Laut Valves
+eigener [Anleitung](https://developer.valvesoftware.com/wiki/Creating_a_Portal_AI_Voice)
+wurde Ellen McLains Aufnahme *pitch constrained, pitch modulation suppressed,
+and the formant moved up* — Tonhöhenkorrektur, kein Vocoder:
+
+```json
+{"tonhoehe": 2.0, "raster": 1.0, "streuung": 1.0, "formant": 3.0}
+```
+
+`raster` zwingt jede Silbe auf den nächsten Halbton und hält sie dort, bis die
+Stimme weit genug wegspringt; `streuung` setzt einzelne Silben zufällig daneben
+— die Handarbeit der Vorlage; `formant` hebt die Klangfarbe, ohne die Tonhöhe
+mitzunehmen. Zum Ausprobieren ohne Profil: `mimic say "…" --glados`.
+
 ## Aussprache
 
 `~/.local/share/mimic/pronunciation.json` ersetzt Wörter **vor** der Synthese;
