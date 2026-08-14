@@ -146,9 +146,11 @@ class EntwurfTests(unittest.TestCase):
     def test_motorskripte_ziehen_kein_mimic(self):
         """Die Motorskripte laufen in fremden Umgebungen -- ein Import aus dem
         Paket waere dort ein ModuleNotFoundError, und zwar erst zur Laufzeit."""
-        from mimic.entwurf import MOTOREN, skript_pfad
+        from mimic.entwurf import EINDEUTSCHER, MOTOREN, skript_pfad
 
-        for name in MOTOREN:
+        # Der Eindeutscher steht nicht in MOTOREN, laeuft aber in derselben
+        # Fremdumgebung und faellt sonst durch dieses Netz.
+        for name in (*MOTOREN, EINDEUTSCHER.name):
             pfad = skript_pfad(name)
             self.assertTrue(pfad.is_file(), f"{pfad} fehlt")
             for zeile in pfad.read_text().splitlines():
@@ -165,6 +167,15 @@ class EntwurfTests(unittest.TestCase):
         self.assertEqual(len(pfade), len(MOTOREN), "zwei Motoren teilen sich eine venv")
         skripte = {MOTOREN[name].skript for name in MOTOREN}
         self.assertEqual(len(skripte), len(MOTOREN), "zwei Motoren teilen sich ein Skript")
+
+    def test_eindeutscher_teilt_sich_nichts_mit_den_motoren(self):
+        """Eigene venv und eigenes Skript: transformers 5.0.0 vertraegt sich
+        weder mit qwen-tts (<= 4.57.6) noch mit voxcpm."""
+        from mimic.entwurf import EINDEUTSCHER, MOTOREN, venv_pfad
+
+        self.assertNotIn(EINDEUTSCHER.name, MOTOREN, "der Eindeutscher ist kein Entwurfsmotor")
+        self.assertNotIn(venv_pfad(EINDEUTSCHER.name), {venv_pfad(n) for n in MOTOREN})
+        self.assertNotIn(EINDEUTSCHER.skript, {MOTOREN[n].skript for n in MOTOREN})
 
     def test_unbekannter_motor_wird_abgelehnt(self):
         from mimic.entwurf import Entwurf

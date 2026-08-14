@@ -14,6 +14,7 @@ import textwrap
 import wave
 from pathlib import Path
 
+from .effekte import GLADOS
 from .entwurf import MOTOREN, VORGABE_MOTOR
 from .frontend import UnixHTTPConnection, frontend_socket_path
 from .protocol import read_frame
@@ -73,7 +74,12 @@ def say(args: argparse.Namespace) -> int:
         print("warte auf den Dienst (Warteschlange oder Modellwechsel koennen "
               "eine Minute kosten)...", file=sys.stderr, flush=True)
     try:
-        response = request("POST", "/speak", {"text": args.text, "voice": args.voice, "mode": args.mode})
+        klang = {"tonhoehe": args.tonhoehe, "streuung": args.streuung,
+                 "raster": args.raster, "formant": args.formant}
+        if args.glados:
+            klang = {**klang, **GLADOS}
+        response = request("POST", "/speak", {"text": args.text, "voice": args.voice,
+                                              "mode": args.mode, "tempo": args.tempo, **klang})
     except OSError as exc:
         print(f"worker_unavailable: {exc}", file=sys.stderr)
         return 1
@@ -426,6 +432,68 @@ def design(args: argparse.Namespace) -> int:
     return 0
 
 
+def eindeutschen(args: argparse.Namespace) -> int:
+    """Nimmt einer fremden Aufnahme den Akzent und legt sie als Profil an.
+
+    Der Weg, den vier Stimmen (ether, geth, forge zweimal) am 2026-08-12 und
+    2026-08-14 von Hand gegangen sind: eine gekaufte Stimme spricht Deutsch mit
+    fremdem Einschlag, dots.tts kann das nicht abstellen -- es hat keine
+    Sprachmarke und klont, was es hoert. MOSS hat eine, behaelt die Stimmfarbe
+    und spricht den Text deutsch nach. Erst dessen Ausgabe wird ref.wav.
+    """
+    from .entwurf import STANDARDTEXT, eindeutschen as moss_eindeutschen
+
+    quelle = Path(args.datei).expanduser()
+    if not quelle.is_file():
+        print(f"invalid_voice_profile: {quelle} gibt es nicht", file=sys.stderr)
+        return 1
+    text = args.text or STANDARDTEXT
+
+    with tempfile.TemporaryDirectory(prefix="mimic-eindeutsch-") as tmp:
+        ziel = Path(tmp) / "de.wav"
+        bester: tuple[float, Path, float] | None = None
+        # Die Dauer steuert das Modell nicht, sie haengt am Sprechtempo der
+        # Vorlage: derselbe Text kam als 8.0 s und als 23.0 s zurueck. dots.tts
+        # klont am besten aus 8 bis 15 s; aus 23 s wurde Gebrumm. Also wird
+        # geworfen, bis es passt.
+        for versuch in range(1, args.wuerfe + 1):
+            try:
+                dauer = moss_eindeutschen(quelle, ziel, text)
+            except RuntimeError as fehler:
+                print(f"eindeutschen: {fehler}", file=sys.stderr)
+                return 1
+            if 8 <= dauer <= 15:
+                bester = None
+                break
+            abstand = min(abs(dauer - 8), abs(dauer - 15))
+            if bester is None or abstand < bester[0]:
+                behalten = Path(tmp) / "bester.wav"
+                shutil.copyfile(ziel, behalten)
+                bester = (abstand, behalten, dauer)
+            if versuch < args.wuerfe:
+                print(f"  {dauer} s liegt ausserhalb 8-15 s, neuer Wurf "
+                      f"({versuch} von {args.wuerfe})")
+        if bester is not None:
+            _, behalten, dauer = bester
+            shutil.copyfile(behalten, ziel)
+            print(f"  kein Wurf im erprobten Bereich. Bester: {dauer} s -- "
+                  "dots.tts kann daraus Gebrumm machen.")
+
+        try:
+            dauer, hinweis = profil_aus_datei(args.voice, ziel, text, args.force)
+        except VoiceError as exc:
+            nachsatz = " -- --force zum Ueberschreiben" if "existiert schon" in exc.message else ""
+            print(f"{exc.reason}: {exc.message}{nachsatz}", file=sys.stderr)
+            return 1
+
+    if hinweis:
+        print(f"  Hinweis: {hinweis}")
+    profil = default_voices_dir() / args.voice
+    print(f"  {dauer:.1f} s aus {quelle.name}\n  {profil}/ref.wav\n  {profil}/ref.txt\n"
+          f"  Probe:  mimic say \"Test\" --voice {args.voice}")
+    return 0
+
+
 def record(args: argparse.Namespace) -> int:
     from .charaktere import CHARAKTERE
 
@@ -629,6 +697,18 @@ def parser() -> argparse.ArgumentParser:
     say_parser.add_argument("--voice", default="forge")
     say_parser.add_argument("--mode", choices=("mf", "soar"), default="soar")
     say_parser.add_argument("-o", "--output")
+    say_parser.add_argument("--tempo", type=float, default=1.0,
+                            help="Sprechgeschwindigkeit, 1.0 unveraendert (0.5 bis 2.0)")
+    say_parser.add_argument("--tonhoehe", type=float, default=0.0,
+                            help="Tonhoehe in Halbtoenen, 0 unveraendert (-12 bis 12)")
+    say_parser.add_argument("--streuung", type=float, default=0.0,
+                            help="Halbtoene, um die eine Silbe zufaellig daneben liegt")
+    say_parser.add_argument("--raster", type=float, default=0.0,
+                            help="Tonhoehe aufs Halbtonraster zwingen, 0 aus bis 1 ganz")
+    say_parser.add_argument("--formant", type=float, default=0.0,
+                            help="Formanten in Halbtoenen verschieben, ohne die Tonhoehe")
+    say_parser.add_argument("--glados", action="store_true",
+                            help="Voreinstellung: raster 1, streuung 1, formant +2")
     say_parser.set_defaults(function=say)
     status_parser = commands.add_parser("status")
     status_parser.set_defaults(function=status)
@@ -666,6 +746,15 @@ def parser() -> argparse.ArgumentParser:
     design_parser.add_argument("--anzahl", type=int, default=3)
     design_parser.add_argument("--force", action="store_true")
     design_parser.set_defaults(function=design)
+    de_parser = commands.add_parser("eindeutschen")
+    de_parser.add_argument("voice", help="Name des Profils, das entstehen soll")
+    de_parser.add_argument("datei", help="fremde Aufnahme, beliebiges Format")
+    de_parser.add_argument("--text", default=None,
+                           help="was die Stimme deutsch sagen soll; wird woertlich das ref.txt")
+    de_parser.add_argument("--wuerfe", type=int, default=3,
+                           help="Versuche, die 8-15-Sekunden-Marke zu treffen")
+    de_parser.add_argument("--force", action="store_true")
+    de_parser.set_defaults(function=eindeutschen)
     return result
 
 

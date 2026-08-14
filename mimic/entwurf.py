@@ -77,6 +77,21 @@ MOTOREN: dict[str, Motor] = {
 }
 VORGABE_MOTOR = "voxcpm"
 
+# Kein Entwurfsmotor, sondern der Gegendienst: eine **vorhandene** Stimme
+# klonen und Deutsch sprechen lassen. Steht deshalb neben MOTOREN und nicht
+# darin -- die Oberflaeche listet MOTOREN als Auswahl zum Entwerfen, und dort
+# hat das hier nichts zu suchen. Umgebung, venv-Bau und Skriptpfad teilt es
+# sich mit ihnen, weil der Mechanismus derselbe ist.
+#
+# transformers 5.0.0 exakt: mit 5.15.0 scheitert das Laden des
+# Audio-Tokenizers an einer config.json, die nur eine auto_map traegt und kein
+# `model_type`. Damit ist es mit qwen (<= 4.57.6) unvereinbar -- eigene venv.
+EINDEUTSCHER = Motor(
+    name="moss", anzeige="MOSS-TTS 4B", skript="eindeutschen_moss.py", rate=48_000,
+    hinweis="nimmt einer fremden Aufnahme den Akzent",
+    pakete=["transformers==5.0.0", "accelerate", "soundfile", "librosa",
+            "huggingface_hub"])
+
 # Deutsch, weil beide Motoren Deutsch koennen und der Probesatz woertlich das
 # ref.txt des Profils wird. Rund zehn Sekunden, mit Aussage, Frage und Ausruf
 # -- dieselbe Bauart wie die Referenztexte in charaktere.py und aus demselben
@@ -101,9 +116,13 @@ def datenverzeichnis() -> Path:
 
 
 def motor_holen(name: str | None) -> Motor:
-    motor = MOTOREN.get(name or VORGABE_MOTOR)
+    # Der Eindeutscher ist ueber denselben Namensraum erreichbar, damit
+    # `mimic setup --entwurf moss`, venv_pfad und skript_pfad ohne Sonderweg
+    # funktionieren. In der Auswahl zum Entwerfen taucht er trotzdem nicht auf.
+    alle = {**MOTOREN, EINDEUTSCHER.name: EINDEUTSCHER}
+    motor = alle.get(name or VORGABE_MOTOR)
     if motor is None:
-        raise ValueError(f"unbekannter Motor {name!r} -- {', '.join(sorted(MOTOREN))}")
+        raise ValueError(f"unbekannter Motor {name!r} -- {', '.join(sorted(alle))}")
     return motor
 
 
@@ -151,6 +170,58 @@ def umgebung_bauen(motor: str = VORGABE_MOTOR, melden=print) -> None:
 
 def skript_pfad(motor: str = VORGABE_MOTOR) -> Path:
     return Path(__file__).resolve().parent / motor_holen(motor).skript
+
+
+def eindeutschen(quelle: Path, ziel: Path, text: str, melden=print) -> float:
+    """Laesst MOSS die Stimme aus `quelle` den Text auf Deutsch sprechen.
+
+    Gibt die Dauer der Ausgabe in Sekunden zurueck. Blockiert -- anders als
+    `Entwurf` gibt es genau eine Ausgabe und niemand will danebenstehen und
+    zusehen.
+
+    stderr wandert in stdout, aus demselben Grund wie dort: eine zweite,
+    unbediente Pipe laeuft nach 64 KB voll und der Prozess blockiert in
+    write(). Gemessen am 2026-08-11, sichtbar als wchan=anon_pipe_write.
+    """
+    if not umgebung_da(EINDEUTSCHER.name):
+        raise RuntimeError(f"{EINDEUTSCHER.anzeige} fehlt -- einmal "
+                           f"`mimic setup --entwurf {EINDEUTSCHER.name}`")
+    auftrag = {"quelle": str(quelle), "text": " ".join(text.split()), "aus": str(ziel)}
+    prozess = subprocess.Popen(
+        [str(python_pfad(EINDEUTSCHER.name)), str(skript_pfad(EINDEUTSCHER.name)),
+         json.dumps(auftrag)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    geplapper: list[str] = []
+    fehler = ""
+    dauer = 0.0
+    for zeile in prozess.stdout:
+        try:
+            ereignis = json.loads(zeile)
+        except json.JSONDecodeError:
+            # Fremdausgabe (tqdm, Warnungen) ist kein Ereignis -- aber die
+            # letzten Zeilen davon sind der einzige Hinweis, wenn das Skript
+            # stirbt, bevor es einen Fehler melden kann.
+            if zeile.strip():
+                geplapper.append(zeile.strip())
+                del geplapper[:-5]
+            continue
+        art = ereignis.get("kind")
+        if art == "laden":
+            melden(f"  Modell laedt ({ereignis.get('geraet')}) ...")
+        elif art == "fertig":
+            dauer = float(ereignis.get("dauer", 0.0))
+            melden(f"  {dauer} s, {ereignis.get('rate')} Hz")
+        elif art == "fehler":
+            fehler = str(ereignis.get("grund", ""))
+    prozess.wait()
+    try:
+        prozess.stdout.close()
+    except OSError:
+        pass
+    if prozess.returncode != 0 or not ziel.is_file():
+        raise RuntimeError(fehler or (" / ".join(geplapper))[-300:]
+                           or f"Abbruch mit Code {prozess.returncode}")
+    return dauer
 
 
 class Entwurf:
