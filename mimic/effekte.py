@@ -20,6 +20,8 @@ from __future__ import annotations
 import array
 import math
 
+import numpy as np
+
 # Namen, die in der settings.json eines Profils stehen duerfen. Freie
 # Filterketten waeren eine Einladung, dem Worker beliebige Rechenlast
 # unterzuschieben -- hier gilt: bekannt oder abgelehnt.
@@ -55,80 +57,101 @@ class Effekt:
         self.tiefpass_zustand = 0.0
         self.rausch_zustand = 12345         # eigener LCG: deterministisch und billig
         laengste = max(ms for ms, _ in _KOLLEKTIV_STIMMEN) if name == "kollektiv" else 0.0
-        self.verzoegerung = array.array("h", bytes(int(rate * laengste / 1000) * 2 + 2))
-        self.schreibkopf = 0
+        # Verlauf der EINGANGSproben statt Ringpuffer mit Schreibkopf: die
+        # Kopien lesen nur Vergangenes, nie Ausgegebenes -- damit ist das ein
+        # FIR-Filter und in einem Rutsch rechenbar. Ein Ringpuffer zwingt zur
+        # Schleife, weil der Index je Probe weiterwandert.
+        self.verlauf = np.zeros(int(rate * laengste / 1000) + 1, dtype=np.float64)
 
     def verarbeite(self, pcm: bytes) -> bytes:
         if not pcm:
             return pcm
-        proben = array.array("h")
-        proben.frombytes(pcm)
+        proben = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
         if self.name == "roboter":
-            self._tremolo(proben, _TREMOLO_HZ, _TREMOLO_TIEFE)
+            proben = self._tremolo(proben, _TREMOLO_HZ, _TREMOLO_TIEFE)
         elif self.name == "kollektiv":
-            self._kollektiv(proben)
-            self._tremolo(proben, _KOLLEKTIV_TREMOLO_HZ, _KOLLEKTIV_TIEFE)
+            # Zwischen den Stufen auf int16 begrenzen, nicht erst am Ende. Die
+            # alte Kette tat das Probe fuer Probe, und bei uebersteuertem
+            # Material ist der Unterschied hoerbar: durchgehend in Gleitkomma
+            # gerechnet wich das Ergebnis um bis zu 2953 LSB ab.
+            proben = _begrenze_feld(self._kollektiv(proben)).astype(np.float64)
+            proben = self._tremolo(proben, _KOLLEKTIV_TREMOLO_HZ, _KOLLEKTIV_TIEFE)
         elif self.name == "tv":
-            self._tv(proben)
-        return proben.tobytes()
+            return self._tv_bytes(proben)
+        return _begrenze_feld(proben).tobytes()
 
     # -- Bausteine ---------------------------------------------------------
 
-    def _tremolo(self, proben: array.array, hertz: float, tiefe: float) -> None:
+    def _tremolo(self, proben: np.ndarray, hertz: float, tiefe: float) -> np.ndarray:
         """Amplitudenmodulation. Bei 55 Hz hoert man keine Lautstaerkeschwankung
-        mehr, sondern eine metallische Beimischung -- der Rechnerklang."""
-        schritt = hertz / self.rate
-        phase = self.phase
-        for i, wert in enumerate(proben):
-            faktor = 1.0 - tiefe * (0.5 - 0.5 * math.cos(2.0 * math.pi * phase))
-            proben[i] = _begrenze(wert * faktor)
-            phase += schritt
-            if phase >= 1.0:
-                phase -= 1.0
-        self.phase = phase
+        mehr, sondern eine metallische Beimischung -- der Rechnerklang.
 
-    def _kollektiv(self, proben: array.array) -> None:
+        Die Phase wird als Feld gerechnet statt Probe fuer Probe aufaddiert. Der
+        Rest modulo 1 haelt sie im selben Bereich wie die alte Schleife -- ohne
+        ihn liefe das Argument des Kosinus ueber eine Minute Ton in Bereiche, wo
+        die Gleitkommaaufloesung merklich groeber ist.
+        """
+        schritt = hertz / self.rate
+        phase = (self.phase + np.arange(len(proben), dtype=np.float64) * schritt) % 1.0
+        faktor = 1.0 - tiefe * (0.5 - 0.5 * np.cos(2.0 * np.pi * phase))
+        self.phase = float((self.phase + len(proben) * schritt) % 1.0)
+        return proben * faktor
+
+    def _kollektiv(self, proben: np.ndarray) -> np.ndarray:
         """Zwei verstimmte Kopien hinter dem Original: viele sprechen dasselbe.
 
         Die Verzoegerungen liegen unter 30 ms, also unter der Echoschwelle --
         wahrgenommen wird nicht "nochmal", sondern "mehrere".
         """
-        puffer = self.verzoegerung
-        laenge = len(puffer)
-        versaetze = [(int(self.rate * ms / 1000), pegel) for ms, pegel in _KOLLEKTIV_STIMMEN]
-        kopf = self.schreibkopf
-        for i, wert in enumerate(proben):
-            summe = float(wert)
-            for versatz, pegel in versaetze:
-                summe += puffer[(kopf - versatz) % laenge] * pegel
-            puffer[kopf] = wert
-            kopf = (kopf + 1) % laenge
-            proben[i] = _begrenze(summe * 0.7)      # Platz fuer die Kopien
-        self.schreibkopf = kopf
+        vorrat = len(self.verlauf)
+        alles = np.concatenate((self.verlauf, proben))
+        summe = proben.copy()
+        for ms, pegel in _KOLLEKTIV_STIMMEN:
+            versatz = int(self.rate * ms / 1000)
+            summe += alles[vorrat - versatz:vorrat - versatz + len(proben)] * pegel
+        self.verlauf = alles[-vorrat:]
+        return summe * 0.7                          # Platz fuer die Kopien
 
-    def _tv(self, proben: array.array) -> None:
-        """Schmales Band, weiche Saettigung, Grundrauschen: Lautsprecher von 1985."""
+    def _tv_bytes(self, proben: np.ndarray) -> bytes:
+        """Schmales Band, weiche Saettigung, Grundrauschen: Lautsprecher von 1985.
+
+        ponytail: die beiden Einpolfilter bleiben eine Python-Schleife. Ein IIR
+        haengt Probe fuer Probe an seinem eigenen letzten Ausgang, das laesst
+        sich mit numpy allein nicht ausrollen -- dafuer braeuchte es
+        scipy.signal.lfilter, und scipy ist keine Abhaengigkeit dieses Projekts
+        (numpy schon). Saettigung, Rauschen und Begrenzung liegen ausserhalb der
+        Rueckkopplung und werden deshalb als Feld gerechnet. Wenn der TV-Effekt
+        je im heissen Pfad stoert: scipy dazunehmen und die Schleife durch zwei
+        lfilter-Aufrufe ersetzen.
+        """
         hoch = math.exp(-2.0 * math.pi * _TV_HOCHPASS_HZ / self.rate)
         tief = math.exp(-2.0 * math.pi * _TV_TIEFPASS_HZ / self.rate)
-        for i, wert in enumerate(proben):
+        # Ueber eine Python-Liste laufen, nicht ueber das numpy-Feld: jedes
+        # proben[i] auf einem ndarray baut ein Skalarobjekt und war damit
+        # langsamer als die alte array.array-Schleife (18.6 statt 15.1 ms).
+        gefiltert = []
+        hochpass, tiefpass = self.hochpass_zustand, self.tiefpass_zustand
+        zustand = self.rausch_zustand
+        rauschen = []
+        for wert in proben.tolist():
             # Einpoliger Tiefpass; sein Ausgang abgezogen ergibt den Hochpass.
-            self.hochpass_zustand = wert * (1.0 - hoch) + self.hochpass_zustand * hoch
-            signal = wert - self.hochpass_zustand
-            self.tiefpass_zustand = signal * (1.0 - tief) + self.tiefpass_zustand * tief
-            signal = self.tiefpass_zustand
-            signal = math.tanh(signal / 32768.0 * _TV_SAETTIGUNG) * 32768.0 / _TV_SAETTIGUNG
-            self.rausch_zustand = (self.rausch_zustand * 1103515245 + 12345) & 0x7FFFFFFF
-            signal += (self.rausch_zustand / 0x7FFFFFFF - 0.5) * _TV_RAUSCHEN * 32768.0
-            proben[i] = _begrenze(signal * 1.35)    # das Band nimmt Pegel, hier zurueck
-        return None
+            hochpass = wert * (1.0 - hoch) + hochpass * hoch
+            tiefpass = (wert - hochpass) * (1.0 - tief) + tiefpass * tief
+            gefiltert.append(tiefpass)
+            zustand = (zustand * 1103515245 + 12345) & 0x7FFFFFFF
+            rauschen.append(zustand)
+        self.hochpass_zustand, self.tiefpass_zustand = hochpass, tiefpass
+        self.rausch_zustand = zustand
+
+        signal = np.tanh(np.array(gefiltert) / 32768.0 * _TV_SAETTIGUNG) * 32768.0 / _TV_SAETTIGUNG
+        signal += (np.array(rauschen, dtype=np.float64) / 0x7FFFFFFF - 0.5) * _TV_RAUSCHEN * 32768.0
+        return _begrenze_feld(signal * 1.35).tobytes()  # das Band nimmt Pegel, hier zurueck
 
 
-def _begrenze(wert: float) -> int:
-    if wert > 32767.0:
-        return 32767
-    if wert < -32768.0:
-        return -32768
-    return int(wert)
+def _begrenze_feld(werte: np.ndarray) -> np.ndarray:
+    """Wie die alte Probe-fuer-Probe-Begrenzung: erst kappen, dann zur Null hin
+    abschneiden. astype(int16) schneidet ab wie int(), nicht wie round()."""
+    return np.clip(werte, -32768.0, 32767.0).astype("<i2")
 
 
 def demo() -> None:

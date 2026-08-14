@@ -1016,7 +1016,17 @@ async function tick(neuLesen){
     if(auftrag.download){
       if(zielGriff){
         ablegen().then(name => setzeStatus(`gespeichert: ${name}`, "gut"))
-                 .catch(fehler => setzeStatus("Schreiben fehlgeschlagen: " + fehler, "fehler"));
+                 .catch(fehler => {
+                   // Nicht in der Sackgasse enden: das download-Signal kommt nur
+                   // einmal, die fertigen Daten liegen aber weiter in
+                   // sitzung.export. Ohne diesen Ausweichweg waeren Minuten
+                   // GPU-Zeit verloren, weil der gewaehlte Ort nicht
+                   // beschreibbar war (Platte voll, Rechte).
+                   zielGriff = null;
+                   setzeStatus("Schreiben fehlgeschlagen (" + fehler +
+                               ") — geht in den Download-Ordner", "warn");
+                   location.href = "/api/export";
+                 });
       }else{
         location.href = "/api/export?t=" + encodeURIComponent(T);
       }
