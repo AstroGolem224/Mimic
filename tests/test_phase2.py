@@ -261,14 +261,34 @@ class WorkerDefectTests(unittest.TestCase):
         audio = [payload for kind, payload in events if kind == "A"]
         self.assertEqual(quiet + loud, audio[0])
 
-    def test_zwei_stumme_takes_senden_keinen_audio_rahmen(self):
+    def test_durchgehend_stumme_takes_senden_keinen_audio_rahmen(self):
         from mimic import worker
 
         quiet = pcm(worker.STUMM_PEAK)
-        _engine, events = run_engine(StubRuntime([[quiet], [quiet]]), {})
+        _engine, events = run_engine(
+            StubRuntime([[quiet]] * worker.MAX_VERSUCHE), {})
         self.assertEqual(["H", "E"], [kind for kind, _ in events])
         end = json.loads(events[-1][1])
         self.assertEqual("silent_audio", end["reason"])
+
+    def test_stummes_stueck_beendet_die_restliche_aeusserung_nicht(self):
+        # Der Fall aus dem Journal vom 2026-08-13: ein Stueck kam stumm, und
+        # frueher fiel damit der ganze Rest des Textes weg.
+        from mimic import worker
+
+        quiet = pcm(worker.STUMM_PEAK)
+        loud = pcm(worker.STUMM_PEAK + 1)
+        takes = [[loud]] + [[quiet]] * worker.MAX_VERSUCHE + [[loud]]
+        _engine, events = run_engine(
+            StubRuntime(takes),
+            {"text": "Der Anfang bleibt erhalten. Die Mitte kommt stumm zurueck. "
+                     "Das Ende gehoert trotzdem gesprochen."})
+        end = json.loads(events[-1][1])
+        self.assertEqual("ok", end["status"])
+        self.assertEqual(1, end["uebersprungen"])
+        gesprochen = [payload for kind, payload in events
+                      if kind == "A" and payload.strip(b"\x00")]
+        self.assertEqual([loud, loud], gesprochen)
 
     def test_moduswechsel_beendet_worker_ohne_runtime_zu_raeumen(self):
         from mimic import worker

@@ -49,7 +49,11 @@ SOFT_LIMIT = 0.75      # ab hier rollt der weiche Anschlag ein
 # und -35.1. -25 dBFS liegt mit Abstand dazwischen. RMS taugt dafuer nicht:
 # dort lagen die Faelle mit -32.3 gegen -36.9 zu dicht beieinander.
 STUMM_PEAK = int(32768 * 10 ** (-25.0 / 20))
-MAX_VERSUCHE = 2
+# 4 statt 2: bei einem langen Text sind es ~80 Zeichen je Stueck, und ein
+# einziges Stueck, das zweimal stumm kam, hat frueher die ganze Aeusserung
+# beendet (Journal 2026-08-13: 728 Zeichen angefordert, 15 s gesprochen).
+# Jeder weitere Versuch kostet nur im seltenen Fall Zeit.
+MAX_VERSUCHE = 4
 
 
 class WorkerRefusal(Exception):
@@ -302,6 +306,7 @@ class Engine:
         queue_wait_ms = (started - job.submitted) * 1000
         samples = 0
         wiederholungen = 0
+        uebersprungen = 0
         first_audio_at: float | None = None
         # Diagnose zum TTFA-Schwanz: erster Chunk ueberhaupt gegen ersten hoerbaren.
         # Ohne die beiden Zahlen ist "Modell rechnet langsam" nicht von "Modell
@@ -414,8 +419,16 @@ class Engine:
                         break
                     wiederholungen += 1
                 else:
-                    raise WorkerRefusal("silent_audio", "zwei stumme Takes erzeugt")
-            self.emit(job, "E", json.dumps({"status": "ok", "samples": samples},
+                    # Ein Stueck aufgeben heisst nicht die Aeusserung aufgeben:
+                    # frueher endete der Text hier mitten im Satz, und alles
+                    # Folgende fiel weg. Ein fehlendes Teilstueck ist der
+                    # kleinere Schaden -- es steht als uebersprungen im Log.
+                    uebersprungen += 1
+            if not samples:
+                raise WorkerRefusal("silent_audio",
+                                    f"{MAX_VERSUCHE} stumme Takes je Stueck erzeugt")
+            self.emit(job, "E", json.dumps({"status": "ok", "samples": samples,
+                                            "uebersprungen": uebersprungen},
                                             separators=(",", ":")).encode())
             outcome, reason = "ok", ""
         except FatalWorkerError as exc:
@@ -463,7 +476,7 @@ class Engine:
                       "audio_s": round(audio_s, 3), "rtf": round(elapsed / audio_s, 4) if audio_s else 0,
                       "outcome": outcome, "queue_wait_ms": round(queue_wait_ms, 1),
                       "vram_peak_mib": peak_vram_mib(), "rss_peak_mib": round(rss_mib, 1),
-                      "stumme_takes": wiederholungen,
+                      "stumme_takes": wiederholungen, "uebersprungen": uebersprungen,
                       "erstchunk_ms": (round((first_chunk_at - started) * 1000, 1)
                                        if first_chunk_at else 0),
                       "praefix_chunks": praefix_chunks}

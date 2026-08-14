@@ -494,8 +494,13 @@ class AktiveVerbindung:
 
 
 def sprich(einsatz: Einsatz, mode: str, senke, abbruch: threading.Event | None = None,
-           aktive: AktiveVerbindung | None = None) -> None:
-    """Holt einen Einsatz vom Dienst und schiebt jeden Block sofort in die Senke."""
+           aktive: AktiveVerbindung | None = None) -> int:
+    """Holt einen Einsatz vom Dienst und schiebt jeden Block sofort in die Senke.
+
+    Rueckgabe: wie viele Teilstuecke der Worker stumm aufgeben musste. Sie
+    fehlen im Ton, ohne dass man es hoert -- deshalb gehoert die Zahl an die
+    Oberflaeche und nicht nur ins Worker-Log.
+    """
     body = {"text": einsatz.text, "voice": einsatz.stimme, "mode": mode}
     antwort = (aktive.anfrage(body) if aktive is not None
                else request("POST", "/speak", body))
@@ -520,7 +525,7 @@ def sprich(einsatz: Einsatz, mode: str, senke, abbruch: threading.Event | None =
                 ende = json.loads(nutzlast)
                 if ende.get("status") != "ok":
                     raise RuntimeError(f"{ende.get('reason')}: {ende.get('message')}")
-                return
+                return int(ende.get("uebersprungen") or 0)
     finally:
         if aktive is not None:
             aktive.schliessen()
@@ -692,12 +697,15 @@ class Sitzung:
                 self.melden(running=False, ok=False,
                             message="unbekannte Stimme: " + ", ".join(sorted(unbekannt)))
                 return
+            uebersprungen = 0
             for nummer, einsatz in enumerate(einsaetze, 1):
                 self.melden(index=nummer, total=len(einsaetze), voice=einsatz.stimme,
                             message=f"spricht Einsatz {nummer} von {len(einsaetze)}")
-                sprich(einsatz, modus, gemessen, self.abbruch, self.aktive)
+                uebersprungen += sprich(einsatz, modus, gemessen, self.abbruch, self.aktive)
                 if nummer < len(einsaetze):
                     senke.pause()
+            fehlend = (f" — {uebersprungen} Teilstueck(e) blieben stumm und fehlen"
+                       if uebersprungen else "")
             if isinstance(senke, Sammler):
                 daten = senke.wav()
                 if format == "mp3":
@@ -706,13 +714,13 @@ class Sitzung:
                 typ, name = FORMATE[format or "wav"]
                 with self.lock:
                     self.export = {"daten": daten, "typ": typ, "name": name}
-                self.melden(running=False, download=True, ok=True,
+                self.melden(running=False, download=True, ok=not uebersprungen,
                             message=f"{(format or 'wav').upper()} bereit "
-                                    f"({len(daten) // 1024} KiB) — wird geladen")
+                                    f"({len(daten) // 1024} KiB) — wird geladen{fehlend}")
             else:
                 senke.schliessen()
-                self.melden(running=False, ok=True,
-                            message=f"{len(einsaetze)} Einsaetze gesprochen")
+                self.melden(running=False, ok=not uebersprungen,
+                            message=f"{len(einsaetze)} Einsaetze gesprochen{fehlend}")
         except Abgebrochen:
             if isinstance(senke, Wiedergabe):
                 senke.abbrechen()
