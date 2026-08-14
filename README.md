@@ -42,6 +42,49 @@ Eingangsformat ist also egal (mp3, opus, Stereo, 44.1 kHz). Die 3–60-s-Grenze
 gilt hart, außerhalb von 8–15 s kommt ein Hinweis. `--force` ersetzt ein
 bestehendes Profil.
 
+### Fremde Stimmen eindeutschen
+
+```bash
+uv run mimic setup --entwurf moss          # einmalig, lädt einige GB
+uv run mimic eindeutschen ether ~/Downloads/voice_preview_ether.mp3 --force
+```
+
+Eine anderswo erzeugte oder gekaufte Stimme spricht Deutsch oft mit fremdem
+Einschlag — gerolltes R, englische Vokale. **`mimic import` kann das nicht
+heilen**, und dots.tts auch nicht: die Engine hat keine Sprachmarke, sie klont,
+was sie hört, Akzent inklusive. Ein Filter hilft nicht, weil ein Akzent kein
+Frequenzband ist, sondern eine Aussprache.
+
+`mimic eindeutschen` schiebt einen Schritt davor.
+`MOSS-TTS-Local-Transformer-v1.5` (4B, 31 Sprachen) hört die Aufnahme, behält
+die Stimmfarbe und spricht den Text mit `language="German"` neu. Erst dessen
+Ausgabe wird `ref.wav`. Das Profil entsteht im selben Aufruf, `--force`
+ersetzt ein bestehendes.
+
+Am 2026-08-12 und 2026-08-14 an vier Stimmen gegangen (`ether`, `geth`,
+`forge` zweimal): der Akzent verschwindet hörbar, die Stimme bleibt erkennbar.
+Bei `ether` stand die Alternative daneben — den englischen Mittelteil der
+Vorlage wegzuschneiden —, und dieser Weg gewann im Hörvergleich.
+
+Die Dauer der Ausgabe steuert das Modell **nicht**; sie hängt am Sprechtempo
+der Vorlage. Derselbe Text kam als 8.0 s und als 23.0 s zurück, und aus 23 s
+machte dots.tts Gebrumm. Deshalb wirft der Befehl bis zu dreimal auf die
+8–15-Sekunden-Marke (`--wuerfe`) und sagt es ausdrücklich, wenn kein Wurf
+hineinfiel, statt das stillschweigend zu importieren.
+
+`--text` bestimmt, was gesprochen wird und damit wörtlich das `ref.txt` —
+ohne Angabe der Standardprobesatz aus `entwurf.py`.
+
+Was **nicht** in die Referenz gehört: Effektketten. Eine mit Bitreduktion und
+Flanger gefärbte `ref.wav` ließ dots.tts dreimal in Stille laufen. Effekte
+gehören an den Ausgang, nicht an die Vorlage.
+
+MOSS ist absichtlich **kein** Eintrag in `MOTOREN`: die beiden Motoren dort
+entwerfen Stimmen aus einer Beschreibung, MOSS klont eine vorhandene. Den
+venv-Mechanismus teilen sie sich trotzdem, deshalb `setup --entwurf moss`.
+Eine eigene Umgebung braucht es zwingend — `transformers==5.0.0` verträgt sich
+weder mit `qwen-tts` (höchstens 4.57.6) noch mit voxcpm.
+
 **Charakterstimmen.** dots.tts klont Prosodie mit, nicht nur Timbre — die
 Referenz muss also bereits so klingen wie das Ziel. Die Texte in
 `charaktere.py` sind auf **10 s** ausgelegt und enthalten je Aussage, Frage und
@@ -121,6 +164,13 @@ englisch konzipiert, und jeder Zero-Shot-Klon erbt Akzent und Tempo seiner
 Referenz. Drei Stufen stapelten drei Lecks. Ein Modell, das von vornherein
 Deutsch kann, spart beide Zwischenstufen — `eindeutschen.py` ist mit ihnen
 gegangen.
+
+Es ist seit dem 2026-08-14 für einen **anderen** Auftrag zurück, siehe
+[Fremde Stimmen eindeutschen](#fremde-stimmen-eindeutschen). Der Unterschied
+ist der, an dem die alte Kette scheiterte: dort wurde eine englisch entworfene
+Stimme nachträglich gedeutscht, hier bekommt eine **fertige, fremde** Aufnahme
+ihren Akzent genommen. Beim Entwerfen gibt es diesen Umweg nicht mehr — die
+Motoren oben können Deutsch von sich aus.
 
 Kein Motor läuft im Worker: beide bringen eigene torch- und
 transformers-Pins mit, dots.tts sitzt auf 4.57.6. Also je eine eigene Umgebung
