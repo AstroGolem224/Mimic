@@ -871,3 +871,81 @@ class SprachParameterTests(unittest.TestCase):
         run_engine(runtime, {"text": "Ein Satz, der lang genug ist."})
         self.assertEqual("en", runtime.kwargs[0]["language"])
         self.assertEqual(1.5, runtime.kwargs[0]["speaker_scale"])
+
+
+class GuiAuthTests(unittest.TestCase):
+    """Die vier Ladewege, die der Browser selbst anstoesst.
+
+    Beim Umbau auf Double Submit wurde der `?t=`-Weg aus _erlaubt entfernt.
+    Ein <audio src=...> und ein Download ueber location.href setzen aber keinen
+    X-Mimic-Token-Kopf -- danach antworteten Referenz, Aufnahme, Entwurf und
+    Export mit 403. Die Suite hat das nicht bemerkt, weil sie durchweg mit Kopf
+    anfragt; deshalb fragt dieser Test wie ein Browser: nur mit Cookie.
+    """
+
+    def setUp(self):
+        import http.server
+
+        from mimic import gui
+
+        self.sitzung = gui.Sitzung()
+        self.server = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), gui.handler_klasse(self.sitzung))
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.port = self.server.server_address[1]
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def _anfrage(self, pfad, kopf=None, methode="GET"):
+        import http.client
+
+        verbindung = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            verbindung.request(methode, pfad, headers=kopf or {})
+            antwort = verbindung.getresponse()
+            antwort.read()
+            return antwort.status, antwort.getheader("Set-Cookie") or ""
+        finally:
+            verbindung.close()
+
+    def _anmelden(self) -> str:
+        status, keks = self._anfrage(f"/?t={self.sitzung.start_token}")
+        self.assertEqual(200, status)
+        return keks.split(";", 1)[0]
+
+    def test_start_token_gilt_genau_einmal(self):
+        start = self.sitzung.start_token
+        self.assertEqual(200, self._anfrage(f"/?t={start}")[0])
+        # Es steht in der Chromium-Kommandozeile, und /proc/<pid>/cmdline ist
+        # fremd lesbar -- wer es dort spaeter abliest, haelt einen toten Wert.
+        self.assertEqual(403, self._anfrage(f"/?t={start}")[0])
+
+    def test_seite_laedt_mit_cookie_neu(self):
+        cookie = self._anmelden()
+        self.assertEqual(200, self._anfrage("/", {"Cookie": cookie})[0])
+
+    def test_browser_ladewege_kommen_mit_cookie_durch(self):
+        cookie = self._anmelden()
+        # 404 ist in Ordnung -- ohne Aufnahme gibt es keine Datei. Verboten
+        # waere 403: dann hinge die Wiedergabe wieder am fehlenden Kopf.
+        for pfad in ("/api/state", "/api/take", "/api/reference?name=gibtsnicht",
+                     "/api/design/audio?nummer=1", "/api/export"):
+            with self.subTest(pfad=pfad):
+                status, _ = self._anfrage(pfad, {"Cookie": cookie})
+                self.assertNotEqual(403, status)
+
+    def test_ohne_cookie_und_ohne_kopf_bleibt_zu(self):
+        for pfad in ("/api/state", "/api/take", "/api/export"):
+            with self.subTest(pfad=pfad):
+                self.assertEqual(403, self._anfrage(pfad)[0])
+        # Das alte Verfahren ist tot: das Token in der URL oeffnet nichts mehr.
+        self.assertEqual(403, self._anfrage(f"/api/state?t={self.sitzung.token}")[0])
+
+    def test_post_verlangt_weiter_den_kopf(self):
+        cookie = self._anmelden()
+        # Hier sitzt die Zustandsaenderung, also greift Double Submit: das
+        # Cookie allein haengt der Browser auch an eine fremde Anfrage.
+        self.assertEqual(403, self._anfrage("/api/stop", {"Cookie": cookie}, "POST")[0])
+        status, _ = self._anfrage("/api/stop", {"X-Mimic-Token": self.sitzung.token}, "POST")
+        self.assertNotEqual(403, status)

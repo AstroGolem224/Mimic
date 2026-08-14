@@ -772,7 +772,12 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         self._senden(status, "application/json",
                      json.dumps(wert, ensure_ascii=False).encode())
 
-    def _erlaubt(self) -> bool:
+    def _keks(self) -> str:
+        from http.cookies import SimpleCookie
+        keks = SimpleCookie(self.headers.get("Cookie", ""))
+        return keks["mimic_token"].value if "mimic_token" in keks else ""
+
+    def _erlaubt(self, keks_reicht: bool = False) -> bool:
         """Token aus dem Kopf. Loopback allein reicht nicht: jeder andere
         Prozess des Nutzers koennte sonst den Dienst fernsteuern.
 
@@ -780,8 +785,21 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         jede Anfrage, auch an eine, die eine fremde Seite ausloest. Der Kopf
         `X-Mimic-Token` ist das Gegenstueck: den kann nur Skript vom selben
         Ursprung setzen. Deshalb traegt das Cookie den Wert, und die Seite
-        spiegelt ihn in den Kopf (Double Submit)."""
+        spiegelt ihn in den Kopf (Double Submit).
+
+        `keks_reicht` gilt allein fuer GET, und GET liest hier nur. Ein
+        `<audio src=...>` und ein Download ueber `location.href` kommen aus dem
+        Browser selbst, nicht aus fetch() -- die koennen keinen Kopf setzen.
+        Vorher trugen sie das Token als `?t=` in der URL; seit der Kopf Pflicht
+        wurde, antworteten alle vier mit 403 (Wiedergabe der Referenz, der
+        Aufnahme, der Entwuerfe und der Download-Ausweichweg). Fuer diese
+        Ladewege haengt der Schutz an SameSite=Strict: eine fremde Seite darf
+        das Cookie nicht mitschicken, auch nicht an ein eingebettetes <audio>.
+        POST bleibt beim Kopf, dort sitzt jede Zustandsaenderung.
+        """
         if hmac.compare_digest(self.headers.get("X-Mimic-Token", ""), self.sitzung.token):
+            return True
+        if keks_reicht and hmac.compare_digest(self._keks(), self.sitzung.token):
             return True
         self._json(403, {"message": "Token fehlt oder ist falsch"})
         return False
@@ -792,12 +810,9 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         Zwei Wege hinein: das einmalige Start-Token aus der URL (erster Aufruf,
         danach verbraucht) oder das bereits gesetzte Cookie (Neuladen mit F5).
         """
-        from http.cookies import SimpleCookie
         from urllib.parse import parse_qs, urlsplit
 
-        keks = SimpleCookie(self.headers.get("Cookie", ""))
-        dabei = keks["mimic_token"].value if "mimic_token" in keks else ""
-        if hmac.compare_digest(dabei, self.sitzung.token):
+        if hmac.compare_digest(self._keks(), self.sitzung.token):
             return None                      # schon angemeldet, nichts zu setzen
 
         gegeben = parse_qs(urlsplit(self.path).query).get("t", [""])[0]
@@ -863,7 +878,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             seite = (Path(__file__).parent / "gui.html").read_bytes()
             self._senden(200, "text/html; charset=utf-8", seite, kopf)
             return
-        if not self._erlaubt():
+        # GET liest hier ausnahmslos -- deshalb reicht das Cookie, siehe _erlaubt.
+        if not self._erlaubt(keks_reicht=True):
             return
         if pfad == "/api/state":
             self._zustand()
