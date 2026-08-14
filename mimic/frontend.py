@@ -16,6 +16,11 @@ import uuid
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
+from .effekte import (BREITE_MAX, BREITE_MIN, FORMANT_MAX, FORMANT_MIN, HALL_MAX,
+                      HALL_MIN, KRUEMEL_MAX,
+                      KRUEMEL_MIN, RASTER_MAX, RASTER_MIN, STREUUNG_MAX, STREUUNG_MIN,
+                      TEMPO_MAX, TEMPO_MIN, TONHOEHE_MAX, TONHOEHE_MIN,
+                      VERZERRUNG_MAX, VERZERRUNG_MIN)
 from .protocol import MEDIA_TYPE, finish_chunks, read_frame, write_chunk
 from .voices import VoiceError, available_voices, close_voice, load_voice
 
@@ -259,6 +264,22 @@ class FrontendHandler(BaseHTTPRequestHandler):
         if type(require_warm) is not bool:
             self._error("bad_request", "require_warm muss true oder false sein")
             return
+        # Hier melden statt still klemmen: wer 5.0 schickt, hat sich vertan und
+        # soll das erfahren. Der Worker klemmt trotzdem noch einmal.
+        regler = {"tempo": (request.get("tempo", 1.0), TEMPO_MIN, TEMPO_MAX),
+                  "tonhoehe": (request.get("tonhoehe", 0.0), TONHOEHE_MIN, TONHOEHE_MAX),
+                  "streuung": (request.get("streuung", 0.0), STREUUNG_MIN, STREUUNG_MAX),
+                  "raster": (request.get("raster", 0.0), RASTER_MIN, RASTER_MAX),
+                  "formant": (request.get("formant", 0.0), FORMANT_MIN, FORMANT_MAX),
+                  "hall": (request.get("hall", 0.0), HALL_MIN, HALL_MAX),
+                  "verzerrung": (request.get("verzerrung", 0.0),
+                                 VERZERRUNG_MIN, VERZERRUNG_MAX),
+                  "kruemel": (request.get("kruemel", 0.0), KRUEMEL_MIN, KRUEMEL_MAX),
+                  "breite": (request.get("breite", 0.0), BREITE_MIN, BREITE_MAX)}
+        for name, (wert, mini, maxi) in regler.items():
+            if type(wert) not in (int, float) or not mini <= wert <= maxi:
+                self._error("bad_request", f"{name} muss zwischen {mini} und {maxi} liegen")
+                return
         if correlation_id is None:
             correlation_id = uuid.uuid4().hex
         elif (not isinstance(correlation_id, str) or len(correlation_id) != 32
@@ -274,7 +295,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
             close_voice(profile)
         request = {"text": request["text"], "voice": voice, "mode": mode,
                    "aussprache": aussprache, "require_warm": require_warm,
-                   "correlation_id": correlation_id}
+                   "correlation_id": correlation_id,
+                   **{name: float(wert) for name, (wert, _, _) in regler.items()}}
         self._proxy(request)
 
     def _handle_warm(self, request: dict) -> None:

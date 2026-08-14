@@ -279,7 +279,9 @@ textarea::selection{background:rgba(168,120,255,.34)}
 /* ── Transport ──────────────────────────────────────────────────────── */
 .transport{
   grid-column:1/-1;grid-row:4/5;
-  display:flex;align-items:center;gap:13px;
+  /* Umbruch, seit drei Klangregler in der Leiste stehen: lieber zwei Zeilen
+     als abgeschnittene Bedienteile in einem schmalen Fenster. */
+  display:flex;align-items:center;gap:13px;flex-wrap:wrap;
   padding:12px 15px;
 }
 .knopf{
@@ -311,6 +313,11 @@ textarea::selection{background:rgba(168,120,255,.34)}
 .spiel:hover:not(:disabled){box-shadow:var(--erhaben), inset 0 0 30px rgba(47,227,211,.22), 0 0 28px rgba(47,227,211,.16)}
 .spiel:disabled svg{fill:var(--text-still);filter:none}
 
+.knopf.an{
+  color:var(--tinte);border-color:transparent;
+  background:linear-gradient(140deg,var(--violett),#d3a2ff);
+  box-shadow:0 3px 14px rgba(168,120,255,.34), inset 0 1px 0 rgba(255,255,255,.4);
+}
 .knopf.stopp{border-color:rgba(255,95,109,.26);color:#ffb0b6}
 .knopf.stopp:hover:not(:disabled){box-shadow:var(--erhaben),0 0 24px rgba(255,95,109,.20);border-color:rgba(255,95,109,.5)}
 .knopf.warm{border-color:rgba(255,180,92,.24);color:var(--bernstein)}
@@ -343,6 +350,59 @@ textarea::selection{background:rgba(168,120,255,.34)}
   box-shadow:0 3px 14px rgba(255,180,92,.34), inset 0 1px 0 rgba(255,255,255,.45);
 }
 .modus button:disabled{opacity:.3;cursor:default}
+
+/* Tempo-Regler. Kein eigener Zeichenpfad: <input type=range> kann das, es
+   fehlt nur das Kleid des Gehaeuses. */
+.tempo{
+  display:flex;align-items:center;gap:9px;flex:0 0 auto;color:var(--text-leise);
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+}
+.tempo b{color:var(--cyan);font-size:11.5px;letter-spacing:.06em;min-width:50px;text-align:right}
+.tempo input{
+  -webkit-appearance:none;appearance:none;width:92px;height:6px;border-radius:99px;
+  background:rgba(4,7,9,.62);box-shadow:var(--vertieft);outline:none;cursor:pointer;
+}
+.tempo input::-webkit-slider-thumb{
+  -webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+  background:linear-gradient(140deg,var(--cyan),#5fe0ff);
+  box-shadow:0 2px 11px rgba(47,227,211,.45), inset 0 1px 0 rgba(255,255,255,.45);
+}
+.tempo input::-moz-range-thumb{
+  width:16px;height:16px;border:0;border-radius:50%;
+  background:linear-gradient(140deg,var(--cyan),#5fe0ff);
+  box-shadow:0 2px 11px rgba(47,227,211,.45), inset 0 1px 0 rgba(255,255,255,.45);
+}
+.tempo input:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+.tempo input:disabled{opacity:.34;cursor:default}
+
+/* Klangfarbe hinter einem Aufklapper. Neun Schieber nebeneinander sind keine
+   Bedienoberflaeche mehr; die fuenf Tonhoehenregler bleiben sichtbar, der Rest
+   klappt auf. <details> statt Zustand in JavaScript -- der Browser kann das. */
+.farbe{flex:0 0 auto;position:relative}
+.farbe summary{
+  list-style:none;cursor:pointer;user-select:none;
+  padding:6px 12px;border-radius:11px;
+  background:var(--glas);border:1px solid var(--rand);
+  box-shadow:var(--erhaben-klein);
+  color:var(--text-leise);
+  font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
+  font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+}
+.farbe summary::-webkit-details-marker{display:none}
+.farbe summary::after{content:" \25be";color:var(--cyan-matt)}
+.farbe[open] summary::after{content:" \25b4"}
+.farbe summary:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}
+.farbe-inhalt{
+  position:absolute;bottom:calc(100% + 9px);left:0;z-index:20;
+  display:flex;flex-direction:column;gap:11px;
+  padding:13px 15px;border-radius:var(--r);
+  background:linear-gradient(158deg,var(--glas),var(--glas-tief));
+  backdrop-filter:blur(24px) saturate(155%);
+  -webkit-backdrop-filter:blur(24px) saturate(155%);
+  border:1px solid var(--rand);box-shadow:var(--erhaben);
+}
+.farbe-inhalt .tempo{justify-content:space-between;gap:11px}
 
 /* Statuszeile rechts */
 .status{
@@ -598,6 +658,73 @@ Zeile ohne Kopf erbt den Sprecher von oben.
       <button data-modus="mf" class="an">mf</button>
       <button data-modus="soar">soar</button>
     </div>
+    <label class="tempo" title="Sprechgeschwindigkeit — Doppelklick setzt auf 1,00× zurueck">
+      Tempo
+      <input type="range" id="tempo" min="0.5" max="2" step="0.05" value="1"
+             aria-label="Sprechgeschwindigkeit">
+      <b id="tempoWert">1,00×</b>
+    </label>
+    <label class="tempo" title="Tonhoehe in Halbtoenen — Doppelklick setzt auf 0 zurueck">
+      Lage
+      <input type="range" id="tonhoehe" min="-12" max="12" step="0.5" value="0"
+             aria-label="Tonhoehe in Halbtoenen">
+      <b id="tonhoeheWert">0,0 HT</b>
+    </label>
+    <label class="tempo" title="Tonhoehe aufs Halbtonraster zwingen und dort halten —
+das ist der GLaDOS-Kern. Doppelklick setzt auf 0 zurueck">
+      Raster
+      <input type="range" id="raster" min="0" max="1" step="0.05" value="0"
+             aria-label="Tonhoehe aufs Halbtonraster zwingen">
+      <b id="rasterWert">0 %</b>
+    </label>
+    <label class="tempo" title="Formanten verschieben, ohne die Tonhoehe mitzunehmen —
+nach oben klingt es blechern. Doppelklick setzt auf 0 zurueck">
+      Formant
+      <input type="range" id="formant" min="-12" max="12" step="0.5" value="0"
+             aria-label="Formantverschiebung in Halbtoenen">
+      <b id="formantWert">0,0 HT</b>
+    </label>
+    <label class="tempo" title="Wie weit eine einzelne Silbe zufaellig danebenliegt (Halbtoene) —
+Doppelklick setzt auf 0 zurueck">
+      Streuung
+      <input type="range" id="streuung" min="0" max="4" step="0.5" value="0"
+             aria-label="Streuung der Tonhoehe in Halbtoenen">
+      <b id="streuungWert">0,0 HT</b>
+    </label>
+    <details class="farbe">
+      <summary title="Hall, Verzerrung, Kruemel, Breite">Klangfarbe</summary>
+      <div class="farbe-inhalt">
+      <label class="tempo" title="Nachhall, 0 trocken bis 1 voller Raum —
+  Doppelklick setzt auf 0 zurueck">
+        Hall
+        <input type="range" id="hall" min="0" max="1" step="0.05" value="0"
+               aria-label="Nachhall">
+        <b id="hallWert">0 %</b>
+      </label>
+      <label class="tempo" title="Saettigung, 0 sauber bis 1 uebersteuert —
+  Doppelklick setzt auf 0 zurueck">
+        Verzerrung
+        <input type="range" id="verzerrung" min="0" max="1" step="0.05" value="0"
+               aria-label="Verzerrung">
+        <b id="verzerrungWert">0 %</b>
+      </label>
+      <label class="tempo" title="Bitcrusher, 0 glatt bis 1 vier Bit —
+  Doppelklick setzt auf 0 zurueck">
+        Kruemel
+        <input type="range" id="kruemel" min="0" max="1" step="0.05" value="0"
+               aria-label="Bitcrusher">
+        <b id="kruemelWert">0 %</b>
+      </label>
+      <label class="tempo" title="Chorus bis Chor, 0 eine Stimme bis 1 vier Kopien —
+  Doppelklick setzt auf 0 zurueck">
+        Breite
+        <input type="range" id="breite" min="0" max="1" step="0.05" value="0"
+               aria-label="Chorbreite">
+        <b id="breiteWert">0 %</b>
+      </label>
+      </div>
+    </details>
+    <button class="knopf" id="bGlados" title="Raster ganz, Streuung 1 Halbton, Formant +2">GLaDOS</button>
     <div class="status">
       <b id="sText">bereit</b>
       <u id="sSub">—</u>
@@ -921,13 +1048,51 @@ async function starten(datei){
   sperre(true);
   setzeStatus("wird vorbereitet…");
   try{
-    await api("/api/speak", {text, mode: modus, voice: gewaehlt,
+    await api("/api/speak", {text, mode: modus, voice: gewaehlt, ...klangwerte(),
                              speichern: !!datei, format: datei ? format : null});
   }catch(fehler){
     zielGriff = null;
     sperre(false);
     setzeStatus("" + fehler, "fehler");
   }
+}
+
+// Die drei Klangregler laufen ueber dieselbe Mechanik: anzeigen, auf Doppelklick
+// zurueck auf die Vorgabe, und beim Sprechen mitschicken.
+const HT = v => v.toFixed(1).replace(".", ",") + "\u00a0HT";
+const PROZENT = v => (v * 100).toFixed(0) + "\u00a0%";
+const KLANG = [
+  {id: "tempo",    vorgabe: 1, text: v => v.toFixed(2).replace(".", ",") + "\u00d7"},
+  {id: "tonhoehe", vorgabe: 0, text: HT},
+  {id: "raster",   vorgabe: 0, text: PROZENT},
+  {id: "formant",  vorgabe: 0, text: HT},
+  {id: "streuung", vorgabe: 0, text: HT},
+  {id: "hall",       vorgabe: 0, text: PROZENT},
+  {id: "verzerrung", vorgabe: 0, text: PROZENT},
+  {id: "kruemel",    vorgabe: 0, text: PROZENT},
+  {id: "breite",     vorgabe: 0, text: PROZENT},
+];
+function zeigeKlang(){
+  for(const regler of KLANG) $(regler.id + "Wert").textContent = regler.text(+$(regler.id).value);
+}
+for(const regler of KLANG){
+  const feld = $(regler.id);
+  feld.oninput = zeigeKlang;
+  feld.ondblclick = () => { feld.value = regler.vorgabe; zeigeKlang(); };
+}
+zeigeKlang();
+// Die Werte aus Valves eigener Anleitung: Tonhoehe aufs Raster gezwungen und
+// dort gehalten, Silben gelegentlich einen Halbton daneben, Formanten hoch.
+$("bGlados").onclick = () => {
+  const an = +$("raster").value < 1;
+  $("raster").value = an ? 1 : 0;
+  $("streuung").value = an ? 1 : 0;
+  $("formant").value = an ? 2 : 0;
+  $("bGlados").classList.toggle("an", an);
+  zeigeKlang();
+};
+function klangwerte(){
+  return Object.fromEntries(KLANG.map(r => [r.id, +$(r.id).value]));
 }
 
 $("bSpiel").onclick = () => starten(false);
@@ -1344,7 +1509,8 @@ async function probeSprechen(name){
   if(!stimme) return;
   try{
     await api("/api/speak", {text: `#${stimme}: "Probe. Klingt das nach mir? Ja!"`,
-                             mode: modus, voice: stimme, speichern: false});
+                             mode: modus, voice: stimme, ...klangwerte(),
+                             speichern: false});
     sperre(true);
     schubladeAuf(false);
   }catch(fehler){ setzeStatus("" + fehler, "fehler"); }

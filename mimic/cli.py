@@ -75,7 +75,9 @@ def say(args: argparse.Namespace) -> int:
               "eine Minute kosten)...", file=sys.stderr, flush=True)
     try:
         klang = {"tonhoehe": args.tonhoehe, "streuung": args.streuung,
-                 "raster": args.raster, "formant": args.formant}
+                 "raster": args.raster, "formant": args.formant, "hall": args.hall,
+                 "verzerrung": args.verzerrung, "kruemel": args.kruemel,
+                 "breite": args.breite}
         if args.glados:
             klang = {**klang, **GLADOS}
         response = request("POST", "/speak", {"text": args.text, "voice": args.voice,
@@ -707,6 +709,14 @@ def parser() -> argparse.ArgumentParser:
                             help="Tonhoehe aufs Halbtonraster zwingen, 0 aus bis 1 ganz")
     say_parser.add_argument("--formant", type=float, default=0.0,
                             help="Formanten in Halbtoenen verschieben, ohne die Tonhoehe")
+    say_parser.add_argument("--hall", type=float, default=0.0,
+                            help="Nachhall, 0 trocken bis 1 voller Raum")
+    say_parser.add_argument("--verzerrung", type=float, default=0.0,
+                            help="Saettigung, 0 sauber bis 1 uebersteuert")
+    say_parser.add_argument("--kruemel", type=float, default=0.0,
+                            help="Bitcrusher, 0 glatt bis 1 vier Bit")
+    say_parser.add_argument("--breite", type=float, default=0.0,
+                            help="Chorus bis Chor, 0 eine Stimme bis 1 vier Kopien")
     say_parser.add_argument("--glados", action="store_true",
                             help="Voreinstellung: raster 1, streuung 1, formant +2")
     say_parser.set_defaults(function=say)

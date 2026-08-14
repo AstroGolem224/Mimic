@@ -18,7 +18,9 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_path
-from .effekte import Effekt
+from .effekte import (Kette, breite_wert, formant_wert, hall_wert, kruemel_wert,
+                      raster_wert, streuung_wert, tempo_faktor, tonhoehe_wert,
+                      verzerrung_wert)
 from .protocol import finish_chunks, write_chunk, encode_frame
 from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
                      entschaerfe_versalien, load_voice, split_sentences,
@@ -377,20 +379,51 @@ class Engine:
             # -- Fragmente ohne Satzkontext halluziniert das Modell voll.
             saetze = split_sentences(text) or [text]
             pause = bytes(int(sample_rate * PAUSE_MS / 1000) * 2)
-            # Ein Effekt je Aeusserung, nicht je Block: Tremolo- und
-            # Verzoegerungszustand muessen ueber Blockgrenzen tragen, sonst
-            # klickt es an jeder Naht.
-            effekt = Effekt(profile.effekt, sample_rate) if profile.effekt else None
+            # Eine Kette je Aeusserung, nicht je Block: Tremolo-, Verzoegerungs-
+            # und Rahmenzustand muessen ueber Blockgrenzen tragen, sonst klickt
+            # es an jeder Naht. Steht nichts an, ist die Kette leer und wird gar
+            # nicht erst gebaut -- kein Grund, den unveraenderten Fall durch die
+            # Rahmenrechnung zu schicken.
+            faktor = tempo_faktor(request.get("tempo"))
+            # Profil plus Regler statt Regler ODER Profil: eine Stimme, die
+            # dauerhaft nach GLaDOS klingen soll, behaelt das, wenn die Regler
+            # in der Oberflaeche auf null stehen -- und bleibt nachstellbar.
+            halbtoene = tonhoehe_wert(profile.tonhoehe + tonhoehe_wert(request.get("tonhoehe")))
+            streuung = streuung_wert(profile.streuung + streuung_wert(request.get("streuung")))
+            raster = raster_wert(profile.raster + raster_wert(request.get("raster")))
+            formant = formant_wert(profile.formant + formant_wert(request.get("formant")))
+            hall = hall_wert(profile.hall + hall_wert(request.get("hall")))
+            verzerrung = verzerrung_wert(profile.verzerrung
+                                         + verzerrung_wert(request.get("verzerrung")))
+            kruemel = kruemel_wert(profile.kruemel + kruemel_wert(request.get("kruemel")))
+            breite = breite_wert(profile.breite + breite_wert(request.get("breite")))
+            kette = Kette(sample_rate, effekt=profile.effekt, faktor=faktor,
+                          halbtoene=halbtoene, streuung=streuung, raster=raster,
+                          formant=formant, hall=hall, verzerrung=verzerrung,
+                          kruemel=kruemel, breite=breite)
+
+            def sende(pcm: bytes) -> bool:
+                """Einziger Ausgang fuer Ton, und der einzige Ort, an dem Klang
+                bearbeitet wird. Verworfene Takes gehen hier NICHT durch --
+                sonst haengt der Kettenzustand an Ton, den keiner hoert.
+                Gezaehlt wird, was wirklich rausgeht, nicht was reinkam."""
+                nonlocal samples
+                if kette:
+                    pcm = kette.verarbeite(pcm)
+                if not pcm:
+                    return True
+                samples += len(pcm) // 2
+                return self.emit(job, "A", pcm)
+
             for index, satz in enumerate(saetze):
                 # Pause nur, wo wirklich ein Satz endete. Die Schnitte an Komma
                 # und Semikolon (voices.MAX_SATZ_ZEICHEN) sind Generierungs-
                 # grenzen, keine Sprechpausen -- dort klang die Atempause wie
                 # ein Aussetzer mitten im Satz.
                 if index and endet_satz(saetze[index - 1]):
-                    if not self.emit(job, "A", pause):
+                    if not sende(pause):
                         outcome = "cancelled"
                         return
-                    samples += len(pause) // 2
                 for versuch in range(MAX_VERSUCHE):
                     if job.cancelled.is_set():
                         outcome = "cancelled"
@@ -411,8 +444,11 @@ class Engine:
                         if first_chunk_at is None:
                             first_chunk_at = time.monotonic()
                         pcm = tensor_to_pcm(chunk, profile.gain)
-                        if effekt is not None:
-                            pcm = effekt.verarbeite(pcm)
+                        # Die Stummerkennung sieht das ROHE Modellsignal. Vorher
+                        # lief der Effekt davor, und jede Stufe mit Grundpegel --
+                        # TV-Rauschen, spaeter Hall oder Vocoder-Traeger -- haette
+                        # `spitze` ueber STUMM_PEAK gehoben und die Wiederholung
+                        # stummer Takes blind gemacht (PHASE2 2a, Kriterium P2-L).
                         if not hoerbar:
                             # Erst hier rechnen, nicht vor dem Zweig: `spitze`
                             # wird ausschliesslich zwei Zeilen tiefer gelesen,
@@ -433,8 +469,7 @@ class Engine:
                             hoerbar = True
                             if first_audio_at is None:
                                 first_audio_at = time.monotonic()
-                        samples += len(pcm) // 2
-                        if not self.emit(job, "A", pcm):
+                        if not sende(pcm):
                             outcome = "cancelled"
                             return
                     generator.close()
@@ -448,6 +483,13 @@ class Engine:
                     # Folgende fiel weg. Ein fehlendes Teilstueck ist der
                     # kleinere Schaden -- es steht als uebersprungen im Log.
                     uebersprungen += 1
+            if kette:
+                rest = kette.abschluss()
+                if rest:
+                    samples += len(rest) // 2
+                    if not self.emit(job, "A", rest):
+                        outcome = "cancelled"
+                        return
             if not samples:
                 raise WorkerRefusal("silent_audio",
                                     f"{MAX_VERSUCHE} stumme Takes je Stueck erzeugt")

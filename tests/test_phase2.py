@@ -91,7 +91,9 @@ def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = Non
     job.delivered.set()
     profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0,
                               **{"language": "en", "speaker_scale": 1.5, "effekt": "",
-                                 **(stimme or {})})
+                                 "tonhoehe": 0.0, "streuung": 0.0, "raster": 0.0,
+                                 "formant": 0.0, "hall": 0.0, "verzerrung": 0.0,
+                                 "kruemel": 0.0, "breite": 0.0, **(stimme or {})})
     with (mock.patch.object(worker, "load_voice", return_value=profile),
           mock.patch.object(worker, "close_voice"),
           mock.patch.object(worker, "tensor_to_pcm", side_effect=lambda chunk, _gain: chunk),
@@ -831,6 +833,47 @@ class EffektTests(unittest.TestCase):
         self.assertEqual(len(pcm(9000) + pcm(-9000)), len(audio))
         self.assertNotEqual(pcm(9000) + pcm(-9000), audio)
 
+    def test_effekt_hebt_einen_stummen_take_nicht_ueber_die_schwelle(self):
+        # Der Effekt lief frueher VOR der Stummerkennung, und `kollektiv` legt
+        # zwei Kopien auf das Signal: ein Take knapp unter STUMM_PEAK kam damit
+        # als hoerbar heraus und wurde nicht wiederholt. Seit die Kette erst in
+        # `sende()` laeuft, misst `spitze` das rohe Modellsignal -- PHASE2 2a,
+        # Kriterium P2-L. Bloecke gross genug, dass die Kopien (17 und 29 ms)
+        # hineinfallen; bei acht Proben lesen sie noch Nullen.
+        from mimic import worker
+
+        lang = 4096
+        quiet = pcm(worker.STUMM_PEAK, lang)
+        loud = pcm(worker.STUMM_PEAK + 1, lang)
+        from mimic.effekte import Effekt
+
+        laut_genug = worker.peak_int16(
+            Effekt("kollektiv", 48_000).verarbeite(quiet + quiet))
+        self.assertGreater(laut_genug, worker.STUMM_PEAK,
+                           "Testvoraussetzung: kollektiv hebt diesen Take ueber die Schwelle")
+
+        runtime = StubRuntime([[quiet], [quiet, loud]])
+        _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist."},
+                                     stimme={"effekt": "kollektiv"})
+        self.assertEqual(2, len(runtime.texts), "der stumme Take muss wiederholt werden")
+        audio = b"".join(payload for kind, payload in events if kind == "A")
+        self.assertEqual(len(quiet + loud), len(audio))
+
+    def test_jeder_name_aus_der_whitelist_laeuft_durch(self):
+        from mimic.effekte import EFFEKTE
+
+        eingang = pcm(9000, 4096)
+        for name in EFFEKTE:
+            with self.subTest(effekt=name):
+                runtime = StubRuntime([[eingang]])
+                _engine, events = run_engine(
+                    runtime, {"text": "Ein Satz, der lang genug ist."},
+                    stimme={"effekt": name})
+                self.assertEqual("ok", json.loads(events[-1][1])["status"])
+                audio = b"".join(p for kind, p in events if kind == "A")
+                self.assertEqual(len(eingang), len(audio))
+                self.assertNotEqual(eingang, audio)
+
     def test_unbekannter_effekt_wird_beim_laden_abgelehnt(self):
         from mimic.voices import VoiceError, load_voice
         import wave as wave_modul
@@ -848,6 +891,141 @@ class EffektTests(unittest.TestCase):
         with self.assertRaises(VoiceError) as erhoben:
             load_voice("probe", root)
         self.assertIn("effekt", erhoben.exception.message)
+
+    def test_tonhoehe_und_streuung_kommen_aus_dem_profil(self):
+        """Kein stiller Rueckfall: eine Stimme, die wegen eines Tippfehlers
+        ploetzlich anders klingt, ist teurer zu finden als ein Ladefehler."""
+        from mimic.voices import VoiceError, load_voice
+        import wave as wave_modul
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        profil = root / "probe"
+        profil.mkdir(mode=0o700, parents=True)
+        root.chmod(0o700)
+        with wave_modul.open(str(profil / "ref.wav"), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(48_000)
+            wav.writeframes(array.array("h", [1000] * 48_000 * 4).tobytes())
+        (profil / "ref.txt").write_text("Ein Satz.\n", encoding="utf-8")
+
+        def settings(inhalt):
+            (profil / "settings.json").write_text(json.dumps(inhalt), encoding="utf-8")
+            for datei in ("ref.wav", "ref.txt", "settings.json"):
+                (profil / datei).chmod(0o600)
+
+        settings({"tonhoehe": -3.5, "streuung": 1, "raster": 1, "formant": 2, "hall": 0.5,
+                  "verzerrung": 0.4, "kruemel": 0.2, "breite": 0.6})
+        stimme = load_voice("probe", root, mit_gain=False)
+        self.assertEqual((-3.5, 1.0, 1.0, 2.0, 0.5, 0.4, 0.2, 0.6),
+                         (stimme.tonhoehe, stimme.streuung, stimme.raster, stimme.formant,
+                          stimme.hall, stimme.verzerrung, stimme.kruemel, stimme.breite))
+        for kaputt in ({"tonhoehe": 40}, {"streuung": -1}, {"tonhoehe": "tief"},
+                       {"raster": 2}, {"formant": 40}, {"hall": 1.5}, {"hall": "viel"},
+                       {"verzerrung": 2}, {"kruemel": -0.5}, {"breite": 3}):
+            settings(kaputt)
+            with self.assertRaises(VoiceError):
+                load_voice("probe", root, mit_gain=False)
+
+
+class TempoTests(unittest.TestCase):
+    """Der Regler sitzt im Worker, hinter dem Effekt und vor dem Rahmen."""
+
+    def sprich(self, tempo):
+        eine_sekunde = pcm(9000, 48_000)
+        runtime = StubRuntime([[eine_sekunde]])
+        _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist.",
+                                               "tempo": tempo})
+        self.assertEqual("ok", json.loads(events[-1][1])["status"])
+        return eine_sekunde, b"".join(p for kind, p in events if kind == "A")
+
+    def test_faktor_eins_laesst_das_pcm_in_ruhe(self):
+        eingang, ausgang = self.sprich(1.0)
+        self.assertEqual(eingang, ausgang)
+
+    def test_schneller_kuerzt_die_ausgabe_um_den_faktor(self):
+        eingang, ausgang = self.sprich(2.0)
+        self.assertAlmostEqual(len(eingang) / 2, len(ausgang), delta=64)
+
+    def test_langsamer_dehnt_die_ausgabe_um_den_faktor(self):
+        eingang, ausgang = self.sprich(0.5)
+        self.assertAlmostEqual(len(eingang) * 2, len(ausgang), delta=64)
+
+    def test_unsinn_faellt_auf_unveraendert_zurueck(self):
+        eingang, ausgang = self.sprich("schnell")
+        self.assertEqual(eingang, ausgang)
+
+
+class TonhoeheTests(unittest.TestCase):
+    """Tonhoehe und Streuung sitzen im selben Regler wie das Tempo."""
+
+    def sprich(self, request, stimme=None):
+        eine_sekunde = pcm(9000, 48_000)
+        runtime = StubRuntime([[eine_sekunde]])
+        _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist.",
+                                               **request}, stimme=stimme)
+        self.assertEqual("ok", json.loads(events[-1][1])["status"])
+        return eine_sekunde, b"".join(p for kind, p in events if kind == "A")
+
+    def test_tonhoehe_veraendert_den_ton_ohne_die_dauer(self):
+        eingang, ausgang = self.sprich({"tonhoehe": 5.0})
+        self.assertAlmostEqual(len(eingang), len(ausgang), delta=64)
+        self.assertNotEqual(eingang, ausgang)
+
+    def test_raster_allein_reicht_fuer_den_regler(self):
+        eingang, ausgang = self.sprich({"raster": 1.0})
+        self.assertAlmostEqual(len(eingang), len(ausgang), delta=64)
+
+    def test_formant_veraendert_den_klang_ohne_die_dauer(self):
+        eingang, ausgang = self.sprich({"formant": 2.0})
+        self.assertAlmostEqual(len(eingang), len(ausgang), delta=64)
+        self.assertNotEqual(eingang, ausgang)
+
+    def test_glados_werte_kommen_zusammen_durch(self):
+        from mimic.effekte import GLADOS
+
+        eingang, ausgang = self.sprich(dict(GLADOS))
+        self.assertAlmostEqual(len(eingang), len(ausgang), delta=64)
+        self.assertNotEqual(eingang, ausgang)
+
+    def test_profilwert_gilt_auch_ohne_regler(self):
+        eingang, ausgang = self.sprich({}, stimme={"tonhoehe": -4.0})
+        self.assertNotEqual(eingang, ausgang)
+
+    def test_regler_kommt_auf_den_profilwert_obendrauf(self):
+        # -4 im Profil, +4 am Regler: zusammen wieder die Ausgangslage.
+        _eingang, mit_beidem = self.sprich({"tonhoehe": 4.0}, stimme={"tonhoehe": -4.0})
+        _eingang, ohne_alles = self.sprich({})
+        self.assertEqual(ohne_alles, mit_beidem)
+
+
+class HallTests(unittest.TestCase):
+    """Der Hall ist der erste Regler, der die Aeusserung laenger macht."""
+
+    def sprich(self, request, stimme=None):
+        eine_sekunde = pcm(9000, 48_000)
+        runtime = StubRuntime([[eine_sekunde]])
+        _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist.",
+                                               **request}, stimme=stimme)
+        self.assertEqual("ok", json.loads(events[-1][1])["status"])
+        return eine_sekunde, b"".join(p for kind, p in events if kind == "A")
+
+    def test_hall_haengt_den_nachklang_an(self):
+        from mimic.effekte import Hall
+
+        eingang, ausgang = self.sprich({"hall": 0.6})
+        self.assertEqual(len(eingang) + 2 * (int(48_000 * Hall.DAUER_S) - 1), len(ausgang))
+        self.assertNotEqual(eingang, ausgang[:len(eingang)])
+
+    def test_ohne_hall_bleibt_die_laenge_stehen(self):
+        eingang, ausgang = self.sprich({"hall": 0.0})
+        self.assertEqual(eingang, ausgang)
+
+    def test_regler_kommt_auf_den_profilwert_obendrauf(self):
+        _eingang, ueber_regler = self.sprich({"hall": 0.5})
+        _eingang, ueber_profil = self.sprich({}, stimme={"hall": 0.5})
+        self.assertEqual(ueber_profil, ueber_regler)
+
+    def test_unsinn_faellt_auf_trocken_zurueck(self):
+        eingang, ausgang = self.sprich({"hall": "viel"})
+        self.assertEqual(eingang, ausgang)
 
 
 class SprachParameterTests(unittest.TestCase):

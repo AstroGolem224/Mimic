@@ -243,6 +243,11 @@ class Phase1Tests(unittest.TestCase):
     def test_05_limits_before_worker(self):
         before = len(self.stub.requests)
         self.assert_reason({"text": "x" * 1001}, 400, "text_too_long")
+        # Regler ausserhalb der Grenzen melden statt still zu klemmen -- wer 1.5
+        # schickt, hat sich vertan und soll das erfahren. Der Worker haelt seine
+        # eigene Klemme trotzdem, das hier ist die Meldung, nicht der Schutz.
+        self.assert_reason({"text": "x", "hall": 1.5}, 400, "bad_request")
+        self.assert_reason({"text": "x", "hall": "viel"}, 400, "bad_request")
         conn = UnixConnection(self.front_socket)
         huge = b"x" * (64 * 1024 + 1)
         try:

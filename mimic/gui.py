@@ -41,6 +41,8 @@ from pathlib import Path
 from .charaktere import CHARAKTERE
 from .cli import (_dauer, open_request, profil_anlegen, profil_aus_datei, request,
                   speichern)
+from .effekte import (breite_wert, formant_wert, hall_wert, kruemel_wert, raster_wert,
+                      streuung_wert, tempo_faktor, tonhoehe_wert, verzerrung_wert)
 from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
                       VORGABE_MOTOR, Entwurf, umgebungen_da)
 from .protocol import read_frame
@@ -494,14 +496,14 @@ class AktiveVerbindung:
 
 
 def sprich(einsatz: Einsatz, mode: str, senke, abbruch: threading.Event | None = None,
-           aktive: AktiveVerbindung | None = None) -> int:
+           aktive: AktiveVerbindung | None = None, regler: dict | None = None) -> int:
     """Holt einen Einsatz vom Dienst und schiebt jeden Block sofort in die Senke.
 
     Rueckgabe: wie viele Teilstuecke der Worker stumm aufgeben musste. Sie
     fehlen im Ton, ohne dass man es hoert -- deshalb gehoert die Zahl an die
     Oberflaeche und nicht nur ins Worker-Log.
     """
-    body = {"text": einsatz.text, "voice": einsatz.stimme, "mode": mode}
+    body = {"text": einsatz.text, "voice": einsatz.stimme, "mode": mode, **(regler or {})}
     antwort = (aktive.anfrage(body) if aktive is not None
                else request("POST", "/speak", body))
     try:
@@ -667,7 +669,8 @@ class Sitzung:
         with self.lock:
             self.auftrag.update(felder)
 
-    def starten(self, text: str, modus: str, standard: str, format: str | None) -> None:
+    def starten(self, text: str, modus: str, standard: str, format: str | None,
+                regler: dict | None = None) -> None:
         if self.aufnahme.stand()["laeuft"]:
             raise RuntimeError("es laeuft eine Aufnahme")
         # Der Entwurf haelt mehrere GB VRAM. Umgekehrt lehnt _entwerfen einen
@@ -687,10 +690,12 @@ class Sitzung:
                             "mode": modus, "message": "wird vorbereitet…",
                             "ok": True, "download": False}
         self.thread = threading.Thread(target=self._lauf, name="mimic-gui-auftrag",
-                                       args=(text, modus, standard, format), daemon=True)
+                                       args=(text, modus, standard, format, regler or {}),
+                                       daemon=True)
         self.thread.start()
 
-    def _lauf(self, text: str, modus: str, standard: str, format: str | None) -> None:
+    def _lauf(self, text: str, modus: str, standard: str, format: str | None,
+              regler: dict) -> None:
         senke = Sammler() if format else Wiedergabe()
 
         def gemessen(kopf: dict, pcm: bytes) -> None:
@@ -712,7 +717,8 @@ class Sitzung:
             for nummer, einsatz in enumerate(einsaetze, 1):
                 self.melden(index=nummer, total=len(einsaetze), voice=einsatz.stimme,
                             message=f"spricht Einsatz {nummer} von {len(einsaetze)}")
-                uebersprungen += sprich(einsatz, modus, gemessen, self.abbruch, self.aktive)
+                uebersprungen += sprich(einsatz, modus, gemessen, self.abbruch, self.aktive,
+                                        regler)
                 if nummer < len(einsaetze):
                     senke.pause()
             fehlend = (f" — {uebersprungen} Teilstueck(e) blieben stumm und fehlen"
@@ -1104,6 +1110,15 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         if modus not in ("mf", "soar"):
             self._json(400, {"message": "mode muss mf oder soar sein"})
             return
+        regler = {"tempo": tempo_faktor(wunsch.get("tempo")),
+                  "tonhoehe": tonhoehe_wert(wunsch.get("tonhoehe")),
+                  "streuung": streuung_wert(wunsch.get("streuung")),
+                  "raster": raster_wert(wunsch.get("raster")),
+                  "formant": formant_wert(wunsch.get("formant")),
+                  "hall": hall_wert(wunsch.get("hall")),
+                  "verzerrung": verzerrung_wert(wunsch.get("verzerrung")),
+                  "kruemel": kruemel_wert(wunsch.get("kruemel")),
+                  "breite": breite_wert(wunsch.get("breite"))}
         format = wunsch.get("format") or None
         if format is not None and format not in FORMATE:
             self._json(400, {"message": f"format muss {' oder '.join(FORMATE)} sein"})
@@ -1113,7 +1128,7 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                                         "installieren"})
             return
         try:
-            self.sitzung.starten(text, modus, stimme, format)
+            self.sitzung.starten(text, modus, stimme, format, regler)
         except RuntimeError as fehler:
             self._json(409, {"message": str(fehler)})
             return

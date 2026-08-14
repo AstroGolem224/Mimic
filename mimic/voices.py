@@ -10,7 +10,10 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from .effekte import EFFEKTE, ist_effekt
+from .effekte import (BREITE_MAX, BREITE_MIN, EFFEKTE, FORMANT_MAX, FORMANT_MIN,
+                      HALL_MAX, HALL_MIN, KRUEMEL_MAX, KRUEMEL_MIN, RASTER_MAX,
+                      RASTER_MIN, STREUUNG_MAX, STREUUNG_MIN, TONHOEHE_MAX,
+                      TONHOEHE_MIN, VERZERRUNG_MAX, VERZERRUNG_MIN, ist_effekt)
 
 VOICE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 MAX_WAV_BYTES = 10 * 1024 * 1024
@@ -45,6 +48,14 @@ class VoiceProfile:
     language: str = DEFAULT_SPRACHE
     speaker_scale: float = DEFAULT_SCALE
     effekt: str = ""            # leer = unbearbeitet, sonst ein Name aus effekte.EFFEKTE
+    tonhoehe: float = 0.0       # Halbtoene, dauerhaft fuer diese Stimme
+    streuung: float = 0.0       # Halbtoene, um die eine Silbe daneben liegen darf
+    raster: float = 0.0         # 0 aus, 1 zwingt jede Silbe auf den Halbton
+    formant: float = 0.0        # Halbtoene, um die die Klangfarbe steigt
+    hall: float = 0.0           # 0 trocken, 1 voller Nachhall
+    verzerrung: float = 0.0     # 0 sauber, 1 uebersteuert
+    kruemel: float = 0.0        # 0 glatt, 1 vier Bit und gehaltene Proben
+    breite: float = 0.0         # 0 eine Stimme, 1 vier verstimmte Kopien
 
 
 # Zielpegel der Ausgabe. Gemessen am 2026-08-05: Mimic liefert den Pegel der
@@ -220,7 +231,7 @@ def _regular_fd(fd: int, label: str, max_bytes: int) -> os.stat_result:
     return info
 
 
-def _read_settings(profile_fd: int) -> tuple[str, float, str]:
+def _read_settings(profile_fd: int) -> tuple[str, float, str, dict]:
     """`settings.json` im Profil, optional. Fehlt sie, gelten die Vorgaben.
 
     Kein stiller Rueckfall bei kaputtem Inhalt: eine Stimme, die wegen eines
@@ -231,7 +242,7 @@ def _read_settings(profile_fd: int) -> tuple[str, float, str]:
         fd = os.open("settings.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                      dir_fd=profile_fd)
     except FileNotFoundError:
-        return DEFAULT_SPRACHE, DEFAULT_SCALE, ""
+        return DEFAULT_SPRACHE, DEFAULT_SCALE, "", {}
     except OSError as exc:
         raise VoiceError("invalid_voice_profile",
                          f"settings.json ist unlesbar: {exc.strerror}") from None
@@ -258,7 +269,25 @@ def _read_settings(profile_fd: int) -> tuple[str, float, str]:
     if effekt and not ist_effekt(effekt):
         raise VoiceError("invalid_voice_profile",
                          f"effekt muss eines von {sorted(EFFEKTE)} sein")
-    return sprache, float(scale), effekt
+    # Die Klangregler gehoeren zur Stimme, nicht zum Auftrag: eine Stimme, die
+    # nach GLaDOS klingen soll, tut das in jedem Text. Die Regler in der
+    # Oberflaeche kommen oben drauf, sie ersetzen den Profilwert nicht.
+    grenzen = {"tonhoehe": (TONHOEHE_MIN, TONHOEHE_MAX),
+               "streuung": (STREUUNG_MIN, STREUUNG_MAX),
+               "raster": (RASTER_MIN, RASTER_MAX),
+               "formant": (FORMANT_MIN, FORMANT_MAX),
+               "hall": (HALL_MIN, HALL_MAX),
+               "verzerrung": (VERZERRUNG_MIN, VERZERRUNG_MAX),
+               "kruemel": (KRUEMEL_MIN, KRUEMEL_MAX),
+               "breite": (BREITE_MIN, BREITE_MAX)}
+    regler = {}
+    for name, (mini, maxi) in grenzen.items():
+        wert = roh.get(name, 0.0)
+        if type(wert) not in (int, float) or not mini <= wert <= maxi:
+            raise VoiceError("invalid_voice_profile",
+                             f"{name} muss zwischen {mini} und {maxi} liegen")
+        regler[name] = float(wert)
+    return sprache, float(scale), effekt, regler
 
 
 def load_voice(name: str, voices_dir: Path | None = None, *,
@@ -328,9 +357,10 @@ def load_voice(name: str, voices_dir: Path | None = None, *,
             raise VoiceError("invalid_voice_profile", "ref.wav muss 3 bis 60 Sekunden lang sein")
         # Der Pfad muss nach Rueckkehr noch existieren; dup uebernimmt die Lebenszeit.
         gain = _reference_gain(wav_path) if mit_gain else 1.0
-        sprache, scale, effekt = _read_settings(profile_fd)
+        sprache, scale, effekt, regler = _read_settings(profile_fd)
         kept_fd = os.dup(wav_fd)
-        return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain, sprache, scale, effekt)
+        return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain, sprache, scale,
+                            effekt, **regler)
     finally:
         for fd in (txt_fd, wav_fd, profile_fd, root_fd):
             if fd is not None:
