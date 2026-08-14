@@ -117,10 +117,17 @@ Ergebnis ohne Ton:
 | ein Python-Codeblock | »Ein Python-Block mit 4 Zeilen, definiert stimme und stimmdatei.« |
 | eine Tabelle | »Eine Tabelle mit 8 Zeilen.« |
 | `https://github.com/…/pull/2` | »ein Link auf github punkt com« |
+| `mimic_token`, `webbrowser.open` | »mimic token«, »webbrowser punkt open« |
+| `SameSite=Strict`, `_fenster()` | »SameSite gleich Strict«, »fenster« |
+| `127.0.0.1:1234` | »127.0.0.1 Port 1234« |
+| `uv tool install --python 3.12 .` | »ein Befehl« |
 
 Nur der führende Schrägstrich wird gesprochen, innere sind Sprechpausen.
-Gestrichen wird noch, was auch beschrieben nichts hergibt: Bezeichner und
-Befehle in Backticks, die kein Pfad sind (`VORGABE_STIMME`, `--stimme`).
+Einzelne Bezeichner in Backticks werden gesprochen — ohne sie bliebe von
+»`mimic_token` gilt für `127.0.0.1`« nur ein Satz ohne Subjekt übrig. Ein
+mehrteiliger Befehl wird stattdessen angesagt; bildet er einen eigenen Satz,
+fällt er ganz weg. Gestrichen wird noch, was auch beschrieben nichts hergibt:
+Hashes und UUIDs.
 
 Zwei Regeln halten die Ansage bei vollständigen Gedanken, statt sie am Budget
 abzuschneiden:

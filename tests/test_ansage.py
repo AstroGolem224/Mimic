@@ -143,10 +143,25 @@ class Zusammenfassen(unittest.TestCase):
         self.assertEqual(ansage.zusammenfassen(text),
                          "Ergebnis. Zwei Fehler behoben. Der Rest passt.")
 
-    def test_inline_code_wird_nicht_vorgelesen(self):
-        """Bezeichner buchstabiert die Stimme, das zerhackt den Sprachfluss."""
+    def test_bezeichner_in_backticks_wird_gesprochen(self):
+        """Ohne ihn fehlt dem Satz sein Subjekt, nicht nur ein Detail."""
         text = "Die Vorgabe steht in `VORGABE_STIMME` und greift sofort."
-        self.assertEqual(ansage.zusammenfassen(text), "Die Vorgabe steht in und greift sofort.")
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Die Vorgabe steht in VORGABE STIMME und greift sofort.")
+
+    def test_mehrteiliger_befehl_wird_angesagt_statt_vorgelesen(self):
+        text = "Danach `uv tool install --python 3.12 .` laufen lassen."
+        self.assertEqual(ansage.zusammenfassen(text),
+                         "Danach ein Befehl laufen lassen.")
+
+    def test_bezeichner_zeichen_werden_zu_worten(self):
+        faelle = {"`_fenster()`": "fenster", "`webbrowser.open`": "webbrowser punkt open",
+                  "`SameSite=Strict`": "SameSite gleich Strict",
+                  "`127.0.0.1:1234`": "127.0.0.1 Port 1234", "`127.0.0.1`": "127.0.0.1"}
+        for quelle, erwartet in faelle.items():
+            with self.subTest(quelle=quelle):
+                self.assertEqual(ansage.zusammenfassen(f"Der Fall {quelle} bleibt offen."),
+                                 f"Der Fall {erwartet} bleibt offen.")
 
     def test_dateiname_und_verzeichnis_im_fliesstext_werden_gesprochen(self):
         text = "Der Filter sitzt in tools/ansage.py und deckt auch ~/.local/bin ab."

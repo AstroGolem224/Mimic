@@ -223,10 +223,20 @@ _CODEBLOCK = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
 # Ziel in Klammern nicht: es wiederholt ihn nur in laengerer Form.
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL = re.compile(r"<?https?://\S+>?")
-# In Backticks steht Bezeichner, Befehl oder Pfad. Der Pfad wird gesprochen,
-# der Rest gestrichen: eine buchstabierte Option zerhackt den Sprachfluss
-# mehr, als ihr Inhalt wert ist.
+# In Backticks steht Bezeichner, Befehl oder Pfad. Pfad und einzelner
+# Bezeichner werden gesprochen -- sie tragen den Satz, und ohne sie bleibt
+# "gilt fuer als Ganzes, nicht fuer den Port" uebrig. Nur der mehrteilige
+# Befehl wird angesagt statt vorgelesen: eine buchstabierte Optionskette
+# zerhackt den Sprachfluss mehr, als ihr Inhalt wert ist.
 _INLINE_CODE = re.compile(r"`[^`]*`")
+# Host und Port. Der Doppelpunkt ist hier keine Zeilennummer, und die Punkte
+# der Adresse bleiben ungetrennt: mimic.voices.sprich_zahlen liest "127.0.0.1"
+# von sich aus ziffernweise, was besser klingt als "einhundertsiebenundzwanzig".
+_HOST_PORT = re.compile(r"^((?:\d+\.){3}\d+|localhost)(?::(\d+))?$")
+_BEFEHL = "ein Befehl"
+# Der Platzhalter traegt nur, wo er in einem Satz steht. Bildet er selbst einen
+# ("Fertig. `mimic say --voice forge`"), sagt er nichts und faellt weg.
+_NACKTER_BEFEHL = re.compile(rf"(?:^|(?<=[.!?]))\s*{_BEFEHL}\s*\.?")
 # Dateiartig ohne Backticks: Pfade mit Schraegstrich oder Tilde und einzelne
 # Dateinamen mit bekannter Endung, jeweils mit optionaler :Zeilennummer.
 _DATEIARTIG = re.compile(
@@ -341,9 +351,33 @@ def _domain(adresse: str) -> str:
 
 
 def _inline_uebersetzen(treffer: re.Match) -> str:
-    """Backticks: Pfade werden gesprochen, Bezeichner und Befehle fallen weg."""
+    """Backticks: Pfad und Bezeichner werden gesprochen, der Befehl angesagt."""
     inhalt = treffer.group(0).strip("` ")
-    return sprechbar(inhalt) if _DATEIARTIG.fullmatch(inhalt) else " "
+    if not inhalt:
+        return " "
+    if _DATEIARTIG.fullmatch(inhalt):
+        return sprechbar(inhalt)
+    if len(inhalt.split()) > 1:
+        return _BEFEHL
+    # Ein Hash sagt auch beschrieben nichts; "eine Kennung" mitten im Satz ist
+    # nur eine hoerbare Stolperstelle.
+    if _KENNUNG.match(inhalt):
+        return " "
+    return bezeichner_sprechbar(inhalt)
+
+
+def bezeichner_sprechbar(bezeichner: str) -> str:
+    """Einen Bezeichner aus Backticks so schreiben, wie man ihn vorliest.
+
+    Leere Klammern sind stumm ("_fenster()" ist "fenster"), das
+    Gleichheitszeichen wird zum Wort, und Host mit Port bekommt "Port" statt
+    des Doppelpunkts, den sprechbar() sonst als Zeilennummer deutet.
+    """
+    treffer = _HOST_PORT.match(bezeichner)
+    if treffer:
+        adresse, port = treffer.groups()
+        return f"{adresse} Port {port}" if port else adresse
+    return sprechbar(bezeichner.replace("()", "").replace("=", " gleich "))
 
 
 def _tabellenbeschreibung(tabelle: str) -> str:
@@ -356,10 +390,10 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     """Aus einer Markdown-Antwort einen sprechbaren Satz machen.
 
     Was keine Stimme woertlich vorlesen kann, wird uebersetzt statt gestrichen:
-    Codebloecke und Tabellen zu einem Satz ueber ihren Inhalt, Pfade in die
-    Form, in der ein Mensch sie vorliest, Adressen auf ihre Domain. Gestrichen
-    wird nur noch, was auch beschrieben nichts hergibt -- Bezeichner und
-    Befehle in Backticks, die kein Pfad sind.
+    Codebloecke und Tabellen zu einem Satz ueber ihren Inhalt, Pfade und
+    Bezeichner in die Form, in der ein Mensch sie vorliest, Adressen auf ihre
+    Domain, mehrteilige Befehle auf die blosse Ansage. Gestrichen wird nur
+    noch, was auch beschrieben nichts hergibt -- Hashes und UUIDs.
     """
     text = _CODEBLOCK.sub(lambda t: blockbeschreibung(t.group(0)), text)
     text = _TABELLE.sub(lambda t: _tabellenbeschreibung(t.group(0)), text)
@@ -378,6 +412,7 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
             continue            # Tabellenzeile oder Trennlinie
         zeile = _AUFZAEHLUNG.sub("", zeile)
         zeile = _AUSZEICHNUNG.sub("", zeile).strip()
+        zeile = _NACKTER_BEFEHL.sub("", zeile).strip()
         # Ein Doppelpunkt am Zeilenende kuendigt an, was frueher weggestrichen
         # wurde und jetzt als Beschreibung folgt -- "Am PC:" traegt seinen
         # Block also wieder. Er bleibt stehen und bekommt keinen Punkt.
