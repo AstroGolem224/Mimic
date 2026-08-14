@@ -56,6 +56,22 @@ def _umask() -> int:
 
 
 def say(args: argparse.Namespace) -> int:
+    # Vor dem Auftrag pruefen, nicht danach. Ein Tippfehler im Pfad liess sonst
+    # erst die GPU rechnen und meldete dann `worker_unavailable` -- der Dienst
+    # war in Ordnung, der Nutzer suchte den Fehler trotzdem dort.
+    if args.output:
+        eltern = Path(args.output).parent
+        if not eltern.is_dir():
+            print(f"bad_output_path: {eltern} ist kein Verzeichnis", file=sys.stderr)
+            return 1
+    # Ein Lebenszeichen, BEVOR es still wird: getresponse() kehrt erst zurueck,
+    # wenn der Worker den Auftrag annimmt, und bei Warteschlange oder
+    # Moduswechsel sind das ueber 80 s (gemessen: queue_wait_ms=67754.5 plus
+    # Kaltstart). Ohne diese Zeile ist das nicht von einem Haenger zu
+    # unterscheiden. Nur ans Terminal -- in einer Pipe waere es Rauschen.
+    if sys.stderr.isatty():
+        print("warte auf den Dienst (Warteschlange oder Modellwechsel koennen "
+              "eine Minute kosten)...", file=sys.stderr, flush=True)
     try:
         response = request("POST", "/speak", {"text": args.text, "voice": args.voice, "mode": args.mode})
     except OSError as exc:
@@ -163,7 +179,7 @@ def voices(_args: argparse.Namespace) -> int:
         names = []
     for name in names:
         try:
-            profile = load_voice(name, root)
+            profile = load_voice(name, root, mit_gain=False)
         except VoiceError:
             continue
         try:
@@ -281,7 +297,7 @@ def profil_aus_datei(name: str, quelle: Path, text: str, force: bool = False) ->
         if profil.is_dir() and not any(profil.iterdir()):  # kein Abbruch soll eine Bauruine hinterlassen
             profil.rmdir()
 
-    close_voice(load_voice(name, root))   # Endpruefung durch dieselbe Instanz wie der Dienst
+    close_voice(load_voice(name, root, mit_gain=False))   # Endpruefung durch dieselbe Instanz wie der Dienst
     return dauer, hinweis
 
 
@@ -481,7 +497,7 @@ def record(args: argparse.Namespace) -> int:
             profil.rmdir()
 
     try:
-        profile = load_voice(name, root)
+        profile = load_voice(name, root, mit_gain=False)
     except VoiceError as exc:
         print(f"{exc.reason}: {exc.message}", file=sys.stderr)
         return 1
@@ -655,7 +671,14 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    return args.function(args)
+    try:
+        return args.function(args)
+    except KeyboardInterrupt:
+        # 130 ist die uebliche Antwort auf SIGINT. Vorher endete jedes Strg-C in
+        # 25 Zeilen Stack durch http.client und protocol.py; das Aufraeumen lief
+        # schon korrekt, nur sah es nach einem Absturz aus.
+        print("abgebrochen", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -197,9 +198,17 @@ class Entwurf:
             if self.prozess is not None:
                 raise RuntimeError("es laeuft schon ein Entwurf")
             self._raeumen()
-            ordner = datenverzeichnis() / "entwuerfe"
-            shutil.rmtree(ordner, ignore_errors=True)
-            ordner.mkdir(parents=True, exist_ok=True)
+            # Eigener Ordner je Lauf statt eines festen Namens. Mit dem festen
+            # loeschte ein zweites Fenster (seit ec19240 ausdruecklich
+            # unterstuetzt) die Kandidaten des ersten, waehrend der Nutzer sie
+            # noch durchhoerte -- und sein Schliessen riss dem anderen den
+            # laufenden Entwurf weg.
+            if self.ordner is not None:
+                shutil.rmtree(self.ordner, ignore_errors=True)
+            wurzel = datenverzeichnis() / "entwuerfe"
+            wurzel.mkdir(parents=True, exist_ok=True)
+            wurzel.chmod(0o700)
+            ordner = Path(tempfile.mkdtemp(prefix="lauf.", dir=wurzel))
             ordner.chmod(0o700)
             auftrag = {"instruction": beschreibung, "text": text,
                        "anzahl": anzahl, "aus": str(ordner)}

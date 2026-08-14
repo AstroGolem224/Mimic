@@ -162,7 +162,7 @@ def verfuegbare_stimmen() -> list[str]:
         return []
     for name in eintraege:
         try:
-            profil = load_voice(name, root)
+            profil = load_voice(name, root, mit_gain=False)
         except VoiceError:
             continue
         close_voice(profil)
@@ -181,7 +181,7 @@ def stimmen_details() -> list[dict]:
     for name in eintraege:
         eintrag: dict = {"name": name, "ok": True, "grund": "", "dauer_s": None, "text": ""}
         try:
-            profil = load_voice(name, root)
+            profil = load_voice(name, root, mit_gain=False)
         except VoiceError as fehler:
             eintrag.update(ok=False, grund=f"{fehler.reason}: {fehler.message}")
         else:
@@ -349,7 +349,7 @@ class Aufnahme:
             profil, datei, name = self.profil, self.datei, self.name
         speichern(profil, datei, text)
         try:
-            geprueft = load_voice(name)
+            geprueft = load_voice(name, mit_gain=False)
         except VoiceError as fehler:
             raise RuntimeError(f"{fehler.reason}: {fehler.message}") from None
         close_voice(geprueft)
@@ -670,6 +670,12 @@ class Sitzung:
     def starten(self, text: str, modus: str, standard: str, format: str | None) -> None:
         if self.aufnahme.stand()["laeuft"]:
             raise RuntimeError("es laeuft eine Aufnahme")
+        # Der Entwurf haelt mehrere GB VRAM. Umgekehrt lehnt _entwerfen einen
+        # Start waehrend eines Sprechauftrags schon ab -- ohne diese Zeile galt
+        # die Ausschliesslichkeit nur in eine Richtung, und der Worker lief in
+        # insufficient_vram oder riss dem Generator den Speicher weg.
+        if self.entwurf.stand()["laeuft"]:
+            raise RuntimeError("es laeuft ein Entwurf")
         with self.lock:
             if self.auftrag["running"]:
                 raise RuntimeError("es laeuft noch ein Auftrag")

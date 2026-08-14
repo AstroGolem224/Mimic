@@ -1,5 +1,13 @@
 [Unit]
 Description=Mimic frontend socket
+# Dieselbe Falle wie bei mimic-worker.socket: startet der getriggerte Dienst
+# fuenfmal in zehn Sekunden nicht durch -- etwa nach einem misslungenen
+# `uv tool install` --, nimmt systemd die SOCKET-Unit mit in den Zustand failed
+# ('service-start-limit-hit'). Nach der Reparatur bliebe Mimic dann tot, bis
+# jemand von Hand `systemctl --user reset-failed mimic.socket` ruft, und nichts
+# im Werkzeug weist darauf hin. Starts kommen hier ausschliesslich von
+# Verbindungen (Restart=no), haeufiges Starten ist also kein Fehlersignal.
+StartLimitIntervalSec=0
 
 [Socket]
 ListenStream=%t/mimic/mimic.socket

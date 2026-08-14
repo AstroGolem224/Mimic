@@ -266,7 +266,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
             self._error("bad_request", "correlation_id muss 32-stelliges Hex sein")
             return
         try:
-            profile = load_voice(voice)
+            profile = load_voice(voice, mit_gain=False)
         except VoiceError as exc:
             self._error(exc.reason, exc.message)
             return

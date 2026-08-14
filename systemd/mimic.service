@@ -2,6 +2,10 @@
 Description=Mimic CPU frontend
 Requires=mimic.socket
 After=mimic.socket
+# Gehoert in [Unit]; in [Service] wird es stillschweigend ignoriert. Siehe die
+# Begruendung in mimic.socket -- beide Units brauchen es, sonst reisst die eine
+# die andere mit ins failed.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

@@ -261,7 +261,15 @@ def _read_settings(profile_fd: int) -> tuple[str, float, str]:
     return sprache, float(scale), effekt
 
 
-def load_voice(name: str, voices_dir: Path | None = None) -> VoiceProfile:
+def load_voice(name: str, voices_dir: Path | None = None, *,
+               mit_gain: bool = True) -> VoiceProfile:
+    """`mit_gain=False` fuer Aufrufer, die nur pruefen oder auflisten.
+
+    Die Verstaerkung wird aus jeder Probe der Referenz gerechnet, ~22 ms je
+    Stimme. Wer nur wissen will, ob ein Profil taugt, zahlt das umsonst: bei 27
+    Profilen kostete `mimic voices` dadurch eine halbe Sekunde, und dieselbe
+    Rechnung lief nochmal im Worker, weil der Cache prozesslokal ist.
+    """
     if not isinstance(name, str) or not VOICE_RE.fullmatch(name):
         raise VoiceError("unknown_voice", "ungueltiger Stimmname")
     root = voices_dir or default_voices_dir()
@@ -319,7 +327,7 @@ def load_voice(name: str, voices_dir: Path | None = None) -> VoiceProfile:
         if not 3 <= duration <= 60:
             raise VoiceError("invalid_voice_profile", "ref.wav muss 3 bis 60 Sekunden lang sein")
         # Der Pfad muss nach Rueckkehr noch existieren; dup uebernimmt die Lebenszeit.
-        gain = _reference_gain(wav_path)
+        gain = _reference_gain(wav_path) if mit_gain else 1.0
         sprache, scale, effekt = _read_settings(profile_fd)
         kept_fd = os.dup(wav_fd)
         return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain, sprache, scale, effekt)
@@ -350,7 +358,7 @@ def available_voices(voices_dir: Path | None = None) -> list[str]:
         # Genau dieselbe Pruefung hier verhindert, dass /status eine Stimme verspricht,
         # die /speak unmittelbar danach ablehnen muss.
         try:
-            profile = load_voice(name, root)
+            profile = load_voice(name, root, mit_gain=False)
         except VoiceError:
             continue
         close_voice(profile)

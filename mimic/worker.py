@@ -205,17 +205,36 @@ class Engine:
                 reason = exc.reason if isinstance(exc, WorkerRefusal) else "worker_unavailable"
                 message = exc.message if isinstance(exc, WorkerRefusal) else f"Worker-Fehler: {exc}"
                 details = exc.details if isinstance(exc, WorkerRefusal) else {}
-                self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": reason,
-                                                "message": message, "samples": 0, **details},
-                                               ensure_ascii=False, separators=(",", ":")).encode())
-                job.delivered.wait(1)
+                # Im Warmlaufzweig ist `job` None. emit(None, ...) warf dann
+                # AttributeError, und der starb hier ungefangen -- mit ihm der
+                # einzige Faden, der das Modell besitzt. submit() nahm weiter
+                # Auftraege an, niemand arbeitete sie ab: erst vier Timeouts,
+                # danach nur noch 429, ohne Logzeile und ohne den Neustart, den
+                # `fatal` ausloest. Deshalb wird nur mit Auftrag gesendet --
+                # und `fatal` in JEDEM Fall gesetzt.
+                if job is not None:
+                    self.emit(job, "E", json.dumps({"v": 1, "status": "error", "reason": reason,
+                                                    "message": message, "samples": 0, **details},
+                                                   ensure_ascii=False, separators=(",", ":")).encode())
+                    job.delivered.wait(1)
+                else:
+                    print(f"job=warm outcome=error reason={reason} message={message}",
+                          file=sys.stderr, flush=True)
                 self.fatal.set()
                 wake_listener()
             finally:
                 # Auch der `continue` im Warmlaufzweig laeuft hier durch --
                 # sonst schluege die Wache nach jedem Warmlauf zu.
                 fertig.set()
-                self.write_status("warm" if self.state == "warm" else "kalt")
+                try:
+                    self.write_status("warm" if self.state == "warm" else "kalt")
+                except OSError as exc:
+                    # Hier ist die Statusdatei reine Diagnose. Beim Start darf
+                    # ihr Fehlschlag den Worker umbringen, in der Schleife nicht:
+                    # eine Ausnahme aus dem finally faengt niemand mehr und
+                    # nimmt den einzigen Modellbesitzer-Faden mit.
+                    print(f"job=status outcome=error message={exc}",
+                          file=sys.stderr, flush=True)
 
     def _warm(self, request: dict | None) -> None:
         if request is None:
@@ -394,8 +413,13 @@ class Engine:
                         pcm = tensor_to_pcm(chunk, profile.gain)
                         if effekt is not None:
                             pcm = effekt.verarbeite(pcm)
-                        spitze = max(spitze, peak_int16(pcm))
                         if not hoerbar:
+                            # Erst hier rechnen, nicht vor dem Zweig: `spitze`
+                            # wird ausschliesslich zwei Zeilen tiefer gelesen,
+                            # und sobald der Take hoerbar ist, lief die Schleife
+                            # ueber jede einzelne Probe des restlichen Satzes
+                            # umsonst -- auf dem Faden, der das GIL haelt.
+                            spitze = max(spitze, peak_int16(pcm))
                             anfang.append(pcm)
                             if spitze <= STUMM_PEAK:
                                 continue
