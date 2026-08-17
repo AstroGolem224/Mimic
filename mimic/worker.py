@@ -9,6 +9,7 @@ import os
 import queue
 import resource
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -606,10 +607,30 @@ class Engine:
             raise
 
 
+def _nvidia_smi_free_mib() -> int | None:
+    # ponytail: erste Zeile = erste Karte. nvidia-smi kennt CUDA_VISIBLE_DEVICES
+    # nicht; bei mehreren GPUs hier auf pynvml mit Index umstellen.
+    try:
+        ausgabe = subprocess.run(["nvidia-smi", "--query-gpu=memory.free",
+                                  "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=5, check=True)
+        return int(ausgabe.stdout.split()[0])
+    except Exception:
+        return None
+
+
 def vram_free_mib() -> int:
     fake = os.environ.get("MIMIC_VRAM_FREE_MIB")
     if fake is not None:
         return int(fake)
+    # NVML (hier ueber nvidia-smi) braucht keinen CUDA-Kontext, torch schon:
+    # torch.cuda.mem_get_info() legt selbst einige hundert MB an und wirft
+    # genau dann, wenn der VRAM erschoepft ist -- also im Fall, den das Gatter
+    # melden soll. Gemessen 2026-08-16 bei 273 MiB frei: die Exception kam als
+    # `worker_unavailable` heraus statt als `insufficient_vram`.
+    frei = _nvidia_smi_free_mib()
+    if frei is not None:
+        return frei
     import torch
     free, _total = torch.cuda.mem_get_info()
     return int(free // (1024 * 1024))

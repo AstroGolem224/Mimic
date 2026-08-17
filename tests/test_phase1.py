@@ -318,6 +318,22 @@ class Phase1Tests(unittest.TestCase):
             os.environ.pop("MIMIC_VRAM_FREE_MIB", None)
             os.environ.pop("MIMIC_FAKE_LOAD_MARKER", None)
 
+    def test_07b_vram_gatter_ohne_cuda_kontext(self):
+        """Ist der VRAM erschoepft, wirft torch.cuda.mem_get_info() -- der Aufruf
+        legt selbst einen CUDA-Kontext von einigen hundert MB an. Gemessen
+        2026-08-16 bei 273 MiB frei: Mimic meldete `worker_unavailable` statt
+        des dafuer gedachten `insufficient_vram`."""
+        import sys
+        from mimic import worker
+        os.environ.pop("MIMIC_VRAM_FREE_MIB", None)
+        engine = worker.Engine.__new__(worker.Engine)
+        with unittest.mock.patch.object(worker, "_nvidia_smi_free_mib", return_value=273), \
+                unittest.mock.patch.dict(sys.modules, {"torch": None}):
+            with self.assertRaises(worker.WorkerRefusal) as raised:
+                engine._load("mf")
+        self.assertEqual("insufficient_vram", raised.exception.reason)
+        self.assertIn("273", raised.exception.message)
+
     def test_08_disconnect_vor_erstem_rahmen_schliesst_worker(self):
         self.stub.pre_cancel_ready.clear()
         self.stub.pre_cancelled.clear()
