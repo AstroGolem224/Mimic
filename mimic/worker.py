@@ -536,7 +536,12 @@ class Engine:
             elapsed = time.monotonic() - started
             audio_s = samples / int(getattr(self.runtimes.get(mode), "sample_rate", 48_000))
             rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-            fields = {"request_id": request_id, "voice": voice, "mode": mode,
+            # Beide Kennungen nebeneinander: request_id gehoert dem Worker, die
+            # correlation_id kommt vom Aufrufer und steht auch in dessen Log --
+            # nur so laesst sich eine Client-Anfrage im Journal wiederfinden.
+            fields = {"request_id": request_id,
+                      "correlation_id": request.get("correlation_id"),
+                      "voice": voice, "mode": mode,
                       "chars": len(request["text"]), "state": "kalt" if cold else "warm",
                       "load_s": self.last_load_s or 0,
                       "ttfa_ms": round((first_audio_at - started) * 1000, 1) if first_audio_at else 0,
@@ -547,7 +552,10 @@ class Engine:
                       "erstchunk_ms": (round((first_chunk_at - started) * 1000, 1)
                                        if first_chunk_at else 0),
                       "praefix_chunks": praefix_chunks}
-            if reason:
+            # Beim Abbruch traegt `reason` noch den Anfangswert dieser Funktion:
+            # kein Zweig hat ihn gesetzt, weil es keinen Fehler gab. Als
+            # "worker_unavailable" gemeldet log das falsch -- der Worker lief.
+            if reason and outcome != "cancelled":
                 fields["reason"] = reason
             print(" ".join(f"{key}={value}" for key, value in fields.items()), flush=True)
 
