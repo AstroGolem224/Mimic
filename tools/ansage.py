@@ -690,6 +690,15 @@ def _mimic() -> str | None:
     return str(ersatz) if os.access(ersatz, os.X_OK) else None
 
 
+def abgeschaltet() -> bool:
+    """Der Schalter aus der Leiste: solange die Datei liegt, bleibt es still.
+
+    Eine Datei statt `MIMIC_ANSAGE_STILL`, weil die Umgebung eines Hooks von
+    aussen nicht erreichbar ist -- ein Traysymbol kann sie nicht setzen.
+    """
+    return (Path.home() / ".config/mimic/ansage-aus").exists()
+
+
 def sprechen(text: str, sitzung: str = "", griff=None) -> int:
     """Vordergrundpfad: Ausgabe belegen, Kopfhoerer sicherstellen, sprechen. Immer 0.
 
@@ -697,6 +706,12 @@ def sprechen(text: str, sitzung: str = "", griff=None) -> int:
     Ausgabe VOR dem Warten auf die Antwort, damit der Text beim Sprechbeginn
     frisch ist und nicht der Stand von vor der Warteschlange.
     """
+    # Hier und nicht nur beim Hook-Aufruf: der Meldepfad wartet bis zu einer
+    # Minute auf die Antwort, und wer waehrenddessen abschaltet, meint auch
+    # diese Ansage.
+    if abgeschaltet():
+        _protokoll("abgeschaltet", text, sitzung=sitzung or "-")
+        return 0
     if griff is None:
         griff = _sperre_holen(sitzung)
     if griff is None:
@@ -948,7 +963,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.vorschau:
         print(text)
         return 0
-    if os.environ.get("MIMIC_ANSAGE_STILL") == "1":
+    if os.environ.get("MIMIC_ANSAGE_STILL") == "1" or abgeschaltet():
         return 0
     # Beim Stop wartet der abgekoppelte Prozess auf die Antwort; hier ist sie
     # oft noch nicht geschrieben. Die Nachfrage traegt ihren Text dagegen im

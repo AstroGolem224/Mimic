@@ -655,5 +655,35 @@ class AlsHook(unittest.TestCase):
         self.assertEqual(lauf.stderr, "")
 
 
+class SchalterTests(unittest.TestCase):
+    """Der Schalter aus der Leiste muss den Sprechpfad selbst treffen.
+
+    Eine Pruefung nur beim Hook-Aufruf reicht nicht: der Meldepfad startet sich
+    abgekoppelt neu und kaeme sonst am Schalter vorbei.
+    """
+
+    def lauf(self, aus: bool):
+        heim = Path(tempfile.mkdtemp())
+        if aus:
+            (heim / ".config/mimic").mkdir(parents=True)
+            (heim / ".config/mimic/ansage-aus").touch()
+        laufzeit = Path(tempfile.mkdtemp())
+        ergebnis = subprocess.run(
+            [sys.executable, str(ANSAGE_PY), "--sagen", "Probe", "--sitzung", "pruef"],
+            capture_output=True, text=True, timeout=30,
+            env={"PATH": "/nonexistent", "HOME": str(heim), "XDG_RUNTIME_DIR": str(laufzeit)})
+        self.assertEqual(ergebnis.returncode, 0)
+        return (laufzeit / "mimic-ansage.log").read_text(encoding="utf-8")
+
+    def test_schalter_aus_erreicht_den_sprechpfad(self):
+        protokoll = self.lauf(aus=True)
+        self.assertIn("abgeschaltet", protokoll)
+        self.assertNotIn("spricht", protokoll)
+
+    def test_ohne_schalter_wird_gesprochen(self):
+        protokoll = self.lauf(aus=False)
+        self.assertIn("spricht", protokoll)
+
+
 if __name__ == "__main__":
     unittest.main()
