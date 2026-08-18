@@ -29,10 +29,12 @@ Restart=no
 # weil Referenzaudio und Konditionierung dazukommen. Unterhalb der Spitze
 # drosselt der Kernel bei jeder Anfrage und reclaimt -- gemessen am 2026-08-05.
 # Erst 5G, aber auch dort noch 17970 Drosselereignisse (memory.events high) --
-# die RSS-Spitze liegt bei 5.05 GiB. MemoryMax bleibt 7G als harte Grenze,
-# die laut memory.events nie erreicht wird.
-MemoryHigh=6G
-MemoryMax=7G
+# die RSS-Spitze liegt bei 5.05 GiB. Qwen 1.7B braucht im isolierten Kindprozess
+# knapp ueber 6 GiB; bei 6G wurde es waehrend der ersten Generierung permanent
+# gedrosselt. 8G/10G lassen beiden Motorfamilien Luft, ohne den Worker auf dem
+# 30-GiB-Rechner unbegrenzt wachsen zu lassen.
+MemoryHigh=8G
+MemoryMax=10G
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=yes
 PrivateTmp=yes

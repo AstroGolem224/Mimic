@@ -309,6 +309,35 @@ def profil_aus_datei(name: str, quelle: Path, text: str, force: bool = False) ->
     return dauer, hinweis
 
 
+def qwen_quelle_speichern(profil: Path, quelle: Path) -> Path:
+    """Bewahrt die Originalvorlage fuer den direkten Qwen-Modus auf.
+
+    ``ref.wav`` bleibt die eingedeutschte, mit MF/SOAR kompatible Referenz.
+    Qwen kann daneben direkt aus der Originalstimme nur das Sprecher-Embedding
+    ziehen; so entsteht kein zweiter Klonschritt ueber synthetisches Audio.
+    """
+    ziel = profil / "qwen-source.wav"
+    tmp = profil / "qwen-source.wav.tmp"
+    try:
+        wandlung = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(quelle), "-ac", "1",
+             "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", str(tmp)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if wandlung.returncode != 0:
+            raise VoiceError(
+                "invalid_voice_profile",
+                f"Qwen-Vorlage konnte nicht gesichert werden: "
+                f"{wandlung.stderr.decode(errors='replace').strip()}")
+        tmp.chmod(0o600)
+        os.replace(tmp, ziel)
+        ziel.chmod(0o600)
+        return ziel
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise VoiceError("invalid_voice_profile", f"Qwen-Vorlage fehlgeschlagen: {exc}") from exc
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def importieren(args: argparse.Namespace) -> int:
     """CLI-Huelle um profil_aus_datei: Namensauflösung, Ausgabe, Rueckgabewert."""
     from .charaktere import CHARAKTERE
@@ -492,6 +521,64 @@ def eindeutschen(args: argparse.Namespace) -> int:
         print(f"  Hinweis: {hinweis}")
     profil = default_voices_dir() / args.voice
     print(f"  {dauer:.1f} s aus {quelle.name}\n  {profil}/ref.wav\n  {profil}/ref.txt\n"
+          f"  Probe:  mimic say \"Test\" --voice {args.voice}")
+    return 0
+
+
+def eindeutschen2(args: argparse.Namespace) -> int:
+    """Version 2: englische Vorlage auf Sprecheridentitaet reduzieren.
+
+    Anders als MOSS v1 uebernimmt Qwen im x-vector-only-Modus keine englischen
+    Audio-Codes und keine englische Prosodie. Vorhandene Profile werden wie bei
+    allen Importwegen ohne ausdrueckliches --force nicht ersetzt.
+    """
+    from .entwurf import STANDARDTEXT, eindeutschen_v2
+
+    quelle = Path(args.datei).expanduser()
+    if not quelle.is_file():
+        print(f"invalid_voice_profile: {quelle} gibt es nicht", file=sys.stderr)
+        return 1
+    text = args.text or STANDARDTEXT
+
+    with tempfile.TemporaryDirectory(prefix="mimic-eindeutsch-v2-") as tmp:
+        ziel = Path(tmp) / "de.wav"
+        bester: tuple[float, Path, float] | None = None
+        for versuch in range(1, args.wuerfe + 1):
+            try:
+                dauer = eindeutschen_v2(
+                    quelle, ziel, text, saat=args.saat + versuch - 1)
+            except RuntimeError as fehler:
+                print(f"eindeutschen2: {fehler}", file=sys.stderr)
+                return 1
+            if 8 <= dauer <= 15:
+                bester = None
+                break
+            abstand = min(abs(dauer - 8), abs(dauer - 15))
+            if bester is None or abstand < bester[0]:
+                behalten = Path(tmp) / "bester.wav"
+                shutil.copyfile(ziel, behalten)
+                bester = (abstand, behalten, dauer)
+            if versuch < args.wuerfe:
+                print(f"  {dauer} s liegt ausserhalb 8-15 s, neuer Wurf "
+                      f"({versuch} von {args.wuerfe})")
+        if bester is not None:
+            _, behalten, dauer = bester
+            shutil.copyfile(behalten, ziel)
+            print(f"  kein Wurf im erprobten Bereich. Bester: {dauer} s")
+
+        try:
+            dauer, hinweis = profil_aus_datei(args.voice, ziel, text, args.force)
+            qwen_quelle_speichern(default_voices_dir() / args.voice, quelle)
+        except VoiceError as exc:
+            nachsatz = " -- --force zum Ueberschreiben" if "existiert schon" in exc.message else ""
+            print(f"{exc.reason}: {exc.message}{nachsatz}", file=sys.stderr)
+            return 1
+
+    if hinweis:
+        print(f"  Hinweis: {hinweis}")
+    profil = default_voices_dir() / args.voice
+    print(f"  {dauer:.1f} s\n  {profil}/ref.wav\n  {profil}/ref.txt\n"
+          f"  {profil}/qwen-source.wav\n"
           f"  Probe:  mimic say \"Test\" --voice {args.voice}")
     return 0
 
@@ -697,7 +784,7 @@ def parser() -> argparse.ArgumentParser:
     say_parser = commands.add_parser("say")
     say_parser.add_argument("text")
     say_parser.add_argument("--voice", default="forge")
-    say_parser.add_argument("--mode", choices=("mf", "soar"), default="soar")
+    say_parser.add_argument("--mode", choices=("mf", "soar", "qwen"), default="soar")
     say_parser.add_argument("-o", "--output")
     say_parser.add_argument("--tempo", type=float, default=1.0,
                             help="Sprechgeschwindigkeit, 1.0 unveraendert (0.5 bis 2.0)")
@@ -765,6 +852,17 @@ def parser() -> argparse.ArgumentParser:
                            help="Versuche, die 8-15-Sekunden-Marke zu treffen")
     de_parser.add_argument("--force", action="store_true")
     de_parser.set_defaults(function=eindeutschen)
+    de2_parser = commands.add_parser("eindeutschen2")
+    de2_parser.add_argument("voice", help="Name eines neuen Profils (Version 2)")
+    de2_parser.add_argument("datei", help="fremde Aufnahme, beliebiges Format")
+    de2_parser.add_argument("--text", default=None,
+                            help="deutscher Referenztext; wird woertlich das ref.txt")
+    de2_parser.add_argument("--wuerfe", type=int, default=3,
+                            help="Versuche, die 8-15-Sekunden-Marke zu treffen")
+    de2_parser.add_argument("--saat", type=int, default=20260818,
+                            help="Startwert fuer reproduzierbare Kandidaten")
+    de2_parser.add_argument("--force", action="store_true")
+    de2_parser.set_defaults(function=eindeutschen2)
     return result
 
 

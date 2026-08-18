@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import itertools
 import heapq
 import json
@@ -11,9 +12,11 @@ import resource
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+import wave
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -22,7 +25,7 @@ from .frontend import ThreadingUnixServer, _server, runtime_dir, worker_socket_p
 from .effekte import (Kette, breite_wert, formant_wert, hall_wert, kruemel_wert,
                       raster_wert, streuung_wert, tempo_faktor, tonhoehe_wert,
                       verzerrung_wert)
-from .protocol import finish_chunks, write_chunk, encode_frame
+from .protocol import MODES, finish_chunks, write_chunk, encode_frame
 from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
                      entschaerfe_versalien, load_voice, split_sentences,
                      sprich_zahlen)
@@ -30,11 +33,14 @@ from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
 REVISIONS = {
     "mf": ("dots-studio/dots.tts-mf", "25c53fb462e57087e52237daa5ea30df1c5cc328"),
     "soar": ("dots-studio/dots.tts-soar", "e3520f75254d0020a0406db31c51a79d00d22d55"),
+    "qwen": ("Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+             "fd4b254389122332181a7c3db7f27e918eec64e3"),
 }
 MIN_VRAM_MIB = int(os.environ.get("MIMIC_MIN_VRAM_MIB", "8000"))
 MODEL_VRAM_MIB = int(os.environ.get("MIMIC_MODEL_VRAM_MIB", "6222"))
 IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
+QWEN_REQUEST_TIMEOUT = float(os.environ.get("MIMIC_QWEN_REQUEST_TIMEOUT", "240"))
 # Aufschlag der Wache auf REQUEST_TIMEOUT. Sie greift nur, wenn das Modell gar
 # nicht antwortet -- ein langsamer, aber lebendiger Lauf soll sie nie ausloesen.
 # 60 s deckt den gemessenen Kaltstart (7.1 s) samt reichlich Luft ab.
@@ -57,6 +63,106 @@ STUMM_PEAK = int(32768 * 10 ** (-25.0 / 20))
 # beendet (Journal 2026-08-13: 728 Zeichen angefordert, 15 s gesprochen).
 # Jeder weitere Versuch kostet nur im seltenen Fall Zeit.
 MAX_VERSUCHE = 4
+
+
+class QwenRuntime:
+    """Dots-kompatible Huelle um den isolierten, warmen Qwen-Prozess."""
+
+    sample_rate = 24_000
+
+    def __init__(self) -> None:
+        from .entwurf import EINDEUTSCHER_V2, python_pfad
+
+        python = python_pfad(EINDEUTSCHER_V2.name)
+        if not python.is_file():
+            raise RuntimeError("Qwen fehlt -- `mimic setup --entwurf qwen-klon`")
+        skript = Path(__file__).resolve().parent / "qwen_dienst.py"
+        self.prozess = subprocess.Popen(
+            [str(python), str(skript)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1)
+        self.lock = threading.Lock()
+        ereignis = self._ereignis("bereit")
+        self.sample_rate = int(ereignis.get("rate") or self.sample_rate)
+        atexit.register(self.close)
+
+    def _ereignis(self, erwartet: str | None = None) -> dict:
+        assert self.prozess.stdout is not None
+        geplapper: list[str] = []
+        while True:
+            zeile = self.prozess.stdout.readline()
+            if not zeile:
+                grund = " / ".join(geplapper[-4:]) or f"Code {self.prozess.poll()}"
+                raise RuntimeError(f"Qwen-Prozess endete: {grund[-500:]}")
+            try:
+                wert = json.loads(zeile)
+            except json.JSONDecodeError:
+                if zeile.strip():
+                    geplapper.append(zeile.strip())
+                continue
+            if wert.get("kind") == "fehler":
+                raise RuntimeError(str(wert.get("grund") or "Qwen-Fehler"))
+            if erwartet is None or wert.get("kind") == erwartet:
+                return wert
+
+    @staticmethod
+    def _referenzpfad(prompt_audio_path: str) -> str:
+        """Macht den gesicherten Voice-FD fuer das isolierte Kind lesbar."""
+        quelle = prompt_audio_path
+        if quelle.startswith("/proc/self/fd/"):
+            quelle = os.readlink(quelle)
+        quellpfad = Path(quelle)
+        original = quellpfad.with_name("qwen-source.wav")
+        return str(original if original.is_file() else quellpfad)
+
+    def generate_stream(self, *, text: str, prompt_audio_path: str, **_kwargs):
+        laufzeit = runtime_dir()
+        laufzeit.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix="qwen-", suffix=".wav", dir=laufzeit)
+        os.close(fd)
+        ziel = Path(name)
+        ziel.unlink(missing_ok=True)
+        try:
+            with self.lock:
+                if self.prozess.poll() is not None:
+                    raise RuntimeError(f"Qwen-Prozess ist beendet (Code {self.prozess.returncode})")
+                # load_voice reicht absichtlich einen bereits geoeffneten
+                # /proc/self/fd-Pfad weiter. Der Qwen-Unterprozess besitzt
+                # diesen Deskriptor nicht; sein /proc/self/fd/N bezeichnet
+                # etwas anderes. Das echte, zuvor validierte Ziel des FDs ist
+                # fuer den read-only geschuetzten Kindprozess dagegen lesbar.
+                quelle = self._referenzpfad(prompt_audio_path)
+                # eindeutschen2 bewahrt zusaetzlich die unveraenderte Vorlage
+                # auf. Qwen soll deren Sprecher-Embedding direkt verwenden,
+                # nicht erneut das bereits synthetisierte ref.wav klonen.
+                auftrag = {"id": uuid.uuid4().hex, "text": text,
+                           "quelle": quelle, "aus": str(ziel)}
+                assert self.prozess.stdin is not None
+                self.prozess.stdin.write(json.dumps(auftrag, ensure_ascii=False) + "\n")
+                self.prozess.stdin.flush()
+                ereignis = self._ereignis("fertig")
+                if ereignis.get("id") != auftrag["id"]:
+                    raise RuntimeError("Qwen-Protokoll hat eine fremde Antwort geliefert")
+            with wave.open(str(ziel), "rb") as quelle:
+                if quelle.getnchannels() != 1 or quelle.getsampwidth() != 2:
+                    raise RuntimeError("Qwen lieferte kein 16-bit-Mono-Audio")
+                self.sample_rate = quelle.getframerate()
+                block = max(1, self.sample_rate // 2)
+                while daten := quelle.readframes(block):
+                    import numpy as np
+                    import torch
+                    werte = np.frombuffer(daten, dtype="<i2").astype("float32") / 32767.0
+                    yield torch.from_numpy(werte)
+        finally:
+            ziel.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        if self.prozess.poll() is None:
+            self.prozess.terminate()
+            try:
+                self.prozess.wait(5)
+            except subprocess.TimeoutExpired:
+                self.prozess.kill()
+                self.prozess.wait()
 
 
 class WorkerRefusal(Exception):
@@ -109,7 +215,7 @@ class Engine:
         self.owner.start()
 
     def submit(self, request: dict) -> Job:
-        job = Job(0 if request["mode"] == "mf" else 1, next(self.sequence), request)
+        job = Job(MODES.index(request["mode"]), next(self.sequence), request)
         condition = getattr(self, "condition", None)
         if condition is None:
             # Kompatibilitaet fuer kleine, bewusst unvollstaendige Test-Engines.
@@ -161,7 +267,12 @@ class Engine:
                 continue
         return False
 
-    def _wache(self, fertig: threading.Event, operation: str) -> None:
+    @staticmethod
+    def _request_timeout(mode: str | None) -> float:
+        return QWEN_REQUEST_TIMEOUT if mode == "qwen" else REQUEST_TIMEOUT
+
+    def _wache(self, fertig: threading.Event, operation: str,
+               mode: str | None = None) -> None:
         """Reisst den Prozess ab, wenn ein Modellaufruf gar nicht zurueckkommt.
 
         Die Frist in _execute prueft erst, NACHDEM generate_stream einen Chunk
@@ -175,10 +286,11 @@ class Engine:
         Grosszuegig bemessen, weil ein Kaltstart mitzaehlt: die Frist gilt fuer
         Laden UND Rechnen zusammen.
         """
-        if fertig.wait(REQUEST_TIMEOUT + WACHE_ZUSCHLAG_S):
+        frist = self._request_timeout(mode) + WACHE_ZUSCHLAG_S
+        if fertig.wait(frist):
             return
         print(f"worker=wache operation={operation} outcome=timeout "
-              f"frist_s={REQUEST_TIMEOUT + WACHE_ZUSCHLAG_S:.0f}", file=sys.stderr, flush=True)
+              f"frist_s={frist:.0f}", file=sys.stderr, flush=True)
         self.fatal.set()
         wake_listener()
 
@@ -196,8 +308,9 @@ class Engine:
                     self.warm_request = None
                     self.warming_mode = warm_request["mode"]
             fertig = threading.Event()
+            mode = warm_request["mode"] if job is None else job.request["mode"]
             wache = threading.Thread(target=self._wache, name="mimic-worker-wache", daemon=True,
-                                     args=(fertig, "warm" if job is None else "sprechen"))
+                                     args=(fertig, "warm" if job is None else "sprechen", mode))
             wache.start()
             try:
                 if job is None:
@@ -440,8 +553,10 @@ class Engine:
                         if job.cancelled.is_set():
                             outcome = "cancelled"
                             return
-                        if time.monotonic() - started > REQUEST_TIMEOUT:
-                            raise WorkerRefusal("worker_timeout", "Wanduhrfrist von 120 s gerissen")
+                        frist = self._request_timeout(request["mode"])
+                        if time.monotonic() - started > frist:
+                            raise WorkerRefusal(
+                                "worker_timeout", f"Wanduhrfrist von {frist:.0f} s gerissen")
                         if first_chunk_at is None:
                             first_chunk_at = time.monotonic()
                         pcm = tensor_to_pcm(chunk, profile.gain)
@@ -576,10 +691,14 @@ class Engine:
             if marker:
                 Path(marker).touch()
             t0 = time.monotonic()
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            if mode == "qwen":
+                runtime = QwenRuntime()
+                self.last_load_s = time.monotonic() - t0
+                return runtime
             import torch
             from dots_tts.runtime import DotsTtsRuntime
             repo, revision = REVISIONS[mode]
-            os.environ["HF_HUB_OFFLINE"] = "1"
             # Direktes Konstruieren auf CUDA senkte die gemessene RAM-Spitze von
             # 12479 auf 5514 MiB; ausserhalb dieses Kontexts droht Kernel-OOM.
             with torch.device("cuda"):

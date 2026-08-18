@@ -92,6 +92,18 @@ EINDEUTSCHER = Motor(
     pakete=["transformers==5.0.0", "accelerate", "soundfile", "librosa",
             "huggingface_hub"])
 
+# Version 2 uebernimmt aus der englischen Vorlage nur den Sprecher-x-vector.
+# Dadurch koennen englische Audio-Codes und Prosodie nicht als Akzentvorlage in
+# den deutschen Zieltext gelangen. Eigene Umgebung: die alte MOSS-Fassung soll
+# reproduzierbar und unveraendert bleiben.
+EINDEUTSCHER_V2 = Motor(
+    name="qwen-klon", anzeige="Qwen3-TTS Base (Eindeutschen v2)",
+    skript="eindeutschen_qwen.py", rate=24_000,
+    hinweis="uebernimmt nur die Stimme, nicht den englischen Aussprache-Prompt",
+    pakete=["qwen-tts>=0.0.5", "transformers>=4.36.0,<=4.57.6", "accelerate",
+            "numpy>=1.26,<2.0", "numba>=0.60.0,<0.61.0", "librosa",
+            "soundfile", "huggingface_hub"])
+
 # Deutsch, weil beide Motoren Deutsch koennen und der Probesatz woertlich das
 # ref.txt des Profils wird. Rund zehn Sekunden, mit Aussage, Frage und Ausruf
 # -- dieselbe Bauart wie die Referenztexte in charaktere.py und aus demselben
@@ -119,7 +131,8 @@ def motor_holen(name: str | None) -> Motor:
     # Der Eindeutscher ist ueber denselben Namensraum erreichbar, damit
     # `mimic setup --entwurf moss`, venv_pfad und skript_pfad ohne Sonderweg
     # funktionieren. In der Auswahl zum Entwerfen taucht er trotzdem nicht auf.
-    alle = {**MOTOREN, EINDEUTSCHER.name: EINDEUTSCHER}
+    alle = {**MOTOREN, EINDEUTSCHER.name: EINDEUTSCHER,
+            EINDEUTSCHER_V2.name: EINDEUTSCHER_V2}
     motor = alle.get(name or VORGABE_MOTOR)
     if motor is None:
         raise ValueError(f"unbekannter Motor {name!r} -- {', '.join(sorted(alle))}")
@@ -172,8 +185,9 @@ def skript_pfad(motor: str = VORGABE_MOTOR) -> Path:
     return Path(__file__).resolve().parent / motor_holen(motor).skript
 
 
-def eindeutschen(quelle: Path, ziel: Path, text: str, melden=print) -> float:
-    """Laesst MOSS die Stimme aus `quelle` den Text auf Deutsch sprechen.
+def _eindeutschen_mit_motor(quelle: Path, ziel: Path, text: str, motor: Motor,
+                            melden=print, saat: int | None = None) -> float:
+    """Laesst den gewaehlten Motor die Stimme auf Deutsch sprechen.
 
     Gibt die Dauer der Ausgabe in Sekunden zurueck. Blockiert -- anders als
     `Entwurf` gibt es genau eine Ausgabe und niemand will danebenstehen und
@@ -183,12 +197,14 @@ def eindeutschen(quelle: Path, ziel: Path, text: str, melden=print) -> float:
     unbediente Pipe laeuft nach 64 KB voll und der Prozess blockiert in
     write(). Gemessen am 2026-08-11, sichtbar als wchan=anon_pipe_write.
     """
-    if not umgebung_da(EINDEUTSCHER.name):
-        raise RuntimeError(f"{EINDEUTSCHER.anzeige} fehlt -- einmal "
-                           f"`mimic setup --entwurf {EINDEUTSCHER.name}`")
+    if not umgebung_da(motor.name):
+        raise RuntimeError(f"{motor.anzeige} fehlt -- einmal "
+                           f"`mimic setup --entwurf {motor.name}`")
     auftrag = {"quelle": str(quelle), "text": " ".join(text.split()), "aus": str(ziel)}
+    if saat is not None:
+        auftrag["saat"] = saat
     prozess = subprocess.Popen(
-        [str(python_pfad(EINDEUTSCHER.name)), str(skript_pfad(EINDEUTSCHER.name)),
+        [str(python_pfad(motor.name)), str(skript_pfad(motor.name)),
          json.dumps(auftrag)],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     geplapper: list[str] = []
@@ -222,6 +238,17 @@ def eindeutschen(quelle: Path, ziel: Path, text: str, melden=print) -> float:
         raise RuntimeError(fehler or (" / ".join(geplapper))[-300:]
                            or f"Abbruch mit Code {prozess.returncode}")
     return dauer
+
+
+def eindeutschen(quelle: Path, ziel: Path, text: str, melden=print) -> float:
+    """Kompatible MOSS-Fassung (Version 1)."""
+    return _eindeutschen_mit_motor(quelle, ziel, text, EINDEUTSCHER, melden)
+
+
+def eindeutschen_v2(quelle: Path, ziel: Path, text: str, melden=print,
+                    saat: int | None = None) -> float:
+    """Qwen-Fassung, die nur die Sprecheridentitaet der Vorlage klont."""
+    return _eindeutschen_mit_motor(quelle, ziel, text, EINDEUTSCHER_V2, melden, saat)
 
 
 class Entwurf:

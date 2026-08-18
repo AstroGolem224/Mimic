@@ -21,14 +21,17 @@ from .effekte import (BREITE_MAX, BREITE_MIN, FORMANT_MAX, FORMANT_MIN, HALL_MAX
                       KRUEMEL_MIN, RASTER_MAX, RASTER_MIN, STREUUNG_MAX, STREUUNG_MIN,
                       TEMPO_MAX, TEMPO_MIN, TONHOEHE_MAX, TONHOEHE_MIN,
                       VERZERRUNG_MAX, VERZERRUNG_MIN)
-from .protocol import MEDIA_TYPE, finish_chunks, read_frame, write_chunk
+from .protocol import MEDIA_TYPE, MODES, finish_chunks, read_frame, write_chunk
 from .voices import VoiceError, available_voices, close_voice, load_voice
 
 MAX_TEXT_CHARS = int(os.environ.get("MIMIC_MAX_TEXT_CHARS", "1000"))
 MAX_BODY_BYTES = int(os.environ.get("MIMIC_MAX_BODY_BYTES", str(64 * 1024)))
 CONNECT_TIMEOUT = 2.0
 HEADER_TIMEOUT = 5.0
-FIRST_AUDIO_TIMEOUT = 90.0
+# Qwen liefert technisch bedingt erst nach der kompletten Satzgenerierung den
+# ersten Block. 250 s decken dessen 240-s-Workerfrist samt Transport ab; MF und
+# SOAR liefern weiterhin nach wenigen Sekunden und werden dadurch nicht langsamer.
+FIRST_AUDIO_TIMEOUT = 250.0
 FRAME_TIMEOUT = 10.0
 REASON_STATUS = {
     "bad_request": 400, "text_too_long": 400, "unknown_voice": 404,
@@ -255,8 +258,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
         aussprache = request.get("aussprache", True)
         require_warm = request.get("require_warm", False)
         correlation_id = request.get("correlation_id")
-        if mode not in ("mf", "soar"):
-            self._error("bad_request", "mode muss mf oder soar sein")
+        if mode not in MODES:
+            self._error("bad_request", "mode muss mf, soar oder qwen sein")
             return
         if type(aussprache) is not bool:
             self._error("bad_request", "aussprache muss true oder false sein")
@@ -301,8 +304,8 @@ class FrontendHandler(BaseHTTPRequestHandler):
 
     def _handle_warm(self, request: dict) -> None:
         mode = request.get("mode", "soar")
-        if mode not in ("mf", "soar"):
-            self._error("bad_request", "mode muss mf oder soar sein")
+        if mode not in MODES:
+            self._error("bad_request", "mode muss mf, soar oder qwen sein")
             return
         correlation_id = request.get("correlation_id")
         if correlation_id is None:

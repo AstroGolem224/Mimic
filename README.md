@@ -75,6 +75,53 @@ hineinfiel, statt das stillschweigend zu importieren.
 `--text` bestimmt, was gesprochen wird und damit wörtlich das `ref.txt` —
 ohne Angabe der Standardprobesatz aus `entwurf.py`.
 
+#### Eindeutschen Version 2
+
+Falls MOSS trotz Sprachmarke noch den englischen Akzent der Vorlage mitnimmt,
+bleibt die erste Fassung unverändert erhalten und Version 2 kann parallel ein
+neues Profil erzeugen:
+
+```bash
+uv run mimic setup --entwurf qwen-klon
+uv run mimic eindeutschen2 nordom_v2 ~/Documents/archived_voices/Nordom.mp3
+```
+
+Version 2 nutzt Qwen3-TTS Base im `x-vector-only`-Modus. Aus der englischen
+Aufnahme wird nur die Sprecheridentität konditioniert; englische Audio-Codes,
+Phonetik und Prosodie gelangen nicht in den deutschen Prompt. Der Zieltext
+wird nativ mit der Sprachmarke Deutsch erzeugt. Ohne `--force` ersetzt auch
+dieser Befehl kein vorhandenes Profil.
+
+`eindeutschen2` legt zwei getrennte Referenzen an:
+
+- `ref.wav` ist die deutsche Referenz für MF und SOAR.
+- `qwen-source.wav` bewahrt die Eingangsstimme für den direkten Qwen-Modus.
+
+Damit kann dieselbe Stimme in der Oberfläche über `MF · SOAR · QWEN` mit allen
+drei Motoren gesprochen werden. Qwen läuft wegen nicht vereinbarer Python-
+Abhängigkeiten in der eigenen Umgebung `entwurf-venv-qwen-klon`; der Worker
+hält diesen Prozess nach dem ersten Laden warm.
+
+```bash
+mimic say "Die Analyse ist abgeschlossen." --voice nordom_v2 --mode qwen
+```
+
+Ein vorhandenes deutsches Profil kann außerdem als Quelle für eine weitere,
+separat benannte Variante dienen. Das ist ein bewusster A/B-Versuch und kein
+stilles Ersetzen des Ausgangsprofils:
+
+```bash
+mimic eindeutschen2 nordom_v3 ~/.local/share/mimic/voices/nordom_v2/ref.wav
+```
+
+Bei der Nordom-Prüfung vom 18. August 2026 wurden beide Wege mit einem
+38-Wörter-Text voller deutscher `ch`-, `r`-, `ö`- und `ü`-Laute getestet.
+Faster-Whisper Large-v3 erkannte in beiden Ausgaben alle Wörter; die mittlere
+Wortkonfidenz betrug 99,58 % für die Originalreferenz und 98,98 % für die
+deutsche Referenz. Parakeet TDT 0.6B bestätigte den Text der Originalreferenz
+vollständig und kürzte bei der deutschen Variante einmal „deutsch“. ASR prüft
+damit die Verständlichkeit, ersetzt aber keinen Hörvergleich des Akzents.
+
 Was **nicht** in die Referenz gehört: Effektketten. Eine mit Bitreduktion und
 Flanger gefärbte `ref.wav` ließ dots.tts dreimal in Stille laufen. Effekte
 gehören an den Ausgang, nicht an die Vorlage.

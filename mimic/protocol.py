@@ -10,6 +10,7 @@ from typing import BinaryIO, Iterator
 MEDIA_TYPE = "application/vnd.mimic.frames"
 FRAME_HEADER = struct.Struct(">cI")
 MAX_FRAME_BYTES = 64 * 1024 * 1024
+MODES = ("mf", "soar", "qwen")
 
 
 class ProtocolError(Exception):

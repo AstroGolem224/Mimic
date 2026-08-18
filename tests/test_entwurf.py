@@ -146,11 +146,11 @@ class EntwurfTests(unittest.TestCase):
     def test_motorskripte_ziehen_kein_mimic(self):
         """Die Motorskripte laufen in fremden Umgebungen -- ein Import aus dem
         Paket waere dort ein ModuleNotFoundError, und zwar erst zur Laufzeit."""
-        from mimic.entwurf import EINDEUTSCHER, MOTOREN, skript_pfad
+        from mimic.entwurf import EINDEUTSCHER, EINDEUTSCHER_V2, MOTOREN, skript_pfad
 
         # Der Eindeutscher steht nicht in MOTOREN, laeuft aber in derselben
         # Fremdumgebung und faellt sonst durch dieses Netz.
-        for name in (*MOTOREN, EINDEUTSCHER.name):
+        for name in (*MOTOREN, EINDEUTSCHER.name, EINDEUTSCHER_V2.name):
             pfad = skript_pfad(name)
             self.assertTrue(pfad.is_file(), f"{pfad} fehlt")
             for zeile in pfad.read_text().splitlines():
@@ -176,6 +176,14 @@ class EntwurfTests(unittest.TestCase):
         self.assertNotIn(EINDEUTSCHER.name, MOTOREN, "der Eindeutscher ist kein Entwurfsmotor")
         self.assertNotIn(venv_pfad(EINDEUTSCHER.name), {venv_pfad(n) for n in MOTOREN})
         self.assertNotIn(EINDEUTSCHER.skript, {MOTOREN[n].skript for n in MOTOREN})
+
+    def test_eindeutscher_v2_laesst_version_1_unveraendert(self):
+        from mimic.entwurf import EINDEUTSCHER, EINDEUTSCHER_V2, MOTOREN, venv_pfad
+
+        self.assertNotEqual(EINDEUTSCHER.name, EINDEUTSCHER_V2.name)
+        self.assertNotEqual(EINDEUTSCHER.skript, EINDEUTSCHER_V2.skript)
+        self.assertNotEqual(venv_pfad(EINDEUTSCHER.name), venv_pfad(EINDEUTSCHER_V2.name))
+        self.assertNotIn(EINDEUTSCHER_V2.name, MOTOREN)
 
     def test_unbekannter_motor_wird_abgelehnt(self):
         from mimic.entwurf import Entwurf
@@ -353,6 +361,30 @@ class WorkerWacheTests(unittest.TestCase):
             wache.join(timeout=5)
         self.assertFalse(engine.fatal.is_set(), "die Wache hat einen gesunden Lauf abgerissen")
         self.assertFalse(geweckt.called)
+
+
+class QwenRuntimeTests(unittest.TestCase):
+    def test_qwen_nimmt_original_statt_klon_vom_klon(self):
+        from mimic.worker import QwenRuntime
+
+        with tempfile.TemporaryDirectory() as ordner:
+            profil = Path(ordner)
+            ref = profil / "ref.wav"
+            original = profil / "qwen-source.wav"
+            ref.touch()
+            self.assertEqual(str(ref), QwenRuntime._referenzpfad(str(ref)))
+            original.touch()
+            self.assertEqual(str(original), QwenRuntime._referenzpfad(str(ref)))
+
+    def test_qwen_loest_den_voice_fd_fuer_seinen_kindprozess_auf(self):
+        from mimic.worker import QwenRuntime
+
+        with tempfile.TemporaryDirectory() as ordner:
+            ref = Path(ordner) / "ref.wav"
+            ref.touch()
+            with ref.open("rb") as handle:
+                fd_pfad = f"/proc/self/fd/{handle.fileno()}"
+                self.assertEqual(str(ref), QwenRuntime._referenzpfad(fd_pfad))
 
 
 class ZahlwortTests(unittest.TestCase):

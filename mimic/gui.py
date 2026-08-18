@@ -45,7 +45,7 @@ from .effekte import (breite_wert, formant_wert, hall_wert, kruemel_wert, raster
                       streuung_wert, tempo_faktor, tonhoehe_wert, verzerrung_wert)
 from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
                       VORGABE_MOTOR, Entwurf, umgebungen_da)
-from .protocol import read_frame
+from .protocol import MODES, read_frame
 from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
                      default_voices_dir, load_voice)
 
@@ -1107,8 +1107,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         if len(text) > MAX_TEXT_ZEICHEN:
             self._json(400, {"message": "Skript ist zu lang"})
             return
-        if modus not in ("mf", "soar"):
-            self._json(400, {"message": "mode muss mf oder soar sein"})
+        if modus not in MODES:
+            self._json(400, {"message": "mode muss mf, soar oder qwen sein"})
             return
         regler = {"tempo": tempo_faktor(wunsch.get("tempo")),
                   "tonhoehe": tonhoehe_wert(wunsch.get("tonhoehe")),
@@ -1140,8 +1140,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         # Fenster spricht per Vorgabe mf, der Worker haette also erst soar
         # geladen und beim ersten Satz wieder abgeworfen (mode_restart).
         modus = wunsch.get("mode") or "mf"
-        if modus not in ("mf", "soar"):
-            self._json(400, {"message": "mode muss mf oder soar sein"})
+        if modus not in MODES:
+            self._json(400, {"message": "mode muss mf, soar oder qwen sein"})
             return
         try:
             antwort = request("POST", "/warm", {"mode": modus})

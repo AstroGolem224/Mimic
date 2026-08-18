@@ -345,6 +345,10 @@ textarea::selection{background:rgba(168,120,255,.34)}
   background:linear-gradient(140deg,var(--violett),#d3a2ff);
   box-shadow:0 3px 14px rgba(168,120,255,.34), inset 0 1px 0 rgba(255,255,255,.4);
 }
+.modus button.an[data-modus=qwen]{
+  background:linear-gradient(140deg,#d7a7ff,var(--violett));
+  box-shadow:0 3px 14px rgba(168,120,255,.38), inset 0 1px 0 rgba(255,255,255,.42);
+}
 .modus button.an[data-format=mp3]{
   background:linear-gradient(140deg,var(--bernstein),#ffd39b);
   box-shadow:0 3px 14px rgba(255,180,92,.34), inset 0 1px 0 rgba(255,255,255,.45);
@@ -657,6 +661,7 @@ Zeile ohne Kopf erbt den Sprecher von oben.
     <div class="modus" id="modus">
       <button data-modus="mf" class="an">mf</button>
       <button data-modus="soar">soar</button>
+      <button data-modus="qwen">qwen</button>
     </div>
     <label class="tempo" title="Sprechgeschwindigkeit — Doppelklick setzt auf 1,00× zurueck">
       Tempo
