@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import contextlib
 import heapq
 import io
 import itertools
@@ -71,7 +72,8 @@ class StubRuntime:
         return (chunk for chunk in chunks)
 
 
-def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = None):
+def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = None,
+               emit=None):
     from mimic import worker
 
     engine = worker.Engine.__new__(worker.Engine)
@@ -83,7 +85,7 @@ def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = Non
     engine.started = time.monotonic()
     engine.fatal = threading.Event()
     events = []
-    engine.emit = lambda _job, kind, payload: events.append((kind, payload)) or True
+    engine.emit = emit or (lambda _job, kind, payload: events.append((kind, payload)) or True)
     engine.write_status = lambda *_args: None
     job = worker.Job(0, 0, {"text": "Der Anfang bleibt erhalten.", "voice": "matthias",
                             "mode": "mf", "aussprache": True,
@@ -1127,3 +1129,26 @@ class GuiAuthTests(unittest.TestCase):
         self.assertEqual(403, self._anfrage("/api/stop", {"Cookie": cookie}, "POST")[0])
         status, _ = self._anfrage("/api/stop", {"X-Mimic-Token": self.sitzung.token}, "POST")
         self.assertNotEqual(403, status)
+
+
+class JournalTests(unittest.TestCase):
+    """Die Sammelzeile muss eine Anfrage im Journal wiederfindbar machen."""
+
+    def _lauf(self, **kwargs) -> dict:
+        puffer = io.StringIO()
+        with contextlib.redirect_stdout(puffer):
+            run_engine(StubRuntime([[pcm(9000)]]), {}, **kwargs)
+        letzte = [zeile for zeile in puffer.getvalue().splitlines() if zeile.strip()][-1]
+        return dict(paar.split("=", 1) for paar in letzte.split())
+
+    def test_sammelzeile_nennt_die_correlation_id_der_anfrage(self):
+        felder = self._lauf()
+        # Ohne diese Kennung ist die Zeile im Journal keiner Client-Anfrage
+        # zuzuordnen -- zwei gleich lange Stuecke sehen identisch aus.
+        self.assertEqual("1" * 32, felder["correlation_id"])
+        self.assertEqual(32, len(felder["request_id"]))
+
+    def test_abbruch_meldet_nicht_worker_unavailable(self):
+        felder = self._lauf(emit=lambda *_args: False)
+        self.assertEqual("cancelled", felder["outcome"])
+        self.assertNotEqual("worker_unavailable", felder.get("reason"))
