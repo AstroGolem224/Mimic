@@ -9,6 +9,7 @@ import json
 import os
 import queue
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -1166,6 +1167,96 @@ class SprachParameterTests(unittest.TestCase):
         run_engine(runtime, {"text": "Ein Satz, der lang genug ist."})
         self.assertEqual("en", runtime.kwargs[0]["language"])
         self.assertEqual(1.5, runtime.kwargs[0]["speaker_scale"])
+
+
+class GuiWiedergabeTests(unittest.TestCase):
+    class Stdin:
+        def __init__(self):
+            self.geschlossen = False
+
+        def close(self):
+            self.geschlossen = True
+
+        def write(self, _pcm):
+            return None
+
+    class BlockierterProzess:
+        def __init__(self):
+            self.stdin = GuiWiedergabeTests.Stdin()
+            self.wartet = threading.Event()
+            self.getoetet = threading.Event()
+            self.kill_aufrufe = 0
+            self.wait_timeouts = []
+
+        def poll(self):
+            return -9 if self.getoetet.is_set() else None
+
+        def kill(self):
+            self.kill_aufrufe += 1
+            self.getoetet.set()
+
+        def wait(self, timeout=None):
+            self.wait_timeouts.append(timeout)
+            self.wartet.set()
+            if self.getoetet.wait(timeout):
+                return -9
+            raise subprocess.TimeoutExpired("pw-cat", timeout)
+
+    def test_stopp_beendet_auch_den_lokal_gepufferten_player(self):
+        from mimic import gui
+
+        sitzung = gui.Sitzung()
+        wiedergabe = gui.Wiedergabe()
+        prozess = self.BlockierterProzess()
+        wiedergabe.prozess = prozess
+        sitzung.wiedergabe = wiedergabe
+        fehler = []
+
+        def schliessen():
+            try:
+                wiedergabe.schliessen()
+            except BaseException as ausnahme:
+                fehler.append(ausnahme)
+
+        thread = threading.Thread(target=schliessen)
+        thread.start()
+        self.assertTrue(prozess.wartet.wait(0.5))
+        sitzung.stoppen()
+        thread.join(0.5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(prozess.getoetet.is_set())
+        self.assertEqual(1, prozess.kill_aufrufe)
+        self.assertEqual(1, len(fehler))
+        self.assertIsInstance(fehler[0], gui.Abgebrochen)
+        self.assertTrue(sitzung.abbruch.is_set())
+
+    def test_stopp_vor_dem_playerstart_verhindert_spaeten_start(self):
+        from mimic import gui
+
+        sitzung = gui.Sitzung()
+        wiedergabe = gui.Wiedergabe()
+        sitzung.wiedergabe = wiedergabe
+        sitzung.stoppen()
+
+        with (mock.patch.object(gui.subprocess, "Popen") as popen,
+              self.assertRaises(gui.Abgebrochen)):
+            wiedergabe({"sample_rate": 48_000, "channels": 1}, pcm(1))
+        popen.assert_not_called()
+
+    def test_geordnetes_schliessen_hat_einen_harten_timeout(self):
+        from mimic import gui
+
+        wiedergabe = gui.Wiedergabe()
+        prozess = self.BlockierterProzess()
+        wiedergabe.prozess = prozess
+
+        with mock.patch.object(gui, "WIEDERGABE_ENDE_TIMEOUT_S", 0.01):
+            with self.assertRaisesRegex(RuntimeError, "reagiert nicht"):
+                wiedergabe.schliessen()
+
+        self.assertEqual(1, prozess.kill_aufrufe)
+        self.assertIsNone(wiedergabe.prozess)
 
 
 class GuiAuthTests(unittest.TestCase):

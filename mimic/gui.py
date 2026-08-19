@@ -63,6 +63,8 @@ DAUER_MIN_S, DAUER_MAX_S = 3.0, 60.0
 DAUER_ZIEL = (8.0, 15.0)
 AUFNAHME_DECKEL_S = 90.0    # Notbremse gegen eine vergessene laufende Aufnahme
 AUFNEHMER = "pw-record"     # als Name gehalten, damit Tests ein Stubprogramm einhaengen koennen
+WIEDERGABE_ENDE_TIMEOUT_S = 5.0  # pw-cat darf nach dem letzten PCM-Block kurz leerlaufen
+WIEDERGABE_KILL_TIMEOUT_S = 1.0  # ein gestoppter Player darf die GUI nie festhalten
 # 192 kbps ist fuer eine Monospur reichlich und die Datei bleibt klein; die
 # Zahl ist ueber die Umgebung stellbar, weil Geschmack hier streitbar ist.
 MP3_BITRATE = os.environ.get("MIMIC_MP3_BITRATE", "192")
@@ -719,34 +721,84 @@ class Wiedergabe:
     def __init__(self) -> None:
         self.prozess: subprocess.Popen | None = None
         self.kopf: dict | None = None
+        self.lock = threading.Lock()
+        self.abgebrochen = False
 
     def __call__(self, kopf: dict, pcm: bytes) -> None:
-        if self.prozess is None:
-            self.kopf = kopf
-            self.prozess = subprocess.Popen(
-                ["pw-cat", "--playback", "--raw", "--rate", str(kopf["sample_rate"]),
-                 "--channels", str(kopf["channels"]), "--format", "s16", "-"],
-                stdin=subprocess.PIPE, bufsize=0)
-        assert self.prozess.stdin is not None
-        self.prozess.stdin.write(pcm)
+        with self.lock:
+            if self.abgebrochen:
+                raise Abgebrochen
+            if self.prozess is None:
+                self.kopf = kopf
+                self.prozess = subprocess.Popen(
+                    ["pw-cat", "--playback", "--raw", "--rate", str(kopf["sample_rate"]),
+                     "--channels", str(kopf["channels"]), "--format", "s16", "-"],
+                    stdin=subprocess.PIPE, bufsize=0)
+            prozess = self.prozess
+        assert prozess.stdin is not None
+        try:
+            prozess.stdin.write(pcm)
+        except (BrokenPipeError, OSError):
+            with self.lock:
+                abgebrochen = self.abgebrochen
+            if abgebrochen:
+                raise Abgebrochen from None
+            raise
 
     def pause(self) -> None:
         if self.prozess is not None and self.kopf is not None:
             self(self.kopf, stille(self.kopf))
 
     def schliessen(self) -> None:
-        if self.prozess is not None and self.prozess.stdin:
-            self.prozess.stdin.close()
-            self.prozess.wait()
-            self.prozess = None
+        with self.lock:
+            prozess = self.prozess
+            abgebrochen = self.abgebrochen
+        if abgebrochen:
+            raise Abgebrochen
+        if prozess is None or prozess.stdin is None:
+            return
+        try:
+            prozess.stdin.close()
+            try:
+                prozess.wait(timeout=WIEDERGABE_ENDE_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                prozess.kill()
+                try:
+                    prozess.wait(timeout=WIEDERGABE_KILL_TIMEOUT_S)
+                except subprocess.TimeoutExpired:
+                    pass
+                raise RuntimeError("Audiowiedergabe reagiert nicht und wurde beendet") from None
+        except (BrokenPipeError, OSError):
+            with self.lock:
+                if self.abgebrochen:
+                    raise Abgebrochen from None
+            raise
+        finally:
+            with self.lock:
+                if self.prozess is prozess:
+                    self.prozess = None
+        with self.lock:
+            if self.abgebrochen:
+                raise Abgebrochen
 
     def abbrechen(self) -> None:
         # Hartes Ende, kein geordnetes Schliessen: pw-cat wuerde seinen Puffer
         # sonst noch ausspielen, und Stopp soll sofort still sein.
-        if self.prozess is not None:
-            self.prozess.kill()
-            self.prozess.wait()
-            self.prozess = None
+        with self.lock:
+            self.abgebrochen = True
+            prozess = self.prozess
+        if prozess is None:
+            return
+        try:
+            if prozess.poll() is None:
+                prozess.kill()
+            prozess.wait(timeout=WIEDERGABE_KILL_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            with self.lock:
+                if self.prozess is prozess:
+                    self.prozess = None
 
 
 class Sammler:
@@ -799,6 +851,7 @@ class Sitzung:
         self.lock = threading.Lock()
         self.abbruch = threading.Event()
         self.aktive = AktiveVerbindung(self.abbruch)
+        self.wiedergabe: Wiedergabe | None = None
         self.thread: threading.Thread | None = None
         self.aufnahme = Aufnahme()
         self.entwurf = Entwurf()
@@ -874,6 +927,9 @@ class Sitzung:
     def _lauf(self, text: str, modus: str, standard: str, format: str | None,
               regler: dict) -> None:
         senke = Sammler() if format else Wiedergabe()
+        if isinstance(senke, Wiedergabe):
+            with self.lock:
+                self.wiedergabe = senke
 
         def gemessen(kopf: dict, pcm: bytes) -> None:
             senke(kopf, pcm)
@@ -926,8 +982,17 @@ class Sitzung:
             if isinstance(senke, Wiedergabe):
                 senke.abbrechen()
             self.melden(running=False, ok=False, message=f"Fehler: {fehler}")
+        finally:
+            if isinstance(senke, Wiedergabe):
+                with self.lock:
+                    if self.wiedergabe is senke:
+                        self.wiedergabe = None
 
     def stoppen(self) -> None:
+        with self.lock:
+            wiedergabe = self.wiedergabe
+        if wiedergabe is not None:
+            wiedergabe.abbrechen()
         self.aktive.abbrechen()
 
     def loeschkonflikt(self, name: str) -> str | None:

@@ -1401,7 +1401,11 @@ function klangwerte(){
 
 $("bSpiel").onclick = () => starten(false);
 $("bSpeichern").onclick = () => starten(true);
-$("bStopp").onclick = () => { api("/api/stop", {}).catch(()=>{}); setzeJobStatus("bricht ab…"); };
+$("bStopp").onclick = async () => {
+  setzeJobStatus("bricht ab…");
+  try{ await api("/api/stop", {}); }
+  catch(fehler){ setzeJobStatus("Stopp fehlgeschlagen: " + fehler, "fehler"); }
+};
 $("bWarm").onclick = async () => {
   $("bWarm").disabled = true;
   setzeStatus("Warmlauf angefordert…");
