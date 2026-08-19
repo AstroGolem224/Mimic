@@ -59,6 +59,401 @@ vollständig gehashte Motor-Lockfiles, automatische DOM-/Browser-Smokes sowie
 Suche/Favoriten für sehr große Stimmenlisten. Diese Punkte bleiben im Plan und
 sind keine Voraussetzung für den stabilen lokalen Einzelplatzbetrieb.
 
+## Technische Ausarbeitung der vier offenen Folgeprojekte
+
+Diese vier Punkte sind nicht gleichartig. Lockfiles und GPU-Smokes sind
+abgegrenzte Lieferpakete. Queue-Fairness und Moduswechsel greifen dagegen in
+dieselbe Eigentumsfrage ein: Heute liegt die Queue im GPU-Worker, obwohl genau
+dieser Prozess beim Moduswechsel absichtlich endet. Eine Fairnesslogik nur in
+dieser flüchtigen Queue wäre weitgehend Wegwerfarbeit. Empfohlen wird daher ein
+langlebiger Scheduler im CPU-Frontend, der sowohl Fairness als auch
+Worker-Generationen besitzt.
+
+### A. Queue-Fairness ohne Verlust der Echtzeit-Priorität
+
+#### Ist-Zustand und konkrete Fehlerklasse
+
+`Job.priority` ist aktuell schlicht der Index in `MODES = (mf, soar, qwen)`.
+Der Heap sortiert deshalb immer alle MF-Jobs vor SOAR und Qwen. Bei einem
+kontinuierlichen Strom kurzer MF-Aufträge kann ein älterer Qwen-Auftrag zeitlich
+unbegrenzt warten. Zusätzlich zählen abgebrochene, aber noch nicht aus dem Heap
+entfernte Jobs vorübergehend gegen `MAX_WAITING=4`.
+
+Die Queue liegt in `Engine.jobs`. Ein kontrollierter `mode_restart` beendet den
+gesamten Worker. Nur die gerade aktive Frontend-Anfrage kennt den strukturierten
+Retry; weitere Queue-Einträge und ihre Handler-Verbindungen sterben mit dem
+Prozess. Fairness allein im Worker behebt diesen Datenverlust nicht.
+
+#### Zielpolicy
+
+Die normale Bevorzugung bleibt erhalten, solange alle Jobs jung sind:
+
+| Klasse | Basisrang | Zweck |
+|---|---:|---|
+| MF | 0 | interaktives, möglichst direktes Sprechen |
+| SOAR | 1 | hochwertigere Batch-Ausgabe |
+| Qwen | 2 | langsamster, vollständig blockierender Klonpfad |
+
+Sobald ein Job `QUEUE_AGING_S` erreicht, entscheidet nicht mehr der Motor,
+sondern die globale Eingangsreihenfolge. Als Startwert sind 15 Sekunden
+vorgesehen. Ein bereits rechnender Job wird nicht präemptiert; die Garantie
+beginnt an der nächsten Dispatch-Grenze.
+
+Der Auswahlalgorithmus ist bei höchstens vier wartenden Jobs bewusst einfach:
+
+1. Abgebrochene oder abgelaufene Jobs entfernen.
+2. Gibt es gealterte Jobs, den mit der kleinsten Sequenznummer wählen.
+3. Sonst nach `(Basisrang, Sequenznummer)` wählen.
+4. Warmläufe belegen keinen Queue-Platz und dürfen echte Jobs nicht überholen.
+
+Eine dynamische Neusortierung eines Heaps ist dafür unnötig und fehleranfällig;
+ein linearer Scan über maximal vier Elemente ist klarer und messbar billiger.
+
+#### Datenvertrag und Diagnose
+
+Jeder Scheduler-Job erhält mindestens:
+
+```text
+job_id, correlation_id, mode, submitted_at, queue_deadline,
+base_priority, sequence, cancelled, audio_started
+```
+
+Der Status wird erweitert um:
+
+```json
+{
+  "queue": 3,
+  "queue_by_mode": {"mf": 1, "soar": 0, "qwen": 2},
+  "oldest_wait_ms": 18420,
+  "active_job_id": "…",
+  "active_correlation_id": "…"
+}
+```
+
+Die Abschlusszeile protokolliert zusätzlich `queue_policy=priority|aged` und
+`queue_age_ms`. Es werden weiterhin keine Nutztexte protokolliert.
+
+#### Testmatrix
+
+- Deterministische Fake-Clock: fortlaufend neue MF-Jobs, älterer Qwen-Job wird
+  nach der Aging-Schwelle als Nächstes gewählt.
+- FIFO innerhalb derselben Klasse und nach Erreichen der Aging-Schwelle.
+- Ein abgebrochener Queue-Job verbraucht sofort keinen Platz mehr.
+- Queue-Limit gilt auch unter parallelen Submits exakt.
+- Warmlauf wird hinter echten Jobs ausgeführt und nicht als fünfter Job gezählt.
+- Statuswerte bleiben unter Submit, Cancel und Dispatch konsistent.
+
+#### Aufwand, Risiko und Abnahme
+
+Im heutigen Worker wäre dies etwa ein Tag Arbeit, sollte dort aber nicht mehr
+isoliert umgesetzt werden. Als Teil des Frontend-Schedulers sind 1,5–2 Tage
+einzuplanen. Risiko: mittel.
+
+Abgenommen ist der Punkt, wenn ein Qwen- oder SOAR-Job unter kontinuierlicher
+MF-Last spätestens an der ersten Dispatch-Grenze nach seiner Aging-Schwelle
+ausgewählt wird, kein abgebrochener Job die Queue blockiert und alle
+Entscheidungen im Status erklärbar sind.
+
+### B. Generationenbasierte Moduswechsel-Zustandsmaschine
+
+#### Architekturentscheidung
+
+Die wartende Arbeit muss in dem Prozess liegen, der einen GPU-Worker-Neustart
+überlebt. Daher wird der CPU-Frontend-Prozess Eigentümer eines einzelnen
+`Scheduler`. Der GPU-Worker wird zu einem Single-Flight-Ausführer für genau
+einen aktiven Motor. Seine kleine interne Eventqueue für den laufenden Stream
+bleibt; die motorübergreifende Jobqueue wandert ins Frontend.
+
+Das vermeidet drei problematische Alternativen:
+
+- Mehrere große Motoren gleichzeitig im Worker würden die bereits gemessene
+  RAM-Grenze überschreiten.
+- Ein In-Process-Unload gibt CUDA- und Bibliothekszustand nicht zuverlässig
+  frei.
+- Eine Queue im absichtlich sterbenden Prozess kann nicht verlustfrei sein.
+
+#### Zustände und Invarianten
+
+Der Scheduler besitzt eine monotone `generation` und folgende Phasen:
+
+| Phase | Bedeutung | Erlaubter nächster Zustand |
+|---|---|---|
+| `cold` | kein bestätigter Worker | `starting`, `failed` |
+| `starting` | Zielmotor startet/lädt | `ready`, `failed`, `switching` |
+| `ready` | Generation und Motor bestätigt | `running`, `switching` |
+| `running` | genau ein Auftrag besitzt den Worker | `ready`, `switching`, `failed` |
+| `switching` | alte Generation wird beendet | `starting`, `failed` |
+| `failed` | begrenzter Retry ausgeschöpft | `cold` nach neuem Auftrag/Backoff |
+
+Es gelten folgende Invarianten:
+
+1. Höchstens ein aktiver GPU-Auftrag.
+2. Ein Worker akzeptiert nur Requests seiner aktuellen Generation und seines
+   aktiven Motors.
+3. Wartende Jobs bleiben bei einem Worker-Ausgang im Frontend erhalten.
+4. Nach dem ersten ausgelieferten Audioframe wird ein Job niemals automatisch
+   wiederholt; sonst könnte Audio doppelt gesprochen oder gespeichert werden.
+5. Vor dem ersten Audioframe ist genau ein automatischer Infrastruktur-Retry
+   erlaubt. Fachliche Fehler und Cancel werden nicht wiederholt.
+6. Ein Warmlauf ist erst erfolgreich, wenn `ready` für den angeforderten Motor,
+   die Generation und die angeforderte Stimme bestätigt ist.
+
+#### Protokollerweiterung
+
+Frontend und Worker handeln einen kleinen versionsgebundenen Vertrag aus:
+
+```json
+{
+  "protocol": 2,
+  "generation": 17,
+  "phase": "ready",
+  "active_mode": "qwen",
+  "desired_mode": "qwen",
+  "worker_pid": 1234
+}
+```
+
+Jede interne Syntheseanfrage trägt `generation`, `job_id` und die vorhandene
+`correlation_id`. Ein alter oder falscher Worker antwortet vor dem Einreihen mit
+`stale_generation` beziehungsweise `wrong_mode`. Beide Gründe sind vor dem
+ersten Audioframe retrybar; sie lösen keinen generischen 503 aus.
+
+#### Ablauf eines Moduswechsels
+
+1. Scheduler wählt nach Fairnesspolicy den nächsten Job.
+2. Passt dessen Modus zur bestätigten Generation, wird er dispatcht.
+3. Andernfalls wechselt der Scheduler auf `switching`, nimmt aber weiter Jobs
+   in seine eigene Queue an.
+4. Eine aktive alte Anfrage wird beendet oder kontrolliert fertiggestellt; der
+   alte Worker wird anschließend mit eindeutigem Grund geschlossen.
+5. Nach bestätigtem PID-Ausgang wird `generation` erhöht und der neue Motor per
+   Socket-Aktivierung gestartet.
+6. Erst ein passender Status `ready(generation, mode)` öffnet den Dispatch.
+7. Startfehler werden einmal mit Backoff wiederholt; danach erhalten betroffene
+   Jobs einen strukturierten Fehler mit Generation und Motor.
+
+Mehrere schnell wechselnde Wünsche werden koalesziert: `desired_mode` folgt dem
+nächsten tatsächlich auswählbaren Job, nicht jedem UI-Klick. Ein Warmlauf darf
+einen bereits wartenden Sprechauftrag nicht zu einem zusätzlichen Hin-und-her
+zwingen.
+
+#### Migrationsschritte
+
+1. Reine State-Dataclasses, Transition-Validator und Fake-Clock einführen,
+   zunächst noch ohne Verhaltensänderung.
+2. Worker-Vertrag um Generation und `wrong_mode` ergänzen.
+3. Frontend-Scheduler mit Queue und Eventkanal implementieren; bisheriges
+   Direkt-Proxying hinter einem temporären Feature-Schalter erhalten.
+4. MF-only und gleiche-Modus-Parallelität umstellen.
+5. Moduswechsel, Warmlauf und Qwen aktivieren.
+6. Worker-Heap entfernen, Feature-Schalter und alten `mode_restart`-Retry
+   löschen, sobald die Integrationsmatrix bestanden ist.
+
+#### Integrationsmatrix
+
+- Zwei parallele Jobs `mf → qwen`, `qwen → mf` und `soar → qwen`.
+- Drei wartende Modi bei einem absichtlichen Worker-Ausgang.
+- Cancel während `starting`, `running` und `switching`.
+- Worker stirbt vor Kopfrahmen, nach Kopfrahmen und nach erstem Audioframe.
+- Zwei gleichzeitige Warmläufe derselben beziehungsweise verschiedener Modi.
+- Veralteter Status einer alten Generation trifft nach dem neuen Status ein.
+- Frontend-Neustart: wartende In-Memory-Jobs enden klar als Verbindungsabbruch;
+  es wird keine falsche Persistenzgarantie behauptet.
+
+#### Aufwand, Risiko und Abnahme
+
+Aufwand: 4–6 Arbeitstage einschließlich Migration und Integrationstests.
+Risiko: hoch, weil Streaming, Cancel, Socket-Aktivierung und Modelllebenszeit
+zusammentreffen. Das Paket sollte einen eigenen Commit und einen einfachen
+Rollback-Schalter erhalten.
+
+Abnahme: In 100 wiederholten gemischten Fake-Worker-Läufen kein generischer
+Fehler und kein verlorener Queue-Job; reale Folge `mf → qwen → soar → mf`
+funktioniert ohne manuellen Neustart; Warmlauf bestätigt ausschließlich einen
+tatsächlich bereiten Motor; kein Audio wird doppelt ausgeliefert.
+
+### C. Echte GPU-Abbruch-Smokes
+
+#### Was die vorhandenen Tests noch nicht beweisen
+
+Die opt-in GPU-Suite prüft derzeit SIGKILL und `MemoryMax`. Die neuen Unit-Tests
+beweisen den Cancel-Mechanismus mit Fake-Prozessen, aber nicht, dass ein echter
+CUDA-Kernel aufhört, das Qwen-Kind verschwindet, VRAM/Utilization reagieren und
+der nächste reale Auftrag wieder funktioniert.
+
+#### Sichere Testhülle
+
+Die Smokes bleiben ausdrücklich opt-in und laufen nie in der normalen CI:
+
+```text
+tests/run.sh --gpu-cancel
+```
+
+Vorbedingungen:
+
+- installierte Paketdateien und Units entsprechen dem Checkout;
+- `nvidia-smi`, alle drei Motoren und ein Testprofil sind vorhanden;
+- kein fremder Compute-Prozess belegt die GPU, andernfalls sauberer Skip;
+- effektive `MemoryHigh`, `MemoryMax`, Dienstzustände und PIDs werden gesichert;
+- jeder Test besitzt eine harte Gesamtfrist und einen `finally`-Cleanup.
+
+Die Messwerte landen als JSON unter einem temporären Testordner: Zeit bis
+Cancel, alte/neue PIDs, Prozess-VRAM, GPU-Auslastung, Restdateien und Ergebnis
+des Recovery-Auftrags. Nutztexte werden nicht in das Artefakt geschrieben.
+
+#### Motorbezogene Beweise
+
+| Motor | Abbruchpunkt | Erwarteter Beweis |
+|---|---|---|
+| MF | nach erstem Audioframe | `outcome=cancelled` ≤ 2 s, Owner bleibt lebend, GPU-Compute fällt ab, nächster MF-Auftrag erfolgreich |
+| SOAR | während realer Generierung | wie MF; kein weiterer Audioframe nach Cancel |
+| Qwen | vor fertiger Gesamt-WAV | altes Qwen-Kind ≤ 2 s beendet, dessen Prozess-VRAM verschwindet, keine `qwen-*.wav`, Ersatzkind wird bereit, nächster Qwen-Auftrag erfolgreich |
+
+Bei MF/SOAR darf der Modell-VRAM absichtlich belegt bleiben, weil der Worker
+warm bleibt. Dort ist „VRAM fällt auf null“ ein falsches Kriterium; relevant
+sind Ende der Compute-Auslastung, Cancel-Log und erfolgreiche Wiederverwendung.
+Bei Qwen werden GPU-Stopp und Recovery getrennt gemessen: Das alte Kind muss in
+höchstens zwei Sekunden weg sein, das Laden des Ersatzkinds darf länger dauern.
+
+Der Test löst Cancel über denselben öffentlichen Pfad wie der GUI-Stopp aus:
+laufende `AktiveVerbindung` schließen beziehungsweise `/api/stop` verwenden.
+Ein direkter Kill allein wäre kein Nachweis der Produktfunktion.
+
+#### Automatisierung und Flake-Schutz
+
+- GPU- und Kind-PIDs über Prozessbaum plus `nvidia-smi
+  --query-compute-apps=pid,used_memory` zuordnen.
+- Compute-Rückgang nur bei exklusiver GPU über drei aufeinanderfolgende Samples
+  bewerten; bei Fremdlast Skip statt falschem Rot.
+- Journal ab einer Cursor-/Zeitmarke lesen, nicht über globale Textsuche.
+- Nach jedem Fall einen kurzen Recovery-Satz erzeugen und WAV-Kopf/Dauer prüfen.
+- Bei Fehlschlag Units und Grenzen im `finally` restaurieren und Worker stoppen,
+  damit kein mehrere GB großer Restprozess bleibt.
+
+Optional kann später ein manuell gestarteter `workflow_dispatch` auf einem
+selbst gehosteten GPU-Runner hinzukommen. Normale Pull Requests bleiben
+GPU-frei.
+
+#### Aufwand, Risiko und Abnahme
+
+Aufwand: 1,5–2,5 Tage. Risiko: mittel; die Tests sind absichtlich destruktiv für
+den Worker, nicht für Nutzerdaten.
+
+Abnahme: Jeder Motor besteht drei Wiederholungen; alle Fristen und PIDs sind im
+JSON-Artefakt nachvollziehbar; nach der Suite entsprechen Units und
+Speichergrenzen byte- beziehungsweise wertgenau dem Vorzustand; keine
+Qwen-Temporärdatei und kein Kindprozess bleibt zurück.
+
+### D. Vollständig gehashte Motor-Lockfiles und Environment-Health
+
+#### Ist-Zustand
+
+`umgebung_bauen()` installiert erst Torch und anschließend offene
+Paketbereiche. Damit kann derselbe Commit Wochen später andere Transitivpakete
+erhalten. `umgebung_da()` prüft nur, ob `bin/python` existiert; eine halbfertige
+oder veraltete Umgebung wird daher als bereit angeboten.
+
+Am 19. August 2026 waren lokal unter anderem folgende Auflösungen aktiv:
+
+| Umgebung | Relevante Auflösung |
+|---|---|
+| VoxCPM | `voxcpm 2.0.3`, `torch 2.9.1+cu128`, `transformers 5.15.0`, `numpy 2.5.2` |
+| Qwen Design | `qwen-tts 0.1.1`, `transformers 4.57.3`, `accelerate 1.12.0`, `numpy 1.26.4`, `numba 0.60.0` |
+| Qwen Klon | dieselbe Paketfamilie wie Qwen Design, aber getrennte Laufzeitumgebung |
+| MOSS | `transformers 5.0.0`, `accelerate 1.14.0`, `numpy 2.5.2` |
+
+Die vorhandenen `spike2/*/uv.lock` zeigen, dass das Locking mit dem
+CUDA-Index funktioniert, sind aber Experimentspuren und keine vom Produkt
+verbrauchte Quelle.
+
+#### Zielstruktur
+
+```text
+motoren/
+  voxcpm/pyproject.toml + uv.lock
+  qwen/pyproject.toml + uv.lock
+  moss/pyproject.toml + uv.lock
+```
+
+Qwen Design und Qwen Klon verwenden denselben Lockinhalt, werden aber weiterhin
+in zwei Zielumgebungen installiert. Torch und Torchaudio kommen über einen
+expliziten `pytorch-cu128`-Index; sämtliche direkten und transitiven Artefakte
+stehen mit SHA-256 im jeweiligen `uv.lock`. Die Modell-Revisions-Hashes in den
+Skripten bleiben eine zweite, getrennte Sperre für die Hugging-Face-Snapshots.
+
+#### Reproduzierbarer Baupfad
+
+1. Exakte CPython-3.12-Patchversion für einen Lock-Zyklus festlegen.
+2. Neue Umgebung in einem 0700-Geschwisterverzeichnis bauen, niemals direkt im
+   produktiven Ziel.
+3. `uv sync --frozen --no-dev --no-install-project` mit dem jeweiligen Projekt
+   und explizitem `UV_PROJECT_ENVIRONMENT` ausführen.
+4. `uv pip check`, Versionsmanifest und einen motorbezogenen Import-Smoke
+   ausführen. Der Smoke lädt noch kein mehrgigabytegroßes Modell.
+5. Erst nach vollständigem Erfolg die Umgebung atomar austauschen; bei Fehler
+   bleibt die alte bytegenau erhalten.
+6. Manifest mit Lock-SHA, Python, Plattform, Torch/CUDA, Paketversionen und den
+   erwarteten Modellrevisionen als 0600 schreiben.
+
+`umgebung_da()` wird durch einen aussagekräftigen Zustand ersetzt:
+
+```text
+missing | building | stale | broken | ready
+```
+
+Nur `ready` erscheint als verfügbarer GUI-Motor. `stale` bedeutet, dass die
+Umgebung funktioniert, aber nicht zum eingecheckten Lock/Manifest gehört;
+`broken` bedeutet fehlgeschlagener Import, falsche Python-Version oder
+inkonsistente Pakete. GUI und CLI nennen jeweils den Reparaturbefehl.
+
+Vorgesehene Befehle:
+
+```text
+mimic setup --entwurf qwen-klon --check
+mimic setup --entwurf qwen-klon --repair
+mimic setup --entwurf --check
+```
+
+Ein normaler Start repariert oder lädt niemals selbstständig Pakete aus dem
+Netz. Lock-Aktualisierungen erfolgen bewusst in einem eigenen Commit: Lock neu
+auflösen, frische Geschwisterumgebung bauen, Import-/GPU-Smokes ausführen und
+die hörbaren Goldproben manuell vergleichen.
+
+#### CI und Tests
+
+- `uv lock --check` für jedes Motorprojekt.
+- Lock-SHA und Motorzuordnung in Unit-Tests.
+- Fake-uv-Test beweist `--frozen` und den atomaren Austausch/rollback.
+- Manifesttests für fehlend, manipuliert, falsche Python-Version und falsche
+  Modellrevision.
+- Export der Locks muss zweimal dieselben direkten Versionen und Hashes liefern.
+- Kein Netzwerkzugriff in Status-, GUI- oder Worker-Startpfaden.
+
+#### Aufwand, Risiko und Abnahme
+
+Aufwand: 2–3 Tage einschließlich Migration der vorhandenen Umgebungen. Risiko:
+niedrig bis mittel; große Downloads machen Rollback und freie-Platz-Prüfung
+wichtig.
+
+Abnahme: Zwei Neuinstallationen aus denselben Locks besitzen identische
+Manifeste und Paketversionen; Hashmanipulation wird vor Installation abgewiesen;
+ein absichtlich unterbrochener Bau lässt die alte Umgebung unberührt; GUI und
+`/status` bieten nur `ready`-Motoren an.
+
+### Empfohlene Lieferreihenfolge
+
+| Paket | Inhalt | Aufwand | Abhängigkeit |
+|---|---|---:|---|
+| F1 | Produktive Motor-Locks, Manifest und Health-Check | 2–3 Tage | keine |
+| F2 | Reale GPU-Cancel-Smokes als Ist-Baseline | 1,5–2,5 Tage | F1 für reproduzierbare Umgebungen |
+| F3 | Frontend-Scheduler mit Aging und Generationenvertrag | 4–6 Tage | F2 als Sicherheitsnetz |
+| F4 | Reale Wechselmatrix und erneute GPU-Smokes | 1–2 Tage | F3 |
+
+Gesamt: realistisch 8,5–13,5 Arbeitstage. F3 ist der einzige hochriskante
+Umbau und sollte nicht mit UI-Funktionen oder Paket-Upgrades vermischt werden.
+Nach jedem Paket bleiben normale MF-Nutzung und der vorherige Rollback-Punkt
+produktiv installierbar.
+
 ## Prüfumfang und Evidenz
 
 - Repository, Git-Stand, installierte uv-tool-Umgebung, laufende Prozesse,
