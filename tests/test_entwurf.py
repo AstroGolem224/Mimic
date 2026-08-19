@@ -10,11 +10,15 @@ gemeldet zu haben.
 from __future__ import annotations
 
 import os
+import io
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
+import wave
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -308,6 +312,121 @@ class KoerperTypenTests(unittest.TestCase):
                 handler._feld_zahl({"anzahl": boese}, "anzahl", 1)
 
 
+class ProfilLoeschsperrenTests(unittest.TestCase):
+    def _handler(self, sitzung):
+        from mimic.gui import _GuiHandler
+        handler = object.__new__(_GuiHandler)
+        handler.sitzung = sitzung
+        handler._json = unittest.mock.Mock()
+        return handler
+
+    def test_loeschen_liefert_409_waehrend_einer_aufnahme(self):
+        from mimic.gui import Sitzung
+        sitzung = Sitzung()
+        handler = self._handler(sitzung)
+        with unittest.mock.patch.object(
+                sitzung.aufnahme, "stand",
+                return_value={"laeuft": True, "fertig": None}), \
+             unittest.mock.patch("mimic.gui.stimme_loeschen") as loeschen:
+            handler._profilpflege("/api/voice/delete", {"name": "matthias"})
+        handler._json.assert_called_once_with(409, {"message": "erst die Aufnahme behalten oder verwerfen"})
+        loeschen.assert_not_called()
+
+    def test_loeschen_liefert_409_waehrend_eines_entwurfs(self):
+        from mimic.gui import Sitzung
+        sitzung = Sitzung()
+        handler = self._handler(sitzung)
+        with unittest.mock.patch.object(
+                sitzung.aufnahme, "stand",
+                return_value={"laeuft": False, "fertig": None}), \
+             unittest.mock.patch.object(sitzung.entwurf, "stand", return_value={"laeuft": True}), \
+             unittest.mock.patch("mimic.gui.stimme_loeschen") as loeschen:
+            handler._profilpflege("/api/voice/delete", {"name": "matthias"})
+        self.assertEqual(409, handler._json.call_args.args[0])
+        loeschen.assert_not_called()
+
+    def test_mehrsprecherauftrag_sperrt_jede_referenzierte_stimme(self):
+        from mimic.gui import Sitzung
+        sitzung = Sitzung()
+        handler = self._handler(sitzung)
+        sitzung.auftrag = {"running": True, "voices": ["matthias", "nordom"]}
+        with unittest.mock.patch.object(
+                sitzung.aufnahme, "stand",
+                return_value={"laeuft": False, "fertig": None}), \
+             unittest.mock.patch.object(sitzung.entwurf, "stand", return_value={"laeuft": False}), \
+             unittest.mock.patch("mimic.gui.stimme_loeschen") as loeschen:
+            handler._profilpflege("/api/voice/delete", {"name": "nordom"})
+        self.assertEqual(409, handler._json.call_args.args[0])
+        loeschen.assert_not_called()
+
+
+class GuiPersistenzTests(unittest.TestCase):
+    def _handler(self, sitzung):
+        from mimic.gui import _GuiHandler
+        handler = object.__new__(_GuiHandler)
+        handler.sitzung = sitzung
+        handler._json = unittest.mock.Mock()
+        return handler
+
+    def test_draft_wird_atomar_mit_0600_gespeichert_gelesen_und_geloescht(self):
+        from mimic import gui
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        alt = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(root)
+        self.addCleanup(lambda: (os.environ.pop("XDG_STATE_HOME", None) if alt is None
+                                 else os.environ.__setitem__("XDG_STATE_HOME", alt)))
+        draft = {"text": "[nordom]Hallo.", "voice": "nordom", "modus": "qwen",
+                 "format": "wav", "klang": {"tempo": "1.0"}}
+        self.assertEqual(draft, gui.entwurf_speichern(draft))
+        pfad = root / "mimic" / "gui-draft.json"
+        self.assertEqual(0o600, pfad.stat().st_mode & 0o777)
+        self.assertEqual(draft, gui.entwurf_laden())
+        self.assertTrue(gui.entwurf_loeschen())
+        self.assertIsNone(gui.entwurf_laden())
+        self.assertFalse(gui.entwurf_loeschen())
+
+    def test_draft_lehnt_symlink_und_uebergrossen_text_ab(self):
+        from mimic import gui
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        alt = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = str(root)
+        self.addCleanup(lambda: (os.environ.pop("XDG_STATE_HOME", None) if alt is None
+                                 else os.environ.__setitem__("XDG_STATE_HOME", alt)))
+        with self.assertRaises(ValueError):
+            gui.entwurf_speichern({"text": "x" * (gui.MAX_TEXT_ZEICHEN + 1)})
+        ziel = root / "mimic" / "gui-draft.json"
+        ziel.parent.mkdir(parents=True)
+        fremd = root / "fremd.json"
+        fremd.write_text("{}")
+        ziel.symlink_to(fremd)
+        with self.assertRaises(ValueError):
+            gui.entwurf_speichern({"text": "sicher"})
+        self.assertEqual("{}", fremd.read_text())
+
+    def test_export_bleibt_bis_zur_passenden_bestaetigung_wiederholbar(self):
+        from mimic.gui import Sitzung, _GuiHandler
+        sitzung = Sitzung()
+        sitzung.export = {"id": "export-1", "daten": b"WAV", "typ": "audio/wav",
+                           "name": "mimic.wav"}
+        sitzung.auftrag.update(download=True, export_id="export-1")
+        handler = object.__new__(_GuiHandler)
+        handler.sitzung = sitzung
+        handler.path = "/api/export"
+        handler._erlaubt = mock.Mock(return_value=True)
+        handler._senden = mock.Mock()
+        handler._json = mock.Mock()
+        handler.do_GET()
+        handler.do_GET()
+        self.assertEqual(2, handler._senden.call_count)
+        self.assertIsNotNone(sitzung.export)
+
+        handler._export_bestaetigen({"id": "alter-export"})
+        self.assertEqual(409, handler._json.call_args.args[0])
+        self.assertIsNotNone(sitzung.export)
+        handler._export_bestaetigen({"id": "export-1"})
+        self.assertIsNone(sitzung.export)
+        self.assertFalse(sitzung.auftrag["download"])
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -385,6 +504,138 @@ class QwenRuntimeTests(unittest.TestCase):
             with ref.open("rb") as handle:
                 fd_pfad = f"/proc/self/fd/{handle.fileno()}"
                 self.assertEqual(str(ref), QwenRuntime._referenzpfad(fd_pfad))
+
+    def test_qwen_loescht_verwaiste_tempdateien_aber_keine_fremden(self):
+        from mimic import worker
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (root / "qwen-alt.wav").write_bytes(b"alt")
+        (root / "qwen-link.wav").symlink_to(root / "qwen-alt.wav")
+        (root / "export.wav").write_bytes(b"bleibt")
+        with mock.patch.object(worker, "runtime_dir", return_value=root):
+            worker.QwenRuntime._tempdateien_raeumen()
+        self.assertFalse((root / "qwen-alt.wav").exists())
+        self.assertTrue((root / "qwen-link.wav").is_symlink())
+        self.assertEqual(b"bleibt", (root / "export.wav").read_bytes())
+
+    def test_qwen_abbruch_startet_kind_neu_und_entfernt_ziel(self):
+        from mimic import worker
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ref = root / "ref.wav"
+        ref.touch()
+        runtime = worker.QwenRuntime.__new__(worker.QwenRuntime)
+        runtime.lock = threading.Lock()
+        runtime.prozess = SimpleNamespace(
+            poll=lambda: None, returncode=None,
+            stdin=io.StringIO())
+        runtime._ereignis = mock.Mock(side_effect=InterruptedError)
+        runtime._neu_starten = mock.Mock()
+        with mock.patch.object(worker, "runtime_dir", return_value=root), \
+             mock.patch.object(runtime, "_referenz_kopieren",
+                               side_effect=lambda _quelle, ziel, *_fd: ziel.write_bytes(b"wav")):
+            chunks = list(runtime.generate_stream(
+                text="privater Text", prompt_audio_path=str(ref),
+                cancelled=threading.Event()))
+        self.assertEqual([], chunks)
+        runtime._neu_starten.assert_called_once_with()
+        self.assertEqual([], list(root.glob("qwen-*.wav")))
+
+    def test_fremdausgabe_wird_begrenzt_und_nicht_in_fehler_gespiegelt(self):
+        from mimic import worker
+
+        leser, schreiber = os.pipe()
+        geheim = "STRENG-GEHEIM"
+        os.write(schreiber, ((geheim * 1000) + "\n").encode())
+        os.close(schreiber)
+        runtime = worker.QwenRuntime.__new__(worker.QwenRuntime)
+        runtime.prozess = SimpleNamespace(
+            stdout=os.fdopen(leser, "r", encoding="utf-8"), poll=lambda: 9)
+        try:
+            with self.assertRaises(RuntimeError) as raised:
+                runtime._ereignis("bereit")
+        finally:
+            runtime.prozess.stdout.close()
+        self.assertNotIn(geheim, str(raised.exception))
+        self.assertIn("unterdrueckte Fremdzeilen", str(raised.exception))
+
+    @staticmethod
+    def _wav(pfad: Path, *, channels: int = 1, rate: int = 48_000,
+             width: int = 2, seconds: int = 3) -> None:
+        with wave.open(str(pfad), "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(width)
+            wav.setframerate(rate)
+            wav.writeframes(bytes(rate * channels * width * seconds))
+        pfad.chmod(0o600)
+
+    def test_qwen_source_wird_als_validierter_inode_in_runtime_kopiert(self):
+        from mimic import worker
+
+        profil = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ref = profil / "ref.wav"
+        source = profil / "qwen-source.wav"
+        ziel = profil / "kontrolliert.wav"
+        self._wav(ref)
+        self._wav(source)
+        with ref.open("rb") as handle:
+            worker.QwenRuntime._referenz_kopieren(
+                f"/proc/self/fd/{handle.fileno()}", ziel)
+        self.assertEqual(source.read_bytes(), ziel.read_bytes())
+        self.assertEqual(0o600, ziel.stat().st_mode & 0o777)
+
+    def test_qwen_source_symlink_wird_abgewiesen(self):
+        from mimic import worker
+
+        profil = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ref = profil / "ref.wav"
+        fremd = profil / "fremd.wav"
+        self._wav(ref)
+        self._wav(fremd)
+        (profil / "qwen-source.wav").symlink_to(fremd)
+        with self.assertRaisesRegex(Exception, "sicher geoeffnet"):
+            worker.QwenRuntime._referenz_kopieren(str(ref), profil / "ziel.wav")
+
+    def test_qwen_source_rechte_und_groesse_werden_abgewiesen(self):
+        from mimic import worker
+
+        for art in ("rechte", "groesse"):
+            with self.subTest(art=art):
+                profil = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                ref = profil / "ref.wav"
+                source = profil / "qwen-source.wav"
+                self._wav(ref)
+                self._wav(source)
+                if art == "rechte":
+                    source.chmod(0o644)
+                    erwartet = "Modus 0600"
+                else:
+                    with source.open("r+b") as datei:
+                        datei.truncate(worker.MAX_WAV_BYTES + 1)
+                    erwartet = "zu gross"
+                with self.assertRaisesRegex(Exception, erwartet):
+                    worker.QwenRuntime._referenz_kopieren(str(ref), profil / "ziel.wav")
+
+    def test_qwen_source_format_und_dauer_werden_abgewiesen(self):
+        from mimic import worker
+
+        for art in ("stereo", "rate", "dauer"):
+            with self.subTest(art=art):
+                profil = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                ref = profil / "ref.wav"
+                source = profil / "qwen-source.wav"
+                self._wav(ref)
+                if art == "stereo":
+                    self._wav(source, channels=2)
+                    erwartet = "48 kHz, 16-bit PCM und mono"
+                elif art == "rate":
+                    self._wav(source, rate=24_000)
+                    erwartet = "48 kHz, 16-bit PCM und mono"
+                else:
+                    self._wav(source, seconds=1)
+                    erwartet = "3 bis 60 Sekunden"
+                with self.assertRaisesRegex(Exception, erwartet):
+                    worker.QwenRuntime._referenz_kopieren(str(ref), profil / "ziel.wav")
 
 
 class ZahlwortTests(unittest.TestCase):

@@ -535,6 +535,98 @@ class OwnerFreigabeTests(unittest.TestCase):
         self.assertLess(time.monotonic() - gestartet, 2.0)
         self.assertTrue(job.cancelled.is_set())
 
+    def test_interner_worker_lehnt_uebergrossen_body_vor_dem_lesen_ab(self):
+        from mimic import worker
+
+        class NichtLesen:
+            def read(self, _length):
+                raise AssertionError("uebergrosser Body wurde gelesen")
+
+        handler = worker.WorkerHandler.__new__(worker.WorkerHandler)
+        handler.path = "/synthesize"
+        handler.headers = {"Content-Length": str(worker.WORKER_MAX_BODY_BYTES + 1)}
+        handler.rfile = NichtLesen()
+        result = {}
+        handler._error = lambda status, reason, message, **details: result.update(
+            status=status, reason=reason, message=message, details=details)
+        handler.do_POST()
+        self.assertEqual(400, result["status"])
+        self.assertEqual("bad_request", result["reason"])
+
+    def test_modusabhaengige_frist_gilt_auch_im_worker_handler(self):
+        from mimic import worker
+
+        class Ereignisse:
+            def __init__(self):
+                self.timeout = None
+
+            def get(self, *, timeout):
+                self.timeout = timeout
+                raise queue.Empty
+
+        job = worker.Job(2, 0, {"text": "x", "voice": "matthias", "mode": "qwen"})
+        job.events = Ereignisse()
+        request_timeout = mock.Mock(return_value=17.0)
+        engine = SimpleNamespace(
+            submit=lambda _request: job,
+            _request_timeout=request_timeout)
+        body = json.dumps(job.request).encode()
+        handler = worker.WorkerHandler.__new__(worker.WorkerHandler)
+        handler.path = "/synthesize"
+        handler.request_version = "HTTP/1.1"
+        handler.headers = {"Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.wfile = io.BytesIO()
+        handler.log_request = lambda *_args, **_kwargs: None
+        handler._client_disconnected = mock.Mock(side_effect=[False, True])
+        with mock.patch.object(worker, "ENGINE", engine, create=True):
+            handler.do_POST()
+        request_timeout.assert_called_once_with("qwen")
+        self.assertEqual(0.05, job.events.timeout)
+        self.assertTrue(job.cancelled.is_set())
+
+
+class DatenschutzLoggingTests(unittest.TestCase):
+    def test_dots_logger_wird_vor_modellnutzung_vollstaendig_deaktiviert(self):
+        from mimic import worker
+
+        loguru = SimpleNamespace(disable=mock.Mock())
+        fake_module = SimpleNamespace(logger=loguru)
+        python_logger = worker.logging.getLogger("dots_tts")
+        alter_disabled, alter_propagate = python_logger.disabled, python_logger.propagate
+        self.addCleanup(setattr, python_logger, "disabled", alter_disabled)
+        self.addCleanup(setattr, python_logger, "propagate", alter_propagate)
+        with mock.patch.dict("sys.modules", {"loguru": fake_module}):
+            worker.suppress_dots_payload_logging()
+        self.assertTrue(python_logger.disabled)
+        self.assertFalse(python_logger.propagate)
+        loguru.disable.assert_called_once_with("dots_tts")
+
+    def test_geheimtext_aus_dots_modul_erreicht_keinen_loguru_sink(self):
+        from loguru import logger
+        from mimic import worker
+
+        ausgabe = io.StringIO()
+        sink = logger.add(ausgabe, format="{message}")
+        logger.enable("dots_tts")
+        self.addCleanup(logger.enable, "dots_tts")
+        self.addCleanup(logger.remove, sink)
+        worker.suppress_dots_payload_logging()
+        code = compile("logger.info(geheim)", "dots_tts/runtime.py", "exec")
+        exec(code, {"__name__": "dots_tts.runtime", "logger": logger,
+                    "geheim": "STRENG-GEHEIMER-NUTZERTEXT"})
+        self.assertNotIn("STRENG-GEHEIMER-NUTZERTEXT", ausgabe.getvalue())
+
+    def test_frontend_und_worker_teilen_modusabhaengige_rechenfristen(self):
+        from mimic import frontend, worker
+
+        engine = worker.Engine.__new__(worker.Engine)
+        self.assertEqual(worker.REQUEST_TIMEOUT + 10, frontend.FIRST_AUDIO_TIMEOUT)
+        self.assertEqual(worker.QWEN_REQUEST_TIMEOUT + 10,
+                         frontend.QWEN_FIRST_AUDIO_TIMEOUT)
+        self.assertEqual(worker.REQUEST_TIMEOUT, engine._request_timeout("mf"))
+        self.assertEqual(worker.QWEN_REQUEST_TIMEOUT, engine._request_timeout("qwen"))
+
 
 class Phase2bTests(unittest.TestCase):
     def test_require_warm_wird_vor_dem_einreihen_abgelehnt(self):
@@ -663,10 +755,16 @@ class Phase2bTests(unittest.TestCase):
         result = {}
         handler.path = "/status"
         handler._json = lambda status, value: result.update(status=status, value=value)
-        handler.do_GET()
+        with mock.patch("mimic.entwurf.umgebung_da", return_value=False):
+            handler.do_GET()
         self.assertEqual(200, result["status"])
         self.assertEqual(1, result["value"]["v"])
         self.assertEqual(["valid"], result["value"]["voices"])
+        self.assertEqual(["mf", "soar"], result["value"]["modes"])
+
+        with mock.patch("mimic.entwurf.umgebung_da", return_value=True):
+            handler.do_GET()
+        self.assertEqual(["mf", "soar", "qwen"], result["value"]["modes"])
 
     def test_fehler_bleiben_versioniert_strukturiert_und_unbekannt(self):
         from mimic import frontend
@@ -733,16 +831,33 @@ class Phase2bTests(unittest.TestCase):
                 result = {}
                 handler._json = lambda code, value: result.update(status=code, value=value)
                 with mock.patch.object(frontend, "UnixHTTPConnection", return_value=Connection()):
-                    handler._handle_warm({"mode": "mf", "correlation_id": "a" * 32})
+                    handler._handle_warm({"mode": "mf", "voice": "nordom",
+                                          "correlation_id": "a" * 32})
                 self.assertEqual(status, result["status"])
                 self.assertEqual("/warm", sent["path"])
                 self.assertEqual("mf", sent["body"]["mode"])
+                self.assertEqual("nordom", sent["body"]["voice"])
 
         handler = frontend.FrontendHandler.__new__(frontend.FrontendHandler)
         result = {}
         handler._error = lambda reason, message, **details: result.update(reason=reason)
         handler._handle_warm({"mode": "quatsch"})
         self.assertEqual("bad_request", result["reason"])
+
+        handler._handle_warm({"mode": "mf", "voice": "../fremd"})
+        self.assertEqual("bad_request", result["reason"])
+
+    def test_worker_warmlauf_nutzt_angeforderte_stimme(self):
+        from mimic import worker
+
+        engine = fresh_engine()
+        runtime = object()
+        engine._load = mock.Mock(return_value=runtime)
+        engine._warm_audio_path = mock.Mock()
+        engine.write_status = mock.Mock()
+        engine._warm({"mode": "mf", "voice": "nordom",
+                      "correlation_id": "b" * 32})
+        engine._warm_audio_path.assert_called_once_with(runtime, "nordom")
 
     @staticmethod
     def _restore_env(saved):

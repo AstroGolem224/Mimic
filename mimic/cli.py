@@ -14,8 +14,9 @@ import textwrap
 import wave
 from pathlib import Path
 
+from . import __version__
 from .effekte import GLADOS
-from .entwurf import MOTOREN, VORGABE_MOTOR
+from .entwurf import EINDEUTSCHER_V2, MOTOREN, VORGABE_MOTOR
 from .frontend import UnixHTTPConnection, frontend_socket_path
 from .protocol import read_frame
 from .voices import VOICE_RE, VoiceError, close_voice, default_voices_dir, load_voice
@@ -256,7 +257,34 @@ def speichern(profil: Path, aufnahme: Path, text: str) -> None:
     transkript.chmod(0o600)
 
 
-def profil_aus_datei(name: str, quelle: Path, text: str, force: bool = False) -> tuple[float, str]:
+def _profil_ersetzen(profil: Path, neu: Path) -> None:
+    """Tauscht ein fertig gebautes Profil aus und rollt Fehler zurueck.
+
+    POSIX kann ein nichtleeres Verzeichnis nicht direkt ersetzen. Deshalb wird
+    das alte Profil nur fuer die zwei lokalen Rename-Schritte beiseitegestellt;
+    beide liegen im selben Stimmen-Dateisystem. Scheitert der zweite Schritt,
+    wird der erste sofort rueckgaengig gemacht. Leser halten bereits geoeffnete
+    Dateien weiter, neue Leser sehen anschliessend nur das vollstaendige Profil.
+    """
+    if not profil.exists():
+        os.replace(neu, profil)
+        return
+    sicherung = profil.parent / f".{profil.name}.alt.{os.getpid()}"
+    nummer = 0
+    while sicherung.exists():
+        nummer += 1
+        sicherung = profil.parent / f".{profil.name}.alt.{os.getpid()}.{nummer}"
+    os.replace(profil, sicherung)
+    try:
+        os.replace(neu, profil)
+    except BaseException:
+        os.replace(sicherung, profil)
+        raise
+    shutil.rmtree(sicherung)
+
+
+def profil_aus_datei(name: str, quelle: Path, text: str, force: bool = False, *,
+                     qwen_quelle: Path | None = None) -> tuple[float, str]:
     """Legt ein Profil aus einer fertigen Audiodatei an. Gibt (Dauer, Hinweis) zurueck.
 
     ffmpeg macht daraus die 48-kHz-Mono-WAV, die load_voice verlangt -- damit ist
@@ -276,36 +304,48 @@ def profil_aus_datei(name: str, quelle: Path, text: str, force: bool = False) ->
 
     root = default_voices_dir()
     profil = root / name
-    if (profil / "ref.wav").exists() and not force:
+    if profil.exists() and not force:
         raise VoiceError("invalid_voice_profile", f"{name!r} existiert schon")
 
-    profil_anlegen(profil)
-    umgewandelt = profil / "ref.wav.tmp"   # gleiches Dateisystem, sonst EXDEV in speichern()
-    try:
-        wandlung = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(quelle),
-             # -f wav explizit: die Endung ist .tmp, daraus raet ffmpeg nichts.
-             "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", str(umgewandelt)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        if wandlung.returncode != 0:
-            raise VoiceError("invalid_voice_profile", f"ffmpeg konnte {quelle.name} nicht wandeln: "
-                             f"{wandlung.stderr.decode(errors='replace').strip()}")
-        umgewandelt.chmod(0o600)
-        dauer = _dauer(umgewandelt)
-        if not 3 <= dauer <= 60:
-            raise VoiceError("invalid_voice_profile", f"{dauer:.1f} s liegt ausserhalb 3-60 s -- "
-                             "der Dienst wuerde das Profil ablehnen")
-        # Kein Abbruch: der Dienst nimmt 3-60 s. Aber nur 8-15 s ist erprobt.
-        hinweis = "" if 8 <= dauer <= 15 else f"{dauer:.1f} s weicht vom Ziel 10 s ab."
-        speichern(profil, umgewandelt, text)
-    except (OSError, wave.Error, subprocess.SubprocessError) as exc:
-        raise VoiceError("invalid_voice_profile", f"Import fehlgeschlagen: {exc}") from exc
-    finally:
-        umgewandelt.unlink(missing_ok=True)
-        if profil.is_dir() and not any(profil.iterdir()):  # kein Abbruch soll eine Bauruine hinterlassen
-            profil.rmdir()
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
+    with tempfile.TemporaryDirectory(prefix=f".{name}.bau.", dir=root) as bauordner:
+        bauroot = Path(bauordner)
+        bauroot.chmod(0o700)
+        neu = bauroot / name
+        profil_anlegen(neu)
+        umgewandelt = neu / "ref.wav.tmp"
+        try:
+            wandlung = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", str(quelle),
+                 # -f wav explizit: die Endung ist .tmp, daraus raet ffmpeg nichts.
+                 "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav",
+                 str(umgewandelt)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if wandlung.returncode != 0:
+                raise VoiceError(
+                    "invalid_voice_profile",
+                    f"ffmpeg konnte {quelle.name} nicht wandeln: "
+                    f"{wandlung.stderr.decode(errors='replace').strip()}")
+            umgewandelt.chmod(0o600)
+            dauer = _dauer(umgewandelt)
+            if not 3 <= dauer <= 60:
+                raise VoiceError(
+                    "invalid_voice_profile", f"{dauer:.1f} s liegt ausserhalb 3-60 s -- "
+                    "der Dienst wuerde das Profil ablehnen")
+            hinweis = "" if 8 <= dauer <= 15 else f"{dauer:.1f} s weicht vom Ziel 10 s ab."
+            speichern(neu, umgewandelt, text)
+            if qwen_quelle is not None:
+                qwen_quelle_speichern(neu, qwen_quelle)
+            # Endpruefung vor der Mutation, durch dieselbe Instanz wie der Dienst.
+            close_voice(load_voice(name, bauroot, mit_gain=False))
+            _profil_ersetzen(profil, neu)
+        except VoiceError:
+            raise
+        except (OSError, wave.Error, subprocess.SubprocessError) as exc:
+            raise VoiceError("invalid_voice_profile", f"Import fehlgeschlagen: {exc}") from exc
+        finally:
+            umgewandelt.unlink(missing_ok=True)
 
-    close_voice(load_voice(name, root, mit_gain=False))   # Endpruefung durch dieselbe Instanz wie der Dienst
     return dauer, hinweis
 
 
@@ -329,6 +369,11 @@ def qwen_quelle_speichern(profil: Path, quelle: Path) -> Path:
                 f"Qwen-Vorlage konnte nicht gesichert werden: "
                 f"{wandlung.stderr.decode(errors='replace').strip()}")
         tmp.chmod(0o600)
+        dauer = _dauer(tmp)
+        if not 3 <= dauer <= 60:
+            raise VoiceError(
+                "invalid_voice_profile",
+                f"Qwen-Vorlage: {dauer:.1f} s liegt ausserhalb 3-60 s")
         os.replace(tmp, ziel)
         ziel.chmod(0o600)
         return ziel
@@ -567,8 +612,8 @@ def eindeutschen2(args: argparse.Namespace) -> int:
             print(f"  kein Wurf im erprobten Bereich. Bester: {dauer} s")
 
         try:
-            dauer, hinweis = profil_aus_datei(args.voice, ziel, text, args.force)
-            qwen_quelle_speichern(default_voices_dir() / args.voice, quelle)
+            dauer, hinweis = profil_aus_datei(
+                args.voice, ziel, text, args.force, qwen_quelle=quelle)
         except VoiceError as exc:
             nachsatz = " -- --force zum Ueberschreiben" if "existiert schon" in exc.message else ""
             print(f"{exc.reason}: {exc.message}{nachsatz}", file=sys.stderr)
@@ -600,7 +645,7 @@ def record(args: argparse.Namespace) -> int:
 
     root = default_voices_dir()
     profil = root / name
-    if (profil / "ref.wav").exists() and not args.force:
+    if profil.exists() and not args.force:
         print(f"invalid_voice_profile: {name!r} existiert schon -- --force zum Ueberschreiben",
               file=sys.stderr)
         return 1
@@ -612,10 +657,14 @@ def record(args: argparse.Namespace) -> int:
     print(textwrap.fill(" ".join(text.split()), 68, initial_indent="  » ", subsequent_indent="    "))
     print("\n  Ruhiger Raum, ~20 cm Abstand, am Stueck durchsprechen. Ziel 10 s.\n")
 
-    # Direkt ins Profilverzeichnis: os.replace muss auf demselben Dateisystem
-    # bleiben, sonst EXDEV. Die .tmp raeumt der finally-Zweig weg.
-    profil_anlegen(profil)
-    aufnahme = profil / "ref.wav.tmp"
+    # Die private Aufnahme liegt neben dem Zielprofil. Erst nach Bestaetigung
+    # baut `profil_aus_datei` daraus eine vollstaendige Einheit und tauscht sie
+    # aus; ein --force-Lauf mischt so nie alte Qwen- und neue MF/SOAR-Identitaet.
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
+    arbeitsprofil = Path(tempfile.mkdtemp(prefix=f".{name}.aufnahme.", dir=root))
+    arbeitsprofil.chmod(0o700)
+    aufnahme = arbeitsprofil / "ref.wav.tmp"
     try:
         while True:
             _aufnehmen(aufnahme)
@@ -642,7 +691,7 @@ def record(args: argparse.Namespace) -> int:
             if wahl == "a":
                 return 1
             break
-        speichern(profil, aufnahme, text)
+        profil_aus_datei(name, aufnahme, text, args.force)
     # EOFError gehoert dazu: wave.open wirft ihn auf einer leeren Datei, und
     # input() wirft ihn bei Strg-D. Beides endete vorher im nackten Traceback.
     except (OSError, wave.Error, subprocess.SubprocessError, EOFError) as exc:
@@ -650,8 +699,10 @@ def record(args: argparse.Namespace) -> int:
         return 1
     finally:
         aufnahme.unlink(missing_ok=True)
-        if not any(profil.iterdir()):   # Abbruch soll keine Bauruine hinterlassen
-            profil.rmdir()
+        try:
+            arbeitsprofil.rmdir()
+        except OSError:
+            pass
 
     try:
         profile = load_voice(name, root, mit_gain=False)
@@ -671,8 +722,10 @@ UNITS = ("mimic.socket", "mimic.service",
 
 
 def unit_quelle() -> Path | None:
-    """Das systemd/-Verzeichnis des Repos -- neben dem Paket oder unter cwd."""
-    for kandidat in (Path(__file__).resolve().parent.parent / "systemd", Path.cwd() / "systemd"):
+    """Mitgelieferte Units; Checkout bleibt nur Entwicklungs-Fallback."""
+    for kandidat in (Path(sys.prefix) / "share" / "mimic" / "systemd",
+                      Path(__file__).resolve().parent.parent / "systemd",
+                      Path.cwd() / "systemd"):
         if all((kandidat / name).is_file() for name in UNITS):
             return kandidat
     return None
@@ -708,10 +761,11 @@ def setup(args: argparse.Namespace) -> int:
     if getattr(args, "entwurf", None) is not None:
         from .entwurf import motor_holen, umgebung_bauen, umgebung_da
 
-        # Ohne Argument beide Motoren, mit Argument nur den genannten. Beide
-        # zusammen sind mehrere GB, aber wer entwerfen will, will meist
-        # vergleichen koennen.
-        gewuenscht = [args.entwurf] if args.entwurf else sorted(MOTOREN)
+        # Ohne Argument beide Entwurfsmotoren plus den im Sprechmodus Qwen
+        # benoetigten Direktkloner. Damit bietet die GUI nach einem normalen
+        # Setup keinen Schalter an, der erst beim ersten Auftrag scheitert.
+        alle = {*MOTOREN, EINDEUTSCHER_V2.name}
+        gewuenscht = [args.entwurf] if args.entwurf else sorted(alle)
         for name in gewuenscht:
             try:
                 eintrag = motor_holen(name)
@@ -730,7 +784,7 @@ def setup(args: argparse.Namespace) -> int:
 
     quelle = unit_quelle()
     if quelle is None:
-        print("systemd/ nicht gefunden -- mimic setup im Repo-Verzeichnis aufrufen",
+        print("mitgelieferte systemd-Units nicht gefunden -- Paket neu installieren",
               file=sys.stderr)
         return 1
     # Die Units zeigen fest auf %h/.local/bin. Fehlen die Entry-Points, wuerde
@@ -750,6 +804,14 @@ def setup(args: argparse.Namespace) -> int:
     zustaende = install_units(quelle, Path.home() / ".config" / "systemd" / "user")
     for name, zustand in zustaende:
         print(f"  {zustand:12} {name}")
+
+    desktop_quelle = quelle / "mimic.desktop"
+    if desktop_quelle.is_file():
+        desktop_ziel = Path.home() / ".local" / "share" / "applications" / "mimic.desktop"
+        desktop_ziel.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        desktop_ziel.write_bytes(desktop_quelle.read_bytes())
+        desktop_ziel.chmod(0o644)
+        print(f"  desktop      {desktop_ziel}")
 
     if _systemctl("daemon-reload"):
         return 1
@@ -780,6 +842,7 @@ def gui(_args: argparse.Namespace) -> int:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="mimic")
+    result.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = result.add_subparsers(required=True)
     say_parser = commands.add_parser("say")
     say_parser.add_argument("text")
@@ -815,7 +878,8 @@ def parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--entwurf", nargs="?", const="", default=None,
                               metavar="MOTOR",
                               help="nur die Generator-Umgebungen bauen (mehrere GB, Minuten). "
-                                   f"Ohne Angabe alle: {', '.join(sorted(MOTOREN))}")
+                                   f"Ohne Angabe alle: "
+                                   f"{', '.join(sorted({*MOTOREN, EINDEUTSCHER_V2.name}))}")
     setup_parser.set_defaults(function=setup)
     gui_parser = commands.add_parser("gui")
     gui_parser.set_defaults(function=gui)

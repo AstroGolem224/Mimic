@@ -22,16 +22,19 @@ from .effekte import (BREITE_MAX, BREITE_MIN, FORMANT_MAX, FORMANT_MIN, HALL_MAX
                       TEMPO_MAX, TEMPO_MIN, TONHOEHE_MAX, TONHOEHE_MIN,
                       VERZERRUNG_MAX, VERZERRUNG_MIN)
 from .protocol import MEDIA_TYPE, MODES, finish_chunks, read_frame, write_chunk
-from .voices import VoiceError, available_voices, close_voice, load_voice
+from .voices import VOICE_RE, VoiceError, available_voices, close_voice, load_voice
 
 MAX_TEXT_CHARS = int(os.environ.get("MIMIC_MAX_TEXT_CHARS", "1000"))
 MAX_BODY_BYTES = int(os.environ.get("MIMIC_MAX_BODY_BYTES", str(64 * 1024)))
 CONNECT_TIMEOUT = 2.0
 HEADER_TIMEOUT = 5.0
-# Qwen liefert technisch bedingt erst nach der kompletten Satzgenerierung den
-# ersten Block. 250 s decken dessen 240-s-Workerfrist samt Transport ab; MF und
-# SOAR liefern weiterhin nach wenigen Sekunden und werden dadurch nicht langsamer.
-FIRST_AUDIO_TIMEOUT = 250.0
+# Rechenfristen entsprechen dem Worker-Vertrag. Qwen liefert technisch bedingt
+# erst nach der kompletten Satzgenerierung den ersten Block; MF/SOAR sollen bei
+# einem Hänger weiterhin nach ihrer kuerzeren Frist abbrechen.
+REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
+QWEN_REQUEST_TIMEOUT = float(os.environ.get("MIMIC_QWEN_REQUEST_TIMEOUT", "240"))
+FIRST_AUDIO_TIMEOUT = REQUEST_TIMEOUT + 10.0
+QWEN_FIRST_AUDIO_TIMEOUT = QWEN_REQUEST_TIMEOUT + 10.0
 FRAME_TIMEOUT = 10.0
 REASON_STATUS = {
     "bad_request": 400, "text_too_long": 400, "unknown_voice": 404,
@@ -108,9 +111,10 @@ class _ConsumerDisconnected(Exception):
 class _WorkerReader:
     """Liest HTTP und Rahmen im eigenen Thread, also inklusive Puffer von http.client."""
 
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, first_audio_timeout: float = FIRST_AUDIO_TIMEOUT):
         self.conn = UnixHTTPConnection(worker_socket_path(), CONNECT_TIMEOUT)
         self.body = body
+        self.first_audio_timeout = first_audio_timeout
         self.events: queue.Queue[tuple] = queue.Queue(maxsize=4)
         self.stopped = threading.Event()
         self.response: http.client.HTTPResponse | None = None
@@ -144,7 +148,7 @@ class _WorkerReader:
             if not self._put(("response", self.response)):
                 return
             stage = "first_audio"
-            _set_response_timeout(self.response, FIRST_AUDIO_TIMEOUT)
+            _set_response_timeout(self.response, self.first_audio_timeout)
             audio_seen = False
             while not self.stopped.is_set():
                 kind, payload = read_frame(self.response)
@@ -221,6 +225,12 @@ class FrontendHandler(BaseHTTPRequestHandler):
                      "last_load_s": None, "vram_free_mib": None, "uptime_s": 0}
         value["v"] = 1
         value["voices"] = available_voices()
+        # MF/SOAR gehoeren zur Hauptumgebung. Qwen ist erst verwendbar, wenn
+        # seine absichtlich getrennte, inkompatibel gepinnte venv existiert.
+        from .entwurf import EINDEUTSCHER_V2, umgebung_da
+        value["modes"] = ["mf", "soar"]
+        if umgebung_da(EINDEUTSCHER_V2.name):
+            value["modes"].append("qwen")
         self._json(200, value)
 
     def do_POST(self) -> None:
@@ -304,8 +314,12 @@ class FrontendHandler(BaseHTTPRequestHandler):
 
     def _handle_warm(self, request: dict) -> None:
         mode = request.get("mode", "soar")
+        voice = request.get("voice", "matthias")
         if mode not in MODES:
             self._error("bad_request", "mode muss mf, soar oder qwen sein")
+            return
+        if not isinstance(voice, str) or not VOICE_RE.fullmatch(voice):
+            self._error("bad_request", "voice ist ungueltig")
             return
         correlation_id = request.get("correlation_id")
         if correlation_id is None:
@@ -314,7 +328,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
               or any(c not in "0123456789abcdefABCDEF" for c in correlation_id)):
             self._error("bad_request", "correlation_id muss 32-stelliges Hex sein")
             return
-        body = json.dumps({"mode": mode, "correlation_id": correlation_id},
+        body = json.dumps({"mode": mode, "voice": voice, "correlation_id": correlation_id},
                           separators=(",", ":")).encode()
         conn = UnixHTTPConnection(worker_socket_path(), CONNECT_TIMEOUT)
         try:
@@ -344,7 +358,10 @@ class FrontendHandler(BaseHTTPRequestHandler):
 
     def _proxy_once(self, request: dict, *, retry_mode: bool) -> bool:
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode()
+        first_audio_timeout = (QWEN_FIRST_AUDIO_TIMEOUT
+                               if request.get("mode") == "qwen" else FIRST_AUDIO_TIMEOUT)
         reader = _WorkerReader(body)
+        reader.first_audio_timeout = first_audio_timeout
         reader.start()
         try:
             event = self._next_worker_event(reader, HEADER_TIMEOUT)
@@ -368,7 +385,7 @@ class FrontendHandler(BaseHTTPRequestHandler):
             buffered: list[tuple[str, bytes]] = []
             audio_seen = False
             while not audio_seen:
-                event = self._next_worker_event(reader, FIRST_AUDIO_TIMEOUT)
+                event = self._next_worker_event(reader, first_audio_timeout)
                 if event[0] == "reader_error":
                     self._reader_error(event[1], event[2], before_audio=True)
                     return False

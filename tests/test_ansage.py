@@ -463,6 +463,7 @@ class Warteschlange(unittest.TestCase):
     def test_freie_ausgabe_wird_sofort_belegt(self):
         griff = ansage._sperre_holen("eigene")
         self.assertIsNotNone(griff)
+        self.addCleanup(griff.close)
 
     def test_eigene_sitzung_wird_verdraengt(self):
         halter = ansage._sperre()                      # belegt die Ausgabe
@@ -479,6 +480,7 @@ class Warteschlange(unittest.TestCase):
               unittest.mock.patch.object(ansage.time, "sleep")):
             griff = ansage._sperre_holen("eigene")
         self.assertIsNotNone(griff)
+        self.addCleanup(griff.close)
         self.assertEqual([True], verdraengt)
 
     def test_fremde_sitzung_wird_abgewartet_nicht_abgeschnitten(self):
@@ -497,6 +499,7 @@ class Warteschlange(unittest.TestCase):
               unittest.mock.patch.object(ansage.time, "sleep", side_effect=warten)):
             griff = ansage._sperre_holen("eigene")
         self.assertIsNotNone(griff)
+        self.addCleanup(griff.close)
         self.assertEqual([], verdraengt)               # nichts abgeschnitten
         self.assertEqual(3, len(takte))                # sondern angestanden
 

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Lockfile prüfen
+        run: uv lock --check
+      - name: Tests
+        run: uv run python -m unittest -v tests.test_phase1 tests.test_phase2 tests.test_ansage tests.test_entwurf
+      - name: Wheel bauen
+        run: uv build --wheel
+      - name: Wheel-Inhalt und frische Installation prüfen
+        run: |
+          python -m zipfile -l dist/*.whl | tee /tmp/mimic-wheel.txt
+          grep 'mimic/gui.html' /tmp/mimic-wheel.txt
+          grep 'share/mimic/systemd/mimic-worker.service' /tmp/mimic-wheel.txt
+          uv venv --python 3.12 /tmp/mimic-wheel-venv
+          uv pip install --python /tmp/mimic-wheel-venv/bin/python dist/*.whl
+          /tmp/mimic-wheel-venv/bin/python -c 'import mimic; print(mimic.__version__)'
+          /tmp/mimic-wheel-venv/bin/mimic --help
+      - name: systemd-Units prüfen
+        run: systemd-analyze verify systemd/*.service systemd/*.socket

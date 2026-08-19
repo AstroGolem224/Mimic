@@ -6,9 +6,11 @@ import atexit
 import itertools
 import heapq
 import json
+import logging
 import os
 import queue
 import resource
+import stat
 import socket
 import subprocess
 import sys
@@ -26,7 +28,7 @@ from .effekte import (Kette, breite_wert, formant_wert, hall_wert, kruemel_wert,
                       raster_wert, streuung_wert, tempo_faktor, tonhoehe_wert,
                       verzerrung_wert)
 from .protocol import MODES, finish_chunks, write_chunk, encode_frame
-from .voices import (VoiceError, apply_pronunciation, close_voice, endet_satz,
+from .voices import (MAX_WAV_BYTES, VoiceError, apply_pronunciation, close_voice, endet_satz,
                      entschaerfe_versalien, load_voice, split_sentences,
                      sprich_zahlen)
 
@@ -41,6 +43,9 @@ MODEL_VRAM_MIB = int(os.environ.get("MIMIC_MODEL_VRAM_MIB", "6222"))
 IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
 QWEN_REQUEST_TIMEOUT = float(os.environ.get("MIMIC_QWEN_REQUEST_TIMEOUT", "240"))
+WORKER_MAX_BODY_BYTES = int(os.environ.get("MIMIC_WORKER_MAX_BODY_BYTES", str(64 * 1024)))
+QWEN_FOREIGN_LINE_BYTES = 4096
+QWEN_STOP_TIMEOUT = 1.0
 # Aufschlag der Wache auf REQUEST_TIMEOUT. Sie greift nur, wenn das Modell gar
 # nicht antwortet -- ein langsamer, aber lebendiger Lauf soll sie nie ausloesen.
 # 60 s deckt den gemessenen Kaltstart (7.1 s) samt reichlich Luft ab.
@@ -77,27 +82,72 @@ class QwenRuntime:
         if not python.is_file():
             raise RuntimeError("Qwen fehlt -- `mimic setup --entwurf qwen-klon`")
         skript = Path(__file__).resolve().parent / "qwen_dienst.py"
-        self.prozess = subprocess.Popen(
-            [str(python), str(skript)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1)
+        self.befehl = [str(python), str(skript)]
         self.lock = threading.Lock()
-        ereignis = self._ereignis("bereit")
+        self.prozess = None
+        self._tempdateien_raeumen()
+        ereignis = self._starten()
         self.sample_rate = int(ereignis.get("rate") or self.sample_rate)
         atexit.register(self.close)
 
-    def _ereignis(self, erwartet: str | None = None) -> dict:
+    @staticmethod
+    def _tempdateien_raeumen() -> None:
+        """Raeumt WAV-Reste eines zuvor hart beendeten Workers weg."""
+        laufzeit = runtime_dir()
+        if not laufzeit.is_dir():
+            return
+        for pfad in laufzeit.glob("qwen-*.wav"):
+            try:
+                if pfad.is_file() and not pfad.is_symlink():
+                    pfad.unlink()
+            except OSError:
+                pass
+
+    def _starten(self) -> dict:
+        self.prozess = subprocess.Popen(
+            self.befehl, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1)
+        return self._ereignis("bereit")
+
+    def _stoppen(self) -> None:
+        prozess = self.prozess
+        if prozess is None or prozess.poll() is not None:
+            return
+        prozess.terminate()
+        try:
+            prozess.wait(QWEN_STOP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            prozess.kill()
+            prozess.wait()
+
+    def _neu_starten(self) -> None:
+        self._stoppen()
+        self._tempdateien_raeumen()
+        ereignis = self._starten()
+        self.sample_rate = int(ereignis.get("rate") or self.sample_rate)
+
+    def _ereignis(self, erwartet: str | None = None,
+                   cancelled: threading.Event | None = None) -> dict:
+        assert self.prozess is not None
         assert self.prozess.stdout is not None
-        geplapper: list[str] = []
+        fremdzeilen = 0
         while True:
-            zeile = self.prozess.stdout.readline()
+            if cancelled is not None and cancelled.is_set():
+                raise InterruptedError("Qwen-Auftrag abgebrochen")
+            # Der Poll macht den ansonsten blockierenden readline abbrechbar.
+            import select
+            bereit, _, _ = select.select([self.prozess.stdout], [], [], 0.05)
+            if not bereit:
+                continue
+            zeile = self.prozess.stdout.readline(QWEN_FOREIGN_LINE_BYTES + 1)
             if not zeile:
-                grund = " / ".join(geplapper[-4:]) or f"Code {self.prozess.poll()}"
-                raise RuntimeError(f"Qwen-Prozess endete: {grund[-500:]}")
+                zusatz = f", {fremdzeilen} unterdrueckte Fremdzeilen" if fremdzeilen else ""
+                raise RuntimeError(f"Qwen-Prozess endete (Code {self.prozess.poll()}{zusatz})")
             try:
                 wert = json.loads(zeile)
             except json.JSONDecodeError:
                 if zeile.strip():
-                    geplapper.append(zeile.strip())
+                    fremdzeilen += 1
                 continue
             if wert.get("kind") == "fehler":
                 raise RuntimeError(str(wert.get("grund") or "Qwen-Fehler"))
@@ -114,15 +164,100 @@ class QwenRuntime:
         original = quellpfad.with_name("qwen-source.wav")
         return str(original if original.is_file() else quellpfad)
 
-    def generate_stream(self, *, text: str, prompt_audio_path: str, **_kwargs):
+    @staticmethod
+    def _referenz_kopieren(prompt_audio_path: str, ziel: Path,
+                           ziel_fd: int | None = None) -> None:
+        """Validiert die Qwen-Vorlage und kopiert den festgehaltenen Inode.
+
+        Das dauerhafte Qwen-Kind kann einen FD des Parents nicht verwenden.
+        Deshalb bekommt es weder den Profilpfad noch eine ungepruefte Datei,
+        sondern eine 0600-Laufzeitkopie des mit O_NOFOLLOW geoeffneten Inodes.
+        """
+        ref_fd = pruef_fd = quell_fd = profil_fd = None
+        try:
+            if prompt_audio_path.startswith("/proc/self/fd/"):
+                ref_fd = os.dup(int(prompt_audio_path.rsplit("/", 1)[1]))
+                ref_pfad = Path(os.readlink(prompt_audio_path))
+            else:
+                ref_pfad = Path(prompt_audio_path)
+                ref_fd = os.open(ref_pfad, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            profil_fd = os.open(ref_pfad.parent, os.O_RDONLY | os.O_DIRECTORY
+                                | os.O_NOFOLLOW | os.O_CLOEXEC)
+            # Bindet den neu geoeffneten Verzeichnisnamen an genau den
+            # ref.wav-Inode, den load_voice bereits festgehalten hat. Ein
+            # Austausch des Profilordners zwischen beiden Schritten wird
+            # dadurch nicht zur Quelle einer anderen Person.
+            pruef_fd = os.open("ref.wav", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                               dir_fd=profil_fd)
+            ref_info, pruef_info = os.fstat(ref_fd), os.fstat(pruef_fd)
+            if (ref_info.st_dev, ref_info.st_ino) != (pruef_info.st_dev, pruef_info.st_ino):
+                raise VoiceError("invalid_voice_profile",
+                                 "Profil wurde waehrend des Ladens ausgetauscht")
+            try:
+                quell_fd = os.open("qwen-source.wav", os.O_RDONLY | os.O_NOFOLLOW
+                                   | os.O_CLOEXEC, dir_fd=profil_fd)
+                label = "qwen-source.wav"
+            except FileNotFoundError:
+                quell_fd = os.dup(ref_fd)
+                label = "ref.wav"
+            info = os.fstat(quell_fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise VoiceError("invalid_voice_profile", f"{label} ist keine regulaere Datei")
+            if stat.S_IMODE(info.st_mode) != 0o600:
+                raise VoiceError("invalid_voice_profile", f"{label} muss Modus 0600 haben")
+            if info.st_size > MAX_WAV_BYTES:
+                raise VoiceError("invalid_voice_profile", f"{label} ist zu gross")
+            try:
+                with wave.open(f"/proc/self/fd/{quell_fd}", "rb") as wav:
+                    channels = wav.getnchannels()
+                    width = wav.getsampwidth()
+                    rate = wav.getframerate()
+                    frames = wav.getnframes()
+                    compression = wav.getcomptype()
+            except (wave.Error, EOFError, OSError) as exc:
+                raise VoiceError("invalid_voice_profile", f"{label} ist unlesbar: {exc}") from None
+            dauer = frames / rate if rate else 0
+            if channels != 1 or width != 2 or rate != 48_000 or compression != "NONE":
+                raise VoiceError("invalid_voice_profile",
+                                 f"{label} muss 48 kHz, 16-bit PCM und mono sein")
+            if not 3 <= dauer <= 60:
+                raise VoiceError("invalid_voice_profile",
+                                 f"{label} muss 3 bis 60 Sekunden lang sein")
+            os.lseek(quell_fd, 0, os.SEEK_SET)
+            ausgabe_fd = (os.open(ziel, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                  | os.O_CLOEXEC, 0o600)
+                          if ziel_fd is None else os.dup(ziel_fd))
+            os.fchmod(ausgabe_fd, 0o600)
+            os.ftruncate(ausgabe_fd, 0)
+            os.lseek(ausgabe_fd, 0, os.SEEK_SET)
+            with os.fdopen(ausgabe_fd, "wb") as ausgabe:
+                while block := os.read(quell_fd, 1024 * 1024):
+                    ausgabe.write(block)
+        except OSError as exc:
+            raise VoiceError("invalid_voice_profile",
+                             f"Qwen-Vorlage konnte nicht sicher geoeffnet werden: {exc.strerror}") from None
+        finally:
+            for fd in (quell_fd, pruef_fd, profil_fd, ref_fd):
+                if fd is not None:
+                    os.close(fd)
+
+    def generate_stream(self, *, text: str, prompt_audio_path: str,
+                        cancelled: threading.Event | None = None, **_kwargs):
         laufzeit = runtime_dir()
         laufzeit.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix="qwen-", suffix=".wav", dir=laufzeit)
         os.close(fd)
         ziel = Path(name)
         ziel.unlink(missing_ok=True)
+        ref_fd, ref_name = tempfile.mkstemp(prefix="qwen-ref-", suffix=".wav", dir=laufzeit)
+        sichere_referenz = Path(ref_name)
         try:
+            try:
+                self._referenz_kopieren(prompt_audio_path, sichere_referenz, ref_fd)
+            finally:
+                os.close(ref_fd)
             with self.lock:
+                assert self.prozess is not None
                 if self.prozess.poll() is not None:
                     raise RuntimeError(f"Qwen-Prozess ist beendet (Code {self.prozess.returncode})")
                 # load_voice reicht absichtlich einen bereits geoeffneten
@@ -130,7 +265,7 @@ class QwenRuntime:
                 # diesen Deskriptor nicht; sein /proc/self/fd/N bezeichnet
                 # etwas anderes. Das echte, zuvor validierte Ziel des FDs ist
                 # fuer den read-only geschuetzten Kindprozess dagegen lesbar.
-                quelle = self._referenzpfad(prompt_audio_path)
+                quelle = str(sichere_referenz)
                 # eindeutschen2 bewahrt zusaetzlich die unveraenderte Vorlage
                 # auf. Qwen soll deren Sprecher-Embedding direkt verwenden,
                 # nicht erneut das bereits synthetisierte ref.wav klonen.
@@ -139,7 +274,13 @@ class QwenRuntime:
                 assert self.prozess.stdin is not None
                 self.prozess.stdin.write(json.dumps(auftrag, ensure_ascii=False) + "\n")
                 self.prozess.stdin.flush()
-                ereignis = self._ereignis("fertig")
+                try:
+                    ereignis = self._ereignis("fertig", cancelled)
+                except InterruptedError:
+                    # CUDA-Rechnung sofort beenden und fuer Folgejobs wieder
+                    # einen definierten, warmen Kindprozess bereitstellen.
+                    self._neu_starten()
+                    return
                 if ereignis.get("id") != auftrag["id"]:
                     raise RuntimeError("Qwen-Protokoll hat eine fremde Antwort geliefert")
             with wave.open(str(ziel), "rb") as quelle:
@@ -154,15 +295,24 @@ class QwenRuntime:
                     yield torch.from_numpy(werte)
         finally:
             ziel.unlink(missing_ok=True)
+            sichere_referenz.unlink(missing_ok=True)
 
     def close(self) -> None:
-        if self.prozess.poll() is None:
-            self.prozess.terminate()
-            try:
-                self.prozess.wait(5)
-            except subprocess.TimeoutExpired:
-                self.prozess.kill()
-                self.prozess.wait()
+        self._stoppen()
+
+
+def suppress_dots_payload_logging() -> None:
+    """Unterdrueckt Bibliothekslogs, die Ziel- und Referenztext enthalten."""
+    logger = logging.getLogger("dots_tts")
+    logger.disabled = True
+    logger.propagate = False
+    try:
+        from loguru import logger as loguru_logger
+    except ImportError:
+        return
+    # Ein Level allein reicht nicht: auch Fehlerobjekte koennen Nutztext tragen.
+    # Mimics eigene strukturierte Laufzeitlogs bleiben davon unberuehrt.
+    loguru_logger.disable("dots_tts")
 
 
 class WorkerRefusal(Exception):
@@ -545,10 +695,13 @@ class Engine:
                     spitze = 0
                     anfang: list[bytes] = []
                     hoerbar = False
-                    generator = runtime.generate_stream(text=satz, language=profile.language,
-                                                        speaker_scale=profile.speaker_scale,
-                                                        prompt_audio_path=profile.wav_path,
-                                                        prompt_text=profile.prompt_text)
+                    parameter = {"text": satz, "language": profile.language,
+                                 "speaker_scale": profile.speaker_scale,
+                                 "prompt_audio_path": profile.wav_path,
+                                 "prompt_text": profile.prompt_text}
+                    if mode == "qwen":
+                        parameter["cancelled"] = job.cancelled
+                    generator = runtime.generate_stream(**parameter)
                     for chunk in generator:
                         if job.cancelled.is_set():
                             outcome = "cancelled"
@@ -696,6 +849,7 @@ class Engine:
                 runtime = QwenRuntime()
                 self.last_load_s = time.monotonic() - t0
                 return runtime
+            suppress_dots_payload_logging()
             import torch
             from dots_tts.runtime import DotsTtsRuntime
             repo, revision = REVISIONS[mode]
@@ -899,12 +1053,41 @@ class WorkerHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _client_disconnected(self) -> bool:
+        connection = getattr(self, "connection", None)
+        if connection is None:
+            return False
+        import select
+        try:
+            readable, _, _ = select.select([connection], [], [], 0)
+            return bool(readable and connection.recv(1, socket.MSG_PEEK) == b"")
+        except (AttributeError, BlockingIOError):
+            return False
+        except OSError:
+            return True
+
+    def _next_job_event(self, job: Job) -> tuple[str, bytes]:
+        deadline = time.monotonic() + ENGINE._request_timeout(job.request.get("mode")) + 5
+        while True:
+            if self._client_disconnected():
+                job.cancelled.set()
+                raise ConnectionResetError
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise queue.Empty
+            try:
+                return job.events.get(timeout=min(0.05, remaining))
+            except queue.Empty:
+                continue
+
     def do_POST(self) -> None:
         if self.path not in {"/synthesize", "/warm"}:
             self._error(400, "bad_request", "unbekannter Endpunkt")
             return
         try:
             length = int(self.headers.get("Content-Length", ""))
+            if length < 0 or length > WORKER_MAX_BODY_BYTES:
+                raise ValueError
             request = json.loads(self.rfile.read(length))
             if self.path == "/warm":
                 status = ENGINE.request_warm(request)
@@ -939,7 +1122,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             while True:
-                kind, payload = job.events.get(timeout=REQUEST_TIMEOUT + 5)
+                kind, payload = self._next_job_event(job)
                 write_chunk(self.wfile, encode_frame(kind, payload))
                 if kind == "E":
                     finish_chunks(self.wfile)

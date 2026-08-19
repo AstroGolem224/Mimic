@@ -17,10 +17,11 @@ import sys
 
 MODELL_REPO = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 MODELL_REVISION = "fd4b254389122332181a7c3db7f27e918eec64e3"
+PROTOKOLL = sys.stdout
 
 
 def melde(**felder: object) -> None:
-    print(json.dumps(felder, ensure_ascii=False), flush=True)
+    print(json.dumps(felder, ensure_ascii=False), file=PROTOKOLL, flush=True)
 
 
 def elterntod() -> None:
@@ -41,6 +42,12 @@ def sprache_waehlen(modell) -> str:
 
 def main() -> int:
     elterntod()
+    # Fremdbibliotheken schreiben beim Laden und Generieren teils komplette
+    # Nutztexte. stdout ist zugleich unser IPC-Kanal, stderr wuerde durch den
+    # Parent im Journal landen. Nur `melde()` schreibt gezielt ins Protokoll.
+    still = open(os.devnull, "w", encoding="utf-8")
+    sys.stdout = still
+    sys.stderr = still
     import soundfile as sf
     import torch
     from huggingface_hub import snapshot_download
@@ -90,7 +97,7 @@ def main() -> int:
                   rate=int(aus_rate), samples=len(wellen[0]))
         except Exception as fehler:  # noqa: BLE001 -- Fehler ist Teil des Protokolls
             melde(kind="fehler", id=auftrag.get("id"),
-                  grund=f"{type(fehler).__name__}: {fehler}"[:500])
+                  grund=f"{type(fehler).__name__}: Qwen-Generierung fehlgeschlagen")
     return 0
 
 

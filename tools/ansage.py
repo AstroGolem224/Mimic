@@ -535,11 +535,14 @@ def _laufzeit() -> Path:
 
 def _sperre():
     """Exklusive Sperre auf die Audioausgabe, oder None, wenn schon jemand spricht."""
+    griff = None
     try:
         griff = open(_laufzeit() / "mimic-ansage.lock", "w")
         fcntl.flock(griff, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return griff
     except OSError:
+        if griff is not None:
+            griff.close()
         return None
 
 
@@ -711,12 +714,22 @@ def sprechen(text: str, sitzung: str = "", griff=None) -> int:
     # diese Ansage.
     if abgeschaltet():
         _protokoll("abgeschaltet", text, sitzung=sitzung or "-")
+        if griff is not None:
+            griff.close()
         return 0
     if griff is None:
         griff = _sperre_holen(sitzung)
     if griff is None:
         _protokoll("verworfen", text, grund="sperre")
         return 0
+    try:
+        return _sprechen_belegt(text, sitzung)
+    finally:
+        griff.close()
+
+
+def _sprechen_belegt(text: str, sitzung: str) -> int:
+    """Sprechen, waehrend der aufrufende Wrapper die Audiosperre sicher haelt."""
     _merke_pid(sitzung)
     _protokoll("spricht", text, sitzung=sitzung or "-")
 

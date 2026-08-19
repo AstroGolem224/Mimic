@@ -532,6 +532,72 @@ class TextAndLevelTests(unittest.TestCase):
             # Zweiter Lauf ohne --force darf das Profil nicht anfassen.
             self.assertEqual(1, cli.importieren(args))
 
+    def test_13b_force_ersetzt_das_ganze_profil_ohne_alte_qwen_identitaet(self):
+        import math
+        from mimic import cli
+        if shutil.which("ffmpeg") is None:
+            self.skipTest("ffmpeg fehlt")
+        arbeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        root = arbeit / "voices"
+        alt = create_voice(root, "wechsel")
+        (alt / "qwen-source.wav").write_bytes(b"alte-person")
+        (alt / "qwen-source.wav").chmod(0o600)
+        quelle = arbeit / "neu.wav"
+        with wave.open(str(quelle), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(48_000)
+            wav.writeframes(array.array(
+                "h", [int(7000 * math.sin(i * 0.04)) for i in range(48_000 * 4)]).tobytes())
+        with unittest.mock.patch.object(cli, "default_voices_dir", lambda: root):
+            cli.profil_aus_datei("wechsel", quelle, "Das ist die neue Person.", True)
+        self.assertFalse((root / "wechsel" / "qwen-source.wav").exists())
+        self.assertEqual("Das ist die neue Person.\n",
+                         (root / "wechsel" / "ref.txt").read_text())
+
+    def test_13c_fehlgeschlagener_qwen_force_laesst_altes_profil_bytegenau(self):
+        import math
+        from mimic import cli
+        from mimic.voices import VoiceError
+        if shutil.which("ffmpeg") is None:
+            self.skipTest("ffmpeg fehlt")
+        arbeit = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        root = arbeit / "voices"
+        alt = create_voice(root, "wechsel")
+        (alt / "qwen-source.wav").write_bytes(b"alte-person")
+        (alt / "qwen-source.wav").chmod(0o600)
+        vorher = {p.name: (p.read_bytes(), p.stat().st_mode & 0o777)
+                  for p in alt.iterdir()}
+        quelle = arbeit / "neu.wav"
+        with wave.open(str(quelle), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(48_000)
+            wav.writeframes(array.array(
+                "h", [int(7000 * math.sin(i * 0.04)) for i in range(48_000 * 4)]).tobytes())
+        kaputt = arbeit / "kaputt.bin"
+        kaputt.write_bytes(b"keine Audiodatei")
+        with unittest.mock.patch.object(cli, "default_voices_dir", lambda: root):
+            with self.assertRaises(VoiceError):
+                cli.profil_aus_datei("wechsel", quelle, "Neu.", True,
+                                     qwen_quelle=kaputt)
+        nachher = {p.name: (p.read_bytes(), p.stat().st_mode & 0o777)
+                   for p in alt.iterdir()}
+        self.assertEqual(vorher, nachher)
+
+    def test_13d_schliessen_verwirft_gestoppte_unbestaetigte_aufnahme(self):
+        from mimic.gui import Aufnahme
+        profil = Path(self.enterContext(tempfile.TemporaryDirectory())) / "neu"
+        profil.mkdir()
+        take = profil / "ref.wav.tmp"
+        take.write_bytes(b"private Sprachaufnahme")
+        aufnahme = Aufnahme()
+        aufnahme.name = "neu"
+        aufnahme.profil = profil
+        aufnahme.datei = take
+        aufnahme.letzte = {"name": "neu", "brauchbar": True}
+        aufnahme.meldung = tempfile.TemporaryFile()
+        aufnahme.schliessen()
+        self.assertFalse(take.exists())
+        self.assertFalse(profil.exists())
+        self.assertIsNone(aufnahme.meldung)
+
     def test_14_stumme_takes_werden_von_gesprochenen_getrennt(self):
         # Die Schwelle entscheidet, ob ein Satz nochmal erzeugt wird. Zu hoch
         # und jeder Satz kommt doppelt, zu tief und der stumme Take bleibt.
@@ -563,6 +629,39 @@ class TextAndLevelTests(unittest.TestCase):
         self.assertEqual([Einsatz("matthias", "Er sagte: komm herein.")],
                          parse_skript("Er sagte: komm herein.", "matthias"))
         self.assertEqual([], parse_skript("\n// nur Kommentar\n", "matthias"))
+
+    def test_15a_inline_stimmen_werden_nicht_gesprochen(self):
+        from mimic.gui import Einsatz, parse_skript
+        quelle = ("Einleitung. [nordom]Der gelbe Satz. [matthias]Wieder Matthias.\n"
+                  "[nordom]Noch ein Satz.")
+        self.assertEqual([
+            Einsatz("matthias", "Einleitung."),
+            Einsatz("nordom", "Der gelbe Satz."),
+            Einsatz("matthias", "Wieder Matthias."),
+            Einsatz("nordom", "Noch ein Satz."),
+        ], parse_skript(quelle, "matthias", {"matthias", "nordom"}))
+
+    def test_15b_regieaktion_bleibt_im_sprechtext(self):
+        from mimic.gui import Einsatz, parse_skript
+        quelle = "[nordom][sighs] Dann fangen wir eben sofort an."
+        self.assertEqual([
+            Einsatz("nordom", "[sighs] Dann fangen wir eben sofort an."),
+        ], parse_skript(quelle, "matthias", {"matthias", "nordom"}))
+
+    def test_15c_klammername_ist_nur_fuer_bekannte_stimme_ein_kopf(self):
+        from mimic.gui import Einsatz, parse_skript
+        self.assertEqual([
+            Einsatz("matthias", "[unbekannt] Dieser Text bleibt vollstaendig."),
+        ], parse_skript("[unbekannt] Dieser Text bleibt vollstaendig.",
+                        "matthias", {"matthias", "nordom"}))
+
+    def test_15d_gui_beginnt_mit_dem_trainingsabsatz(self):
+        from mimic import gui
+        seite = Path(gui.__file__).with_name("gui.html").read_text(encoding="utf-8")
+        text = ("Ich habe den Branch gestern Abend noch einmal geprüft, ruhig und ohne Eile.\n"
+                "The tests are green, but the build still fails — how much time do we really have?\n"
+                "Dann fangen wir eben sofort an, jetzt gleich!")
+        self.assertIn(f'aria-label="Skript">{text}</textarea>', seite)
 
 
 class StimmEinstellungenTests(unittest.TestCase):
@@ -643,6 +742,11 @@ class SetupTests(unittest.TestCase):
         zustaende = dict(install_units(quelle, ziel))
         self.assertEqual("ersetzt", zustaende[UNITS[0]])
         self.assertEqual("unveraendert", zustaende[UNITS[1]])
+
+    def test_laufzeitversion_kommt_aus_den_paketmetadaten(self):
+        from importlib.metadata import version
+        import mimic
+        self.assertEqual(version("mimic-tts"), mimic.__version__)
 
 
 class LeerlaufTests(unittest.TestCase):

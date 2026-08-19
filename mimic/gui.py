@@ -2,14 +2,15 @@
 
 Format im Textfeld:
 
-    #matthias_krieger: "Der Turm steht offen."
-    #matthias_magier: Weisst du, was das bedeutet?
-    Und das hier spricht weiter der Magier.
+    [matthias_krieger]Der Turm steht offen.
+    [matthias_magier][sighs] Weisst du, was das bedeutet?
 
-Die Anfuehrungszeichen sind optional. Eine Zeile ohne Praefix erbt den
-Sprecher der Zeile darueber; ganz am Anfang gilt die links ausgewaehlte
-Stimme. Aufeinanderfolgende Zeilen desselben Sprechers bilden einen Absatz;
-eine Leerzeile trennt Einsaetze. Zeilen ab '//' werden uebersprungen.
+Ein ``[stimme]``-Kopf gilt bis zum naechsten Stimmkopf und wird nicht
+gesprochen. Andere Klammern wie ``[sighs]`` bleiben als Regieaktion im
+Modelltext. Das alte ``#stimme:``-Format bleibt lesbar. Eine Zeile ohne Kopf
+erbt den Sprecher von oben; ganz am Anfang gilt die links ausgewaehlte Stimme.
+Aufeinanderfolgende Zeilen desselben Sprechers bilden einen Absatz; eine
+Leerzeile trennt Einsaetze. Zeilen ab '//' werden uebersprungen.
 
 Die Oberflaeche liegt als HTML in gui.html und laeuft in einem
 Chromium-App-Fenster gegen einen kurzlebigen Loopback-Server. Grund: echtes
@@ -27,9 +28,11 @@ import http.server
 import io
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import threading
@@ -39,8 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .charaktere import CHARAKTERE
-from .cli import (_dauer, open_request, profil_anlegen, profil_aus_datei, request,
-                  speichern)
+from .cli import _dauer, open_request, profil_aus_datei, request
 from .effekte import (breite_wert, formant_wert, hall_wert, kruemel_wert, raster_wert,
                       streuung_wert, tempo_faktor, tonhoehe_wert, verzerrung_wert)
 from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
@@ -54,6 +56,7 @@ PEGEL_FENSTER = 600         # Proben je Balken im Wellenband, bei 24 kHz 40 Balk
 STATUS_CACHE_S = 0.9        # /status des Dienstes nicht bei jedem Puls holen
 STIMMEN_CACHE_S = 4.0       # Profilscan kostet je Stimme einen WAV-Kopf
 MAX_TEXT_ZEICHEN = 100_000  # Grenze am Vertrauensrand; der Dienst prueft je Einsatz erneut
+MAX_ENTWURF_BYTES = 400_000  # Browser-Draft, inklusive Reglern und JSON-Struktur
 # Der Dienst nimmt 3-60 s. 8-15 s ist der einzige gemessene Bereich, siehe
 # charaktere.py -- ausserhalb warnt die Oberflaeche, lehnt aber nicht ab.
 DAUER_MIN_S, DAUER_MAX_S = 3.0, 60.0
@@ -70,6 +73,131 @@ MP3_KODIERER = (
     ("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", "pipe:0",
                 "-f", "mp3", "-b:a", f"{MP3_BITRATE}k", "pipe:1"]),
 )
+
+
+def entwurf_pfad() -> Path:
+    basis = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    return basis / "mimic" / "gui-draft.json"
+
+
+def _entwurf_ordner(anlegen: bool) -> Path | None:
+    ordner = entwurf_pfad().parent
+    try:
+        info = ordner.lstat()
+    except FileNotFoundError:
+        if not anlegen:
+            return None
+        ordner.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ordner.mkdir(mode=0o700)
+        info = ordner.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) & 0o077):
+        raise ValueError("Entwurfsordner hat unsichere Eigenschaften")
+    return ordner
+
+
+def _entwurf_pruefen(wert: dict) -> dict:
+    """Strikter, versionsloser Vertrag fuer den kleinen GUI-Draft."""
+    erlaubt = {"text", "voice", "modus", "format", "klang"}
+    if set(wert) - erlaubt:
+        raise ValueError("Entwurf enthaelt unbekannte Felder")
+    text = wert.get("text", "")
+    voice = wert.get("voice", "")
+    modus = wert.get("modus", "mf")
+    format = wert.get("format", "wav")
+    klang = wert.get("klang", {})
+    if not isinstance(text, str) or len(text) > MAX_TEXT_ZEICHEN:
+        raise ValueError("Entwurfstext ist ungueltig oder zu lang")
+    if not isinstance(voice, str) or (voice and not VOICE_RE.fullmatch(voice)):
+        raise ValueError("Entwurfsstimme ist ungueltig")
+    if modus not in MODES:
+        raise ValueError("Entwurfsmodus ist ungueltig")
+    if format not in FORMATE:
+        raise ValueError("Entwurfsformat ist ungueltig")
+    if not isinstance(klang, dict) or len(klang) > 32:
+        raise ValueError("Entwurfsklang ist ungueltig")
+    for name, regler in klang.items():
+        if (not isinstance(name, str) or len(name) > 32 or
+                not isinstance(regler, (str, int, float, bool)) or
+                isinstance(regler, str) and len(regler) > 64):
+            raise ValueError("Entwurfsklang ist ungueltig")
+    sauber = {"text": text, "voice": voice, "modus": modus,
+              "format": format, "klang": klang}
+    if len(json.dumps(sauber, ensure_ascii=False).encode()) > MAX_ENTWURF_BYTES:
+        raise ValueError("Entwurf ist zu gross")
+    return sauber
+
+
+def entwurf_laden() -> dict | None:
+    if _entwurf_ordner(False) is None:
+        return None
+    pfad = entwurf_pfad()
+    try:
+        fd = os.open(pfad, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as fehler:
+        raise ValueError(f"Entwurf kann nicht sicher gelesen werden: {fehler}") from None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > MAX_ENTWURF_BYTES):
+            raise ValueError("Entwurfsdatei hat unsichere Eigenschaften")
+        teile = []
+        rest = MAX_ENTWURF_BYTES + 1
+        while rest:
+            teil = os.read(fd, rest)
+            if not teil:
+                break
+            teile.append(teil)
+            rest -= len(teil)
+        daten = b"".join(teile)
+    finally:
+        os.close(fd)
+    try:
+        wert = json.loads(daten)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ValueError("Entwurfsdatei ist beschaedigt") from None
+    if not isinstance(wert, dict):
+        raise ValueError("Entwurfsdatei ist beschaedigt")
+    return _entwurf_pruefen(wert)
+
+
+def entwurf_speichern(wert: dict) -> dict:
+    sauber = _entwurf_pruefen(wert)
+    daten = json.dumps(sauber, ensure_ascii=False, separators=(",", ":")).encode()
+    ziel = entwurf_pfad()
+    _entwurf_ordner(True)
+    if ziel.exists() or ziel.is_symlink():
+        info = ziel.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError("Entwurfsdatei hat unsichere Eigenschaften")
+    fd, roh = tempfile.mkstemp(prefix=".gui-draft.", dir=ziel.parent)
+    tmp = Path(roh)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            handle.write(daten)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, ziel)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return sauber
+
+
+def entwurf_loeschen() -> bool:
+    if _entwurf_ordner(False) is None:
+        return False
+    ziel = entwurf_pfad()
+    try:
+        info = ziel.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError("Entwurfsdatei hat unsichere Eigenschaften")
+    ziel.unlink()
+    return True
 FORMATE = {"wav": ("audio/wav", "mimic.wav"), "mp3": ("audio/mpeg", "mimic.mp3")}
 
 
@@ -121,11 +249,22 @@ class Einsatz:
     text: str
 
 
-def parse_skript(quelle: str, standard: str) -> list[Einsatz]:
-    """Zerlegt das Textfeld in Einsaetze. Reine Textverarbeitung, kein Netz."""
+INLINE_STIMME_RE = re.compile(r"\[([a-z0-9][a-z0-9_-]{0,31})\]", re.IGNORECASE)
+
+
+def parse_skript(quelle: str, standard: str,
+                 stimmen: list[str] | set[str] | tuple[str, ...] = ()) -> list[Einsatz]:
+    """Zerlegt das Textfeld in Einsaetze. Reine Textverarbeitung, kein Netz.
+
+    ``[stimme]`` wechselt den Sprecher mitten in einer Zeile. Nur Namen aus
+    ``stimmen`` sind Steuerzeichen; andere Klammerausdruecke wie ``[sighs]``
+    bleiben absichtlich im Text und koennen vom TTS-Modell interpretiert
+    werden. Das alte ``#stimme:``-Format bleibt lesbar.
+    """
     einsaetze: list[Einsatz] = []
     aktuell = standard
     absatz: list[str] = []
+    bekannte = {name.casefold(): name for name in stimmen}
 
     def abschliessen() -> None:
         if absatz:
@@ -149,8 +288,20 @@ def parse_skript(quelle: str, standard: str) -> list[Einsatz]:
                 zeile = rest.strip()
         if len(zeile) >= 2 and zeile[0] == zeile[-1] and zeile[0] in "\"'":
             zeile = zeile[1:-1].strip()
-        if zeile:
-            absatz.append(zeile)
+        stelle = 0
+        for treffer in INLINE_STIMME_RE.finditer(zeile):
+            name = bekannte.get(treffer.group(1).casefold())
+            if name is None:
+                continue
+            davor = zeile[stelle:treffer.start()].strip()
+            if davor:
+                absatz.append(davor)
+            abschliessen()
+            aktuell = name
+            stelle = treffer.end()
+        rest = zeile[stelle:].strip()
+        if rest:
+            absatz.append(rest)
     abschliessen()
     return einsaetze
 
@@ -226,20 +377,24 @@ class Aufnahme:
         self.letzte: dict | None = None     # fertige Aufnahme, wartet auf Behalten
         self.meldung: object | None = None  # stderr des Aufnehmers, erst nach dessen Ende gelesen
         self.abbruch = ""                   # Grund, falls der Aufnehmer von selbst ging
+        self.force = False
 
     def starten(self, name: str, force: bool) -> None:
         if not VOICE_RE.fullmatch(name):
             raise ValueError("Name nur a-z, 0-9, _ und -, max. 32 Zeichen, Anfang alphanumerisch")
         root = default_voices_dir()
         profil = root / name
-        if (profil / "ref.wav").exists() and not force:
+        if profil.exists() and not force:
             raise ValueError(f"{name!r} existiert schon -- Ueberschreiben bestaetigen")
         with self.lock:
             if self.prozess is not None:
                 raise RuntimeError("es laeuft schon eine Aufnahme")
-            profil_anlegen(profil)
-            self.name, self.profil = name, profil
-            self.datei = profil / "ref.wav.tmp"
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root.chmod(0o700)
+            arbeitsprofil = Path(tempfile.mkdtemp(prefix=f".{name}.aufnahme.", dir=root))
+            arbeitsprofil.chmod(0o700)
+            self.name, self.profil, self.force = name, arbeitsprofil, force
+            self.datei = arbeitsprofil / "ref.wav.tmp"
             self.letzte = None
             self.abbruch = ""
             self.gestartet = time.monotonic()
@@ -272,6 +427,11 @@ class Aufnahme:
         except (OSError, ValueError):
             return ""
 
+    def _meldung_schliessen(self) -> None:
+        if self.meldung is not None:
+            self.meldung.close()
+            self.meldung = None
+
     def _pruefe_tod(self) -> None:
         """Der Aufnehmer kann von selbst sterben -- ohne Geraet etwa sofort.
 
@@ -288,6 +448,7 @@ class Aufnahme:
                 self.wache.cancel()
                 self.wache = None
             grund = self._meldung_text() or "keine Meldung"
+            self._meldung_schliessen()
             self.abbruch = (f"{AUFNEHMER} endete von selbst (Code {prozess.returncode}): {grund}")
             datei, profil = self.datei, self.profil
             self.letzte = None
@@ -328,12 +489,14 @@ class Aufnahme:
             with self.lock:
                 self.letzte = None
                 grund = self._meldung_text()
+                self._meldung_schliessen()
             hinweis = f" -- {AUFNEHMER}: {grund}" if grund else ""
             raise RuntimeError(f"Aufnahme unbrauchbar: {fehler}{hinweis}") from None
         brauchbar, hinweis = dauer_urteil(dauer)
         ergebnis = {"name": self.name, "dauer_s": round(dauer, 1),
                     "brauchbar": brauchbar, "hinweis": hinweis}
         with self.lock:
+            self._meldung_schliessen()
             self.letzte = ergebnis
         return ergebnis
 
@@ -348,13 +511,17 @@ class Aufnahme:
                 raise RuntimeError("keine fertige Aufnahme vorhanden")
             if not self.letzte["brauchbar"]:
                 raise ValueError(self.letzte["hinweis"])
-            profil, datei, name = self.profil, self.datei, self.name
-        speichern(profil, datei, text)
+            profil, datei, name, force = self.profil, self.datei, self.name, self.force
+        try:
+            profil_aus_datei(name, datei, text, force)
+        except VoiceError as fehler:
+            raise RuntimeError(f"{fehler.reason}: {fehler.message}") from None
         try:
             geprueft = load_voice(name, mit_gain=False)
         except VoiceError as fehler:
             raise RuntimeError(f"{fehler.reason}: {fehler.message}") from None
         close_voice(geprueft)
+        self._aufraeumen(datei, profil)
         with self.lock:
             self.letzte = None
             self.datei = self.profil = None
@@ -381,14 +548,18 @@ class Aufnahme:
 
     def schliessen(self) -> None:
         try:
-            self.stoppen()
-        except RuntimeError:
-            return
+            try:
+                self.stoppen()
+            except RuntimeError:
+                # Auch eine bereits gestoppte Aufnahme kann noch auf die
+                # Behalten/Verwerfen-Entscheidung warten. Sie muss beim Ende
+                # der Anwendung genauso sicher verschwinden.
+                pass
         finally:
-            if self.meldung is not None:
-                self.meldung.close()
-                self.meldung = None
-        self.verwerfen()
+            try:
+                self.verwerfen()
+            finally:
+                self._meldung_schliessen()
 
 
 def stimme_loeschen(name: str) -> None:
@@ -682,13 +853,19 @@ class Sitzung:
         with self.lock:
             if self.auftrag["running"]:
                 raise RuntimeError("es laeuft noch ein Auftrag")
+            # Vor dem Thread festhalten, welche Profile der gesamte Auftrag
+            # braucht. `voice` zeigt waehrenddessen nur den aktuellen Einsatz
+            # und reicht als Loeschsperre fuer Mehrsprecherskripte nicht aus.
+            stimmen = self.stimmen()
+            referenzen = sorted({einsatz.stimme
+                                 for einsatz in parse_skript(text, standard, stimmen)})
             self.abbruch.clear()
             self.aktive.zuruecksetzen()
             self.pegel = []
             self.export = None
             self.auftrag = {"running": True, "index": 0, "total": 0, "voice": "",
                             "mode": modus, "message": "wird vorbereitet…",
-                            "ok": True, "download": False}
+                            "ok": True, "download": False, "voices": referenzen}
         self.thread = threading.Thread(target=self._lauf, name="mimic-gui-auftrag",
                                        args=(text, modus, standard, format, regler or {}),
                                        daemon=True)
@@ -704,11 +881,12 @@ class Sitzung:
                 self.pegel.extend(pegel(pcm))
 
         try:
-            einsaetze = parse_skript(text, standard)
+            stimmen = self.stimmen(frisch=True)
+            einsaetze = parse_skript(text, standard, stimmen)
             if not einsaetze:
                 self.melden(running=False, message="nichts zu sprechen", ok=False)
                 return
-            unbekannt = {e.stimme for e in einsaetze} - set(self.stimmen(frisch=True))
+            unbekannt = {e.stimme for e in einsaetze} - set(stimmen)
             if unbekannt:
                 self.melden(running=False, ok=False,
                             message="unbekannte Stimme: " + ", ".join(sorted(unbekannt)))
@@ -729,9 +907,11 @@ class Sitzung:
                     self.melden(message="kodiert MP3…")
                     daten = nach_mp3(daten)
                 typ, name = FORMATE[format or "wav"]
+                export_id = secrets.token_urlsafe(18)
                 with self.lock:
-                    self.export = {"daten": daten, "typ": typ, "name": name}
-                self.melden(running=False, download=True, ok=not uebersprungen,
+                    self.export = {"id": export_id, "daten": daten, "typ": typ, "name": name}
+                self.melden(running=False, download=True, export_id=export_id,
+                            ok=not uebersprungen,
                             message=f"{(format or 'wav').upper()} bereit "
                                     f"({len(daten) // 1024} KiB) — wird geladen{fehlend}")
             else:
@@ -749,6 +929,18 @@ class Sitzung:
 
     def stoppen(self) -> None:
         self.aktive.abbrechen()
+
+    def loeschkonflikt(self, name: str) -> str | None:
+        """Backend-Sperre fuer Profil-Loeschen; UI-Zustand ist nicht genug."""
+        aufnahme = self.aufnahme.stand()
+        if aufnahme["laeuft"] or aufnahme["fertig"] is not None:
+            return "erst die Aufnahme behalten oder verwerfen"
+        if self.entwurf.stand()["laeuft"]:
+            return "erst den laufenden Entwurf beenden"
+        with self.lock:
+            if self.auftrag["running"] and name in self.auftrag.get("voices", ()):
+                return f"Stimme {name!r} wird vom laufenden Auftrag verwendet"
+        return None
 
     def schliessen(self) -> None:
         self.stoppen()
@@ -873,6 +1065,20 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         wert = json.loads(self.rfile.read(laenge))
         return wert if isinstance(wert, dict) else {}
 
+    def _entwurf_koerper(self) -> dict:
+        try:
+            laenge = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            raise ValueError("Content-Length ist ungueltig") from None
+        if laenge <= 0:
+            raise ValueError("Entwurf fehlt")
+        if laenge > MAX_ENTWURF_BYTES:
+            raise OverflowError("Entwurf ist zu gross")
+        wert = json.loads(self.rfile.read(laenge))
+        if not isinstance(wert, dict):
+            raise ValueError("Entwurf muss ein JSON-Objekt sein")
+        return wert
+
     # -- Endpunkte --
 
     def do_GET(self) -> None:
@@ -902,7 +1108,18 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                 self._json(404, {"message": "keine Datei bereit"})
                 return
             self._senden(200, fach["typ"], fach["daten"],
-                         {"Content-Disposition": f'attachment; filename="{fach["name"]}"'})
+                         {"Content-Disposition": f'attachment; filename="{fach["name"]}"',
+                          "X-Mimic-Export-Id": fach["id"]})
+        elif pfad == "/api/draft":
+            try:
+                entwurf = entwurf_laden()
+            except ValueError as fehler:
+                self._json(409, {"message": str(fehler)})
+                return
+            if entwurf is None:
+                self._json(404, {"message": "kein Entwurf gespeichert"})
+            else:
+                self._json(200, entwurf)
         elif pfad == "/api/inventar":
             self._json(200, {"voices": stimmen_details(),
                              "charaktere": [{"name": name, "regie": wert.regie, "text": wert.text}
@@ -984,12 +1201,69 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._json(200, {"ok": True})
         elif pfad == "/api/warm":
             self._warm(wunsch)
+        elif pfad == "/api/export/ack":
+            self._export_bestaetigen(wunsch)
         elif pfad.startswith("/api/record/") or pfad == "/api/voice/delete":
             self._profilpflege(pfad, wunsch)
         elif pfad.startswith("/api/design/"):
             self._entwerfen(pfad, wunsch)
         else:
             self._json(404, {"message": "unbekannter Endpunkt"})
+
+    def do_PUT(self) -> None:
+        if self.path.split("?", 1)[0] != "/api/draft":
+            self._json(404, {"message": "unbekannter Endpunkt"})
+            return
+        if not self._erlaubt():
+            return
+        try:
+            wert = entwurf_speichern(self._entwurf_koerper())
+        except OverflowError as fehler:
+            self._json(413, {"message": str(fehler)})
+            return
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as fehler:
+            self._json(400, {"message": str(fehler) or "Entwurf ist ungueltig"})
+            return
+        except OSError as fehler:
+            self._json(500, {"message": f"Dateisystem: {fehler}"})
+            return
+        self._json(200, {"ok": True, "draft": wert})
+
+    def do_DELETE(self) -> None:
+        if self.path.split("?", 1)[0] != "/api/draft":
+            self._json(404, {"message": "unbekannter Endpunkt"})
+            return
+        if not self._erlaubt():
+            return
+        try:
+            entfernt = entwurf_loeschen()
+        except ValueError as fehler:
+            self._json(409, {"message": str(fehler)})
+            return
+        except OSError as fehler:
+            self._json(500, {"message": f"Dateisystem: {fehler}"})
+            return
+        self._json(200, {"ok": True, "removed": entfernt})
+
+    def _export_bestaetigen(self, wunsch: dict) -> None:
+        try:
+            export_id = self._feld_text(wunsch, "id")
+        except ValueError as fehler:
+            self._json(400, {"message": str(fehler)})
+            return
+        status = 200
+        antwort = {"ok": True}
+        with self.sitzung.lock:
+            fach = self.sitzung.export
+            if fach is None:
+                status, antwort = 404, {"message": "keine Datei bereit"}
+            elif not hmac.compare_digest(export_id, fach["id"]):
+                status, antwort = 409, {"message": "Export wurde inzwischen ersetzt"}
+            else:
+                self.sitzung.export = None
+                self.sitzung.auftrag["download"] = False
+                self.sitzung.auftrag.pop("export_id", None)
+        self._json(status, antwort)
 
     def _entwerfen(self, pfad: str, wunsch: dict) -> None:
         """Entwurfsreiter. Fehlerklassen wie bei _profilpflege."""
@@ -1061,7 +1335,11 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                 aufnahme.verwerfen()
                 self._json(200, {"ok": True})
             elif pfad == "/api/voice/delete":
-                stimme_loeschen(self._feld_text(wunsch, "name"))
+                name = self._feld_text(wunsch, "name")
+                konflikt = self.sitzung.loeschkonflikt(name)
+                if konflikt:
+                    raise RuntimeError(konflikt)
+                stimme_loeschen(name)
                 self._json(200, {"ok": True})
             else:
                 self._json(404, {"message": "unbekannter Endpunkt"})
@@ -1089,9 +1367,6 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             auftrag = dict(self.sitzung.auftrag)
             neue = self.sitzung.pegel[seit:]
             marke = len(self.sitzung.pegel)
-            if auftrag["download"]:
-                # Nur einmal ausliefern, sonst laedt jeder Puls die Datei erneut.
-                self.sitzung.auftrag["download"] = False
         self._json(200, {"voices": self.sitzung.stimmen(frisch), "service": self.sitzung.dienst(),
                          "job": auftrag, "levels": neue, "cursor": marke,
                          "record": self.sitzung.aufnahme.stand(),
@@ -1195,8 +1470,10 @@ def _fenster(url: str) -> int:
     # finally in main() nahm den Server herunter, und das eben geoeffnete Fenster
     # zeigte ERR_CONNECTION_REFUSED. Ein eigenes Verzeichnis kann niemand belegen,
     # also blockiert der Aufruf wieder bis zum Schliessen. Das Profil traegt keinen
-    # Zustand (die Oberflaeche benutzt weder localStorage noch Cookies) und faellt
+    # dauerhaften Zustand (nur das kurzlebige Sitzungscookie) und faellt
     # deshalb am Ende weg statt sich im tmpfs zu stapeln -- rund 160 MB pro Fenster.
+    # Der eigentliche Skriptentwurf liegt bewusst serverseitig unter XDG_STATE_HOME;
+    # das Wegwerfen dieses reinen Chromium-Caches verliert ihn nicht.
     laufzeit = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
     laufzeit.mkdir(mode=0o700, parents=True, exist_ok=True)
     profil = Path(tempfile.mkdtemp(prefix="mimic-gui.", dir=laufzeit))
@@ -1232,6 +1509,8 @@ def demo() -> None:
     assert parse_skript('#a: "eins"\nzwei\n// weg\n', "z") == [
         Einsatz("a", "eins zwei")]
     assert parse_skript("Er sagte: komm.", "z") == [Einsatz("z", "Er sagte: komm.")]
+    assert parse_skript("[a]eins [sighs] zwei", "z", {"a", "z"}) == [
+        Einsatz("a", "eins [sighs] zwei")]
     laut = array.array("h", [32767, -32768] * PEGEL_FENSTER).tobytes()
     assert pegel(laut) == [1.0, 1.0], pegel(laut)
     assert pegel(bytes(PEGEL_FENSTER * 2)) == [0.0]

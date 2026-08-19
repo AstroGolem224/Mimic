@@ -147,10 +147,23 @@ Sätze ab. 10–15 s ist auch der einzige gemessene Bereich — die Phase-0-Refe
 
 ## Fenster
 
-`mimic gui` zeigt links die ladbaren Stimmen und rechts ein Skriptfeld. Eine
-Zeile je Einsatz, `#stimme: "Text"` setzt den Sprecher, eine Zeile ohne Präfix
-erbt ihn von der Zeile darüber, `//` ist ein Kommentar. Doppelklick auf eine
-Stimme fügt den Kopf ein. **Abspielen** streamt alles durch ein einziges
+`mimic gui` zeigt links die ladbaren Stimmen und rechts ein Skriptfeld. Beim
+Öffnen steht dort der dreiteilige Trainingsabsatz. Text markieren und links
+eine Stimme anklicken weist genau dieser Auswahl den Sprecher zu; ein erneuter
+Klick ersetzt die Zuweisung. Ohne Auswahl setzt der Klick die Standardstimme.
+Im Skript steht der Wechsel als `[stimme]`, Text und Kopf tragen dieselbe,
+stabile Farbe (Nordom gelb). Die Köpfe steuern nur den Parser und werden nicht
+gesprochen. Das bisherige `#stimme: "Text"` bleibt lesbar, eine Zeile ohne
+Präfix erbt den Sprecher von oben, `//` ist ein Kommentar.
+
+Regieaktionen können ebenfalls in eckigen Klammern stehen, etwa
+`[sighs]`, `[laughs]` oder `[whispers]`. Anders als ein Name aus der
+Stimmenliste bleiben sie im Modelltext, damit ein Motor mit entsprechender
+Paralinguistik sie ausführen kann. Das ist eine Motorfähigkeit: die derzeitigen
+Clone-Basismodelle garantieren solche Aktionen nicht für jeden Lauf; Mimic
+spricht sie nicht fälschlich als Stimmnamen an.
+
+**Abspielen** streamt alles durch ein einziges
 `pw-cat`, **Exportieren** sammelt dieselben Blöcke in eine Datei. Format
 daneben umschaltbar zwischen **wav** (roh, wie der Dienst liefert) und **mp3**
 (192 kbps, über `lame`, sonst `ffmpeg`; ohne beides ist der Knopf aus,
@@ -161,11 +174,18 @@ nebenbei ist erst-wohin-dann-laufen die bessere Reihenfolge. Der Vorschlag
 lautet `mimic-<stimme>-<hhmm>.<endung>`, den Ordner der letzten Wahl merkt
 sich der Dialog. Ohne die API landet die Datei wie bisher im
 Download-Verzeichnis.
+Ein fertiger Export bleibt bei einem Schreibfehler abrufbar und wird erst nach
+erfolgreicher Übernahme bestätigt. Den letzten Skriptentwurf samt Stimme,
+Motor, Format und Klangreglern speichert Mimic geschützt unter
+`$XDG_STATE_HOME/mimic/gui-draft.json` und stellt ihn beim nächsten Öffnen
+wieder her.
 **Stopp** (oder `Esc`) killt `pw-cat` und schließt die
 Verbindung — der Worker sieht den Abbruch und hört auf zu rechnen
-(`outcome=cancelled` im Log). **Warmlauf** lädt `mf` vor, damit der erste Satz
-nicht auf das Modell wartet. Der Schalter **Modus** wechselt zwischen `mf`
-(Realtime, Vorgabe) und `soar` (Batch, besser für gespeicherte Dateien).
+(`outcome=cancelled` im Log); bei Qwen wird auch der isolierte Modellprozess
+beendet und sauber neu gestartet. **Warmlauf** lädt den gewählten Motor mit der
+gewählten Stimme vor. Der Schalter **Modus** wechselt zwischen `mf` (Realtime,
+Vorgabe), `soar` (Batch, besser für gespeicherte Dateien) und `qwen`; Qwen ist
+sichtbar deaktiviert, solange `mimic setup --entwurf qwen-klon` fehlt.
 `Strg`+`Enter` im Skriptfeld spricht. Kopfzeile zeigt Zustand, Modus,
 Warteschlange, freien VRAM und Laufzeit des Dienstes live; das Band unter dem
 Skript zeichnet die Pegel der laufenden Ausgabe.

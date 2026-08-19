@@ -15,11 +15,16 @@ After=mimic-worker.socket
 
 [Service]
 Type=simple
+ExecStartPre=/usr/bin/mkdir -p %t/mimic/numba %t/mimic/torch-kernels
 ExecStart=%h/.local/bin/mimic-worker
 Environment=HF_HUB_OFFLINE=1
 # numba (ueber librosa) legt seinen JIT-Cache sonst neben die Quelldateien --
 # unter ProtectHome=read-only scheitert der Worker daran beim ersten Laden.
 Environment=NUMBA_CACHE_DIR=%t/mimic/numba
+# ATen kompiliert einzelne CUDA-Kernel zur Laufzeit. Der Standardpfad unter
+# ~/.cache kann wegen ProtectHome=read-only unbeschreibbar (oder ein Symlink
+# ausserhalb des erlaubten Baums) sein; dann wird der Cache still abgeschaltet.
+Environment=PYTORCH_KERNEL_CACHE_PATH=%t/mimic/torch-kernels
 # Explizit, damit ein gesetztes XDG_CACHE_HOME die Checkpoints nicht verlegt:
 # offline plus falscher Cache-Pfad ergibt "kein Snapshot gefunden".
 Environment=HF_HOME=%h/.cache/huggingface

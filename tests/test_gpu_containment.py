@@ -60,9 +60,15 @@ class GPUContainmentTests(unittest.TestCase):
             self.assertEqual("lade_sperre", json.loads(body).get("hub_reason"))
 
     def test_09_memorymax_exhaustion_is_machine_readable(self):
-        subprocess.run(["systemctl", "--user", "set-property", "--runtime",
-                        "mimic-worker.service", "MemoryMax=1M"], check=True)
+        eigenschaften = {}
+        for name in ("MemoryMax", "MemoryHigh"):
+            eigenschaften[name] = subprocess.run(
+                ["systemctl", "--user", "show", "mimic-worker.service",
+                 f"--property={name}", "--value"], check=True, capture_output=True,
+                text=True).stdout.strip()
         try:
+            subprocess.run(["systemctl", "--user", "set-property", "--runtime",
+                            "mimic-worker.service", "MemoryMax=1M"], check=True)
             subprocess.run(["systemctl", "--user", "stop", "mimic-worker.service"], check=True)
             status, body = self.speak("Speichergrenze provozieren.")
             self.assertIn(status, (503, 504))
@@ -72,4 +78,6 @@ class GPUContainmentTests(unittest.TestCase):
             self.assertEqual(200, healthy.status)
         finally:
             subprocess.run(["systemctl", "--user", "set-property", "--runtime",
-                            "mimic-worker.service", "MemoryMax=7G"], check=True)
+                            "mimic-worker.service",
+                            f"MemoryMax={eigenschaften['MemoryMax']}",
+                            f"MemoryHigh={eigenschaften['MemoryHigh']}"], check=True)

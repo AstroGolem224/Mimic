@@ -29,7 +29,7 @@
 
   --text:#dcebed;
   --text-leise:#7e959b;
-  --text-still:#4e6167;
+  --text-still:#82979d;
 
   --erhaben:-5px -5px 13px rgba(255,255,255,.030), 7px 9px 22px rgba(0,0,0,.58);
   --erhaben-klein:-2px -2px 6px rgba(255,255,255,.028), 3px 4px 11px rgba(0,0,0,.52);
@@ -212,10 +212,11 @@ header{
 .stimme:hover::before{background:var(--cyan-matt);top:14%;bottom:14%}
 .stimme.aktiv{
   background:linear-gradient(150deg,rgba(47,227,211,.13),rgba(168,120,255,.09));
-  border-color:rgba(47,227,211,.34);
+  border-color:color-mix(in srgb,var(--stimmfarbe,var(--cyan)) 58%,transparent);
   box-shadow:var(--erhaben-klein), inset 0 0 24px rgba(47,227,211,.13);
 }
-.stimme.aktiv::before{background:linear-gradient(var(--cyan),var(--violett));top:8%;bottom:8%;width:3px;box-shadow:0 0 12px rgba(47,227,211,.8)}
+.stimme::before{background:var(--stimmfarbe,var(--text-still))}
+.stimme.aktiv::before{background:var(--stimmfarbe,var(--cyan));top:8%;bottom:8%;width:3px;box-shadow:0 0 12px var(--stimmfarbe,var(--cyan))}
 .stimme b{display:block;font-weight:500;font-size:13.5px;letter-spacing:.01em}
 .stimme s{
   display:block;text-decoration:none;margin-top:2px;
@@ -246,6 +247,16 @@ header{
   background:rgba(0,0,0,.4);box-shadow:var(--vertieft);
 }
 .blatt{flex:1;min-height:0;padding:0 13px 13px}
+.editor-schicht{position:relative;width:100%;height:100%}
+.editor-farben{
+  position:absolute;inset:0;z-index:1;overflow:hidden;pointer-events:none;
+  white-space:pre-wrap;overflow-wrap:break-word;
+  background:rgba(4,7,9,.52);color:var(--text);
+  border:1px solid rgba(150,225,230,.07);border-radius:12px;
+  box-shadow:var(--vertieft);padding:15px 17px;
+  font:400 14.5px/1.85 "FantasqueSansM Nerd Font Propo","FantasqueSansM Nerd Font",Hack,monospace;
+}
+.editor-farben .aktion{color:var(--bernstein);font-style:italic}
 textarea{
   width:100%;height:100%;resize:none;
   background:rgba(4,7,9,.52);color:var(--text);
@@ -262,6 +273,11 @@ textarea:focus{
   box-shadow:var(--vertieft), 0 0 0 3px rgba(47,227,211,.07), 0 0 26px rgba(47,227,211,.09);
 }
 textarea::selection{background:rgba(168,120,255,.34)}
+#feld{
+  position:relative;z-index:2;background:transparent;color:transparent;
+  -webkit-text-fill-color:transparent;caret-color:var(--cyan);
+}
+#feld::selection{-webkit-text-fill-color:transparent;background:rgba(168,120,255,.34)}
 
 /* ── Wellenband ─────────────────────────────────────────────────────── */
 .welle{
@@ -415,7 +431,7 @@ textarea::selection{background:rgba(168,120,255,.34)}
 }
 .status b{
   font-weight:500;font-size:13px;color:var(--text);
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44ch;
+  white-space:normal;overflow-wrap:anywhere;max-width:min(62ch,100%);user-select:text;
 }
 .status b.fehler{color:var(--koralle)}
 .status b.gut{color:var(--cyan)}
@@ -426,6 +442,18 @@ textarea::selection{background:rgba(168,120,255,.34)}
   font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-still);
   font-variant-numeric:tabular-nums;
 }
+.status .aktionsmeldung{font-size:12px;color:var(--text-leise)}
+.status .aktionsmeldung:empty{display:none}
+.modushilfe{
+  flex:1 1 100%;padding:0 4px;color:var(--text-leise);font-size:11.5px;
+}
+.aufnahme-global{
+  position:fixed;z-index:19;top:10px;left:50%;transform:translateX(-50%);
+  padding:8px 14px;border-radius:999px;background:#35151b;color:#ffd8dc;
+  border:1px solid rgba(255,95,109,.55);box-shadow:0 8px 28px rgba(0,0,0,.55);
+  font-weight:600;font-variant-numeric:tabular-nums;
+}
+.aufnahme-global[hidden]{display:none}
 /* Fortschritt als Haarlinie unter dem Transport */
 .fort{position:absolute;left:15px;right:15px;bottom:6px;height:2px;border-radius:2px;background:rgba(0,0,0,.5);overflow:hidden;opacity:0;transition:opacity .3s}
 .fort.an{opacity:1}
@@ -485,7 +513,7 @@ textarea::selection{background:rgba(168,120,255,.34)}
 .blatt-s.aus{display:none}
 
 .feldgruppe{display:flex;flex-direction:column;gap:6px}
-.feldgruppe > u{
+.feldgruppe > u,.feldgruppe > label,.feldgruppe > .feld-label{
   text-decoration:none;font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
   font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--text-still);
 }
@@ -600,18 +628,68 @@ audio{width:100%;height:34px;border-radius:9px;filter:saturate(.7) contrast(1.05
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:rgba(47,227,211,.20);border-radius:9px;border:2px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-thumb:hover{background:rgba(47,227,211,.38);background-clip:content-box}
+
+/* Kleine Fenster bleiben ein echtes Arbeitsfenster: erst stapeln, dann die
+   gesamte Seite scrollen. Der Editor behaelt dabei genug Hoehe zum Markieren. */
+@media (max-width:900px), (max-height:700px){
+  html,body{height:auto;min-height:100%}
+  body{overflow:auto}
+  .huelle{height:auto;min-height:100vh;grid-template-columns:260px minmax(0,1fr)}
+  header{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px}
+  .telemetrie{grid-column:1/-1;width:100%;margin-left:0;display:grid;grid-template-columns:repeat(5,1fr)}
+  .zelle{min-width:0;padding:7px 10px}
+  .werk{min-height:360px}
+  .transport{align-items:flex-start}
+  .status{flex:1 1 260px}
+}
+@media (max-width:720px){
+  .huelle{
+    display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto;
+    gap:10px;padding:9px;
+  }
+  header,.rail,.werk,.welle,.transport{grid-column:1;grid-row:auto}
+  header{padding:0}
+  .marke b{font-size:25px}.marke i,.fuge{display:none}
+  .telemetrie{grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}
+  .zelle{border-top:1px solid rgba(150,225,230,.075)}
+  .zelle:last-child{grid-column:1/-1}
+  .rail{min-height:250px;max-height:44vh}
+  .werk{min-height:300px;height:48vh}
+  .werk .titel{align-items:flex-start;flex-wrap:wrap}
+  .werk .titel small{margin-left:0;width:100%;line-height:1.7}
+  .welle{height:58px}
+  .transport{padding:10px;gap:9px}
+  .spiel{width:54px;height:54px}
+  .modus{margin-left:0}
+  .tempo{flex:1 1 155px;justify-content:space-between}
+  .tempo input{width:min(110px,30vw)}
+  .farbe-inhalt{
+    position:fixed;left:8px;right:8px;bottom:8px;max-height:70vh;overflow:auto;
+  }
+  .status{align-items:flex-start;text-align:left;flex-basis:100%;margin-left:0}
+  .schublade{width:100vw;max-width:100%;}
+  .blatt-s{padding-left:14px;padding-right:14px}
+  .karte .reihe,.reihe{flex-wrap:wrap}
+  .knopf.gefahr{margin-left:0}
+  .aufnahme-global{top:auto;bottom:10px;max-width:calc(100vw - 20px);white-space:nowrap}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    scroll-behavior:auto!important;transition-duration:.01ms!important}
+  .bloom{transform:none!important}
+}
 </style>
 </head>
 <body>
 <div class="bloom"></div><div class="raster"></div><div class="korn"></div>
 
-<div class="huelle">
+<div class="huelle" id="hauptinhalt">
   <header>
     <div class="marke"><b>Mimic</b><i>Stimmenwerk</i></div>
     <div class="fuge"></div>
     <div class="telemetrie">
       <div class="zelle"><u>Dienst</u><div class="lampe kalt" id="lampe">kalt</div></div>
-      <div class="zelle"><u>Modus</u><span id="tMode">—</span></div>
+      <div class="zelle"><u>Geladen</u><span id="tMode">—</span></div>
       <div class="zelle"><u>Warteschlange</u><span id="tQueue">0</span></div>
       <div class="zelle"><u>VRAM frei</u><span id="tVram">—<small>MiB</small></span><div class="vram"><i id="tVramBar"></i></div></div>
       <div class="zelle"><u>Laufzeit</u><span id="tUp">—</span></div>
@@ -633,12 +711,15 @@ audio{width:100%;height:34px;border-radius:9px;filter:saturate(.7) contrast(1.05
 
   <section class="paneel werk">
     <div class="titel">Skript
-      <small>Doppelklick auf Stimme setzt Kopf · <kbd>Strg</kbd>+<kbd>Enter</kbd> spricht</small>
+      <small>Text markieren · Stimme klicken · <code>[sighs]</code> als Aktion · <kbd>Strg</kbd>+<kbd>Enter</kbd> spricht</small>
     </div>
     <div class="blatt">
-      <textarea id="feld" spellcheck="false" placeholder='#stimme: "Text"   je Zeile
-Zeile ohne Kopf erbt den Sprecher von oben.
-// Zeilen ab zwei Schraegstrichen werden uebersprungen.'></textarea>
+      <div class="editor-schicht">
+        <div class="editor-farben" id="feldFarben" aria-hidden="true"></div>
+        <textarea id="feld" spellcheck="false" aria-label="Skript">Ich habe den Branch gestern Abend noch einmal geprüft, ruhig und ohne Eile.
+The tests are green, but the build still fails — how much time do we really have?
+Dann fangen wir eben sofort an, jetzt gleich!</textarea>
+      </div>
     </div>
   </section>
 
@@ -652,16 +733,17 @@ Zeile ohne Kopf erbt den Sprecher von oben.
       <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
     </button>
     <button class="knopf" id="bSpeichern">Exportieren</button>
-    <div class="modus" id="format">
-      <button data-format="wav" class="an">wav</button>
-      <button data-format="mp3">mp3</button>
+    <div class="modus" id="format" role="radiogroup" aria-label="Exportformat">
+      <button data-format="wav" class="an" role="radio" aria-checked="true">wav</button>
+      <button data-format="mp3" role="radio" aria-checked="false">mp3</button>
     </div>
     <button class="knopf stopp" id="bStopp" disabled>Stopp</button>
     <button class="knopf warm" id="bWarm">Warmlauf</button>
-    <div class="modus" id="modus">
-      <button data-modus="mf" class="an">mf</button>
-      <button data-modus="soar">soar</button>
-      <button data-modus="qwen">qwen</button>
+    <div class="modus" id="modus" role="radiogroup" aria-label="Motor für den nächsten Auftrag"
+         aria-describedby="modusHilfe">
+      <button data-modus="mf" class="an" role="radio" aria-checked="true">mf</button>
+      <button data-modus="soar" role="radio" aria-checked="false">soar</button>
+      <button data-modus="qwen" role="radio" aria-checked="false">qwen</button>
     </div>
     <label class="tempo" title="Sprechgeschwindigkeit — Doppelklick setzt auf 1,00× zurueck">
       Tempo
@@ -730,49 +812,53 @@ Doppelklick setzt auf 0 zurueck">
       </div>
     </details>
     <button class="knopf" id="bGlados" title="Raster ganz, Streuung 1 Halbton, Formant +2">GLaDOS</button>
-    <div class="status">
+    <div class="status" role="status" aria-live="polite" aria-atomic="false">
       <b id="sText">bereit</b>
+      <b id="aText" class="aktionsmeldung"></b>
       <u id="sSub">—</u>
     </div>
+    <div class="modushilfe" id="modusHilfe">MF: schnell und direkt · SOAR: ausdrucksstärker · Qwen: beste Klonqualität, längerer Kaltstart. Auswahl gilt für den nächsten Auftrag.</div>
     <div class="fort" id="fort"><i id="fortBar"></i></div>
   </section>
 </div>
 
+<div class="aufnahme-global" id="aufnahmeGlobal" role="status" aria-live="polite" hidden></div>
 <div class="schleier" id="schleier"></div>
-<aside class="schublade" id="schublade" aria-label="Stimmen klonen und verwalten">
+<aside class="schublade" id="schublade" role="dialog" aria-modal="true"
+       aria-labelledby="werkstattTitel" aria-hidden="true" inert>
   <div class="sk">
-    <h2>Stimmenwerkstatt</h2>
-    <button class="knopf zu" id="bZu" title="Schliessen (Esc)">✕</button>
+    <h2 id="werkstattTitel">Stimmenwerkstatt</h2>
+    <button class="knopf zu" id="bZu" title="Schließen (Esc)" aria-label="Stimmenwerkstatt schließen">✕</button>
   </div>
-  <div class="reiter" id="reiter">
-    <button data-blatt="neu" class="an">Neu aufnehmen</button>
-    <button data-blatt="entwerfen">Entwerfen</button>
-    <button data-blatt="verwalten">Verwalten</button>
+  <div class="reiter" id="reiter" role="tablist" aria-label="Bereich der Stimmenwerkstatt">
+    <button id="tabNeu" data-blatt="neu" class="an" role="tab" aria-selected="true" aria-controls="blattNeu">Neu aufnehmen</button>
+    <button id="tabEntwerfen" data-blatt="entwerfen" role="tab" aria-selected="false" aria-controls="blattEntwerfen" tabindex="-1">Entwerfen</button>
+    <button id="tabVerwalten" data-blatt="verwalten" role="tab" aria-selected="false" aria-controls="blattVerwalten" tabindex="-1">Verwalten</button>
   </div>
 
-  <div class="blatt-s" id="blattNeu">
+  <div class="blatt-s" id="blattNeu" role="tabpanel" aria-labelledby="tabNeu">
     <div class="feldgruppe">
-      <u>Name des Profils</u>
+      <label for="kName">Name des Profils</label>
       <input type="text" id="kName" placeholder="matthias_haendler" spellcheck="false"
              autocomplete="off" maxlength="32">
       <div class="hinweis" id="kNameHinweis">a–z, 0–9, Unterstrich und Bindestrich, max. 32.</div>
     </div>
 
     <div class="feldgruppe">
-      <u>Vorlage</u>
-      <div class="chips" id="kChips"></div>
+      <span class="feld-label" id="vorlageLabel">Vorlage</span>
+      <div class="chips" id="kChips" role="group" aria-labelledby="vorlageLabel"></div>
     </div>
 
     <div class="prompt">
       <div class="regie" id="kRegie">Referenztext frei schreiben. Aussage, Frage und Ausruf
         einbauen — die Referenz gibt Timbre <em>und</em> Prosodie vor.</div>
-      <textarea id="kText" spellcheck="false" placeholder="Text, den du einsprichst…"></textarea>
+      <textarea id="kText" spellcheck="false" placeholder="Text, den du einsprichst…" aria-label="Einzusprechender Referenztext"></textarea>
       <div class="zaehler"><span id="kZeichen">0 Zeichen</span><span id="kWorte">0 Wörter</span>
         <span id="kSchaetzung">~0 s bei normalem Tempo</span></div>
     </div>
 
     <div class="pult">
-      <button class="knopf rec" id="bRec" title="Aufnahme starten"><i></i></button>
+      <button class="knopf rec" id="bRec" title="Aufnahme starten" aria-label="Aufnahme starten"><i aria-hidden="true"></i></button>
       <div class="uhr">
         <b id="kUhr">0,0 s</b>
         <div class="zone"><i id="kZeiger"></i>
@@ -800,15 +886,15 @@ Doppelklick setzt auf 0 zurueck">
     </div>
   </div>
 
-  <div class="blatt-s aus" id="blattEntwerfen">
+  <div class="blatt-s aus" id="blattEntwerfen" role="tabpanel" aria-labelledby="tabEntwerfen" hidden>
     <div class="feldgruppe">
-      <u>Motor</u>
-      <div class="chips" id="eMotoren"></div>
+      <span class="feld-label" id="motorLabel">Motor</span>
+      <div class="chips" id="eMotoren" role="group" aria-labelledby="motorLabel"></div>
       <div class="hinweis" id="eMotorHinweis"></div>
     </div>
 
     <div class="feldgruppe">
-      <u>Beschreibung der Stimme</u>
+      <label for="eBeschreibung">Beschreibung der Stimme</label>
       <textarea id="eBeschreibung" spellcheck="false" rows="3"
                 placeholder="A cold synthetic male machine voice, flat affect…"></textarea>
       <div class="hinweis">Englisch. Beide Motoren verstehen die Beschreibung englisch —
@@ -818,7 +904,7 @@ Doppelklick setzt auf 0 zurueck">
     <div class="prompt">
       <div class="regie">Probesatz: was der Entwurf spricht. Er wird wörtlich das
         <em>ref.txt</em> des Profils — Aussage, Frage und Ausruf, rund zehn Sekunden.</div>
-      <textarea id="eText" spellcheck="false"></textarea>
+      <textarea id="eText" spellcheck="false" aria-label="Probesatz für den Stimmentwurf"></textarea>
       <div class="zaehler"><span id="eZeichen">0 Zeichen</span>
         <span id="eSchaetzung">~0 s bei normalem Tempo</span></div>
     </div>
@@ -826,13 +912,13 @@ Doppelklick setzt auf 0 zurueck">
     <div class="reihe" style="gap:7px">
       <button class="knopf" id="bEntwerfen">Entwerfen</button>
       <button class="knopf gefahr" id="bEntwurfStop" style="margin-left:0;display:none">Abbrechen</button>
-      <span class="hinweis" id="eStand"></span>
+      <span class="hinweis" id="eStand" role="status" aria-live="polite"></span>
     </div>
 
     <div id="eKandidaten"></div>
   </div>
 
-  <div class="blatt-s aus" id="blattVerwalten"></div>
+  <div class="blatt-s aus" id="blattVerwalten" role="tabpanel" aria-labelledby="tabVerwalten" hidden></div>
 </aside>
 
 <script>
@@ -847,11 +933,11 @@ const $ = id => document.getElementById(id);
 const TOT_TEXT = "Verbindung zum GUI-Server verloren — Fenster schließen und neu öffnen";
 let tot = false;
 
-async function api(pfad, koerper){
+async function api(pfad, koerper, methode){
   let antwort;
   try{
     antwort = await fetch(pfad, {
-      method: koerper === undefined ? "GET" : "POST",
+      method: methode || (koerper === undefined ? "GET" : "POST"),
       headers: {"X-Mimic-Token": T, ...(koerper === undefined ? {} : {"Content-Type":"application/json"})},
       body: koerper === undefined ? undefined : JSON.stringify(koerper),
     });
@@ -879,7 +965,109 @@ function serverTot(){
 }
 
 /* ── Stimmenliste ─────────────────────────────────────────────────── */
-let stimmen = [], gewaehlt = "";
+let stimmen = [], gewaehlt = "", wiederhergestellteStimme = "";
+const STIMMTAG = /\[([a-z0-9][a-z0-9_-]{0,31})\]/gi;
+const STIMMFARBEN = ["#55d6ff", "#b58cff", "#ff8f9a", "#73e2a7", "#ff9f68", "#86a8ff"];
+
+function stimmfarbe(name){
+  // Nordom bleibt gelb, damit dieselbe Figur in jedem Skript sofort erkennbar ist.
+  if(/^n[o0]rd[o0]m(?:_|-|$)/i.test(name)) return "#ffd166";
+  let wert = 0;
+  for(const zeichen of name) wert = ((wert << 5) - wert + zeichen.codePointAt(0)) | 0;
+  return STIMMFARBEN[Math.abs(wert) % STIMMFARBEN.length];
+}
+
+function bekannteStimme(name){
+  const klein = name.toLocaleLowerCase("de");
+  return stimmen.find(stimme => stimme.toLocaleLowerCase("de") === klein) || null;
+}
+
+function htmlSicher(text){
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function farbigerText(text, farbe){
+  let ausgabe = "", stelle = 0;
+  for(const treffer of text.matchAll(/\[[a-z][a-z0-9_-]{0,31}\]/gi)){
+    ausgabe += htmlSicher(text.slice(stelle, treffer.index));
+    ausgabe += `<span class="aktion">${htmlSicher(treffer[0])}</span>`;
+    stelle = treffer.index + treffer[0].length;
+  }
+  const inhalt = ausgabe + htmlSicher(text.slice(stelle));
+  return farbe ? `<span style="color:${farbe}">${inhalt}</span>` : inhalt;
+}
+
+function markierungAktualisieren(){
+  const feld = $("feld"), text = feld.value;
+  let ausgabe = "", stelle = 0, farbe = null;
+  STIMMTAG.lastIndex = 0;
+  for(const treffer of text.matchAll(STIMMTAG)){
+    ausgabe += farbigerText(text.slice(stelle, treffer.index), farbe);
+    const name = bekannteStimme(treffer[1]);
+    if(name){
+      farbe = stimmfarbe(name);
+      ausgabe += `<span style="color:${farbe};font-weight:700">${htmlSicher(treffer[0])}</span>`;
+    }else{
+      ausgabe += farbigerText(treffer[0], farbe);
+    }
+    stelle = treffer.index + treffer[0].length;
+  }
+  ausgabe += farbigerText(text.slice(stelle), farbe);
+  // Ein Schlussumbruch braucht im <div> ein sichtbares Zeichen, sonst sind
+  // Scrollhoehe und Cursorposition des Textareas um eine Zeile versetzt.
+  $("feldFarben").innerHTML = ausgabe + (text.endsWith("\n") ? "\u200b" : "");
+  $("feldFarben").scrollTop = feld.scrollTop;
+  $("feldFarben").scrollLeft = feld.scrollLeft;
+}
+
+function stimmeAnPosition(text, position){
+  let name = gewaehlt;
+  STIMMTAG.lastIndex = 0;
+  for(const treffer of text.slice(0, position).matchAll(STIMMTAG)){
+    const bekannt = bekannteStimme(treffer[1]);
+    if(bekannt) name = bekannt;
+  }
+  return name;
+}
+
+function ohneStimmtags(text){
+  STIMMTAG.lastIndex = 0;
+  return text.replace(STIMMTAG, (tag, name) => bekannteStimme(name) ? "" : tag);
+}
+
+function markiereMitStimme(name){
+  const feld = $("feld");
+  let start = feld.selectionStart, ende = feld.selectionEnd;
+  if(start === ende){
+    gewaehlt = name;
+    aktualisiereStimmenauswahl();
+    entwurfSpeichern();
+    setzeStatus(`${name} ist die Standardstimme`, "gut");
+    return;
+  }
+
+  const text = feld.value;
+  let kopfStart = start;
+  const davor = text.slice(0, start).match(/\[([a-z0-9][a-z0-9_-]{0,31})\]$/i);
+  if(davor && bekannteStimme(davor[1])) kopfStart = start - davor[0].length;
+
+  const nachher = stimmeAnPosition(text, ende);
+  const auswahl = ohneStimmtags(text.slice(start, ende));
+  const suffix = text.slice(ende);
+  const naechsterKopf = suffix.match(/^\[([a-z0-9][a-z0-9_-]{0,31})\]/i);
+  const stelltSelbstWiederHer = naechsterKopf && bekannteStimme(naechsterKopf[1]);
+  const wiederherstellen = suffix && !stelltSelbstWiederHer && nachher && nachher !== name
+    ? `[${nachher}]` : "";
+  const kopf = `[${name}]`;
+  const prefix = text.slice(0, kopfStart);
+  feld.value = prefix + kopf + auswahl + wiederherstellen + suffix;
+  const neueStart = prefix.length + kopf.length;
+  feld.setSelectionRange(neueStart, neueStart + auswahl.length);
+  feld.focus({preventScroll:true});
+  markierungAktualisieren();
+  entwurfSpeichern();
+  setzeStatus(`${name} der Auswahl zugewiesen`, "gut");
+}
 
 function zeichneStimmen(){
   const behaelter = $("stimmen");
@@ -889,29 +1077,47 @@ function zeichneStimmen(){
     behaelter.innerHTML = '<div class="leer">Kein Stimmprofil gefunden.<br>Erst aufnehmen:<br><code>mimic record &lt;name&gt;</code></div>';
     return;
   }
+  if(wiederhergestellteStimme && stimmen.includes(wiederhergestellteStimme)){
+    gewaehlt = wiederhergestellteStimme;
+    wiederhergestellteStimme = "";
+  }
   if(!stimmen.includes(gewaehlt)) gewaehlt = stimmen[0];
   stimmen.forEach((name, i) => {
     const el = document.createElement("button");
     el.type = "button";
     el.className = "stimme" + (name === gewaehlt ? " aktiv" : "");
     el.setAttribute("aria-pressed", name === gewaehlt ? "true" : "false");
+    el.style.setProperty("--stimmfarbe", stimmfarbe(name));
     el.style.animationDelay = (i * 26) + "ms";
     el.innerHTML = `<b></b><s>Profil</s>`;
     el.querySelector("b").textContent = name;
-    el.onclick = () => { gewaehlt = name; zeichneStimmen(); };
-    el.ondblclick = () => kopfEinfuegen(name);
+    el.querySelector("s").textContent = name === gewaehlt ? "Standardstimme" : "Auswahl zuweisen";
+    el.title = "Markierten Text dieser Stimme zuweisen; ohne Auswahl als Standard setzen";
+    // Verhindert, dass der Mausklick die Auswahl im Textarea vor `onclick`
+    // einklappt. Per Tastatur bleibt der Button trotzdem erreichbar.
+    el.onmousedown = ereignis => ereignis.preventDefault();
+    el.dataset.stimme = name;
+    el.onclick = () => markiereMitStimme(name);
     behaelter.appendChild(el);
   });
+  markierungAktualisieren();
 }
 
-function kopfEinfuegen(name){
-  const feld = $("feld"), pos = feld.selectionStart;
-  const vorsatz = (pos === 0 || feld.value[pos-1] === "\n") ? "" : "\n";
-  const text = `${vorsatz}#${name}: ""\n`;
-  feld.setRangeText(text, pos, feld.selectionEnd, "end");
-  feld.selectionStart = feld.selectionEnd = pos + text.length - 2;
-  feld.focus();
+function aktualisiereStimmenauswahl(){
+  for(const el of $("stimmen").querySelectorAll("button[data-stimme]")){
+    const aktiv = el.dataset.stimme === gewaehlt;
+    el.classList.toggle("aktiv", aktiv);
+    el.setAttribute("aria-pressed", aktiv ? "true" : "false");
+    el.querySelector("s").textContent = aktiv ? "Standardstimme" : "Auswahl zuweisen";
+    el.disabled = laeuft;
+  }
+  markierungAktualisieren();
 }
+
+$("feld").addEventListener("input", markierungAktualisieren);
+$("feld").addEventListener("input", entwurfSpeichern);
+$("feld").addEventListener("scroll", markierungAktualisieren);
+markierungAktualisieren();
 
 /* ── Wellenband ───────────────────────────────────────────────────── */
 const leinwand = $("welle"), stift = leinwand.getContext("2d");
@@ -973,23 +1179,55 @@ function zeichneWelle(){
 /* ── Bedienung ────────────────────────────────────────────────────── */
 let modus = "mf", format = "wav", laeuft = false;
 
+let entwurfTimer = null;
+function entwurfSpeichern(){
+  clearTimeout(entwurfTimer);
+  entwurfTimer = setTimeout(async () => {
+    const entwurf = {
+      text: $("feld").value, voice: gewaehlt, modus, format,
+      klang: Object.fromEntries(KLANG.map(r => [r.id, $(r.id).value]))
+    };
+    try{ await api("/api/draft", entwurf, "PUT"); }
+    catch(fehler){ if(!tot) setzeStatus("Entwurf nicht gespeichert: " + fehler, "warn"); }
+  }, 350);
+}
+
+function auswahlzustand(behaelter, attribut, wert){
+  for(const knopf of behaelter.querySelectorAll(`button[${attribut}]`)){
+    const aktiv = knopf.getAttribute(attribut) === wert;
+    knopf.classList.toggle("an", aktiv);
+    knopf.setAttribute("aria-checked", aktiv ? "true" : "false");
+  }
+}
+
 $("modus").onclick = e => {
-  const knopf = e.target.closest("button[data-modus]");
+  const knopf = e.target.closest("button[data-modus]:not(:disabled)");
   if(!knopf) return;
   modus = knopf.dataset.modus;
-  [...$("modus").children].forEach(b => b.classList.toggle("an", b === knopf));
+  auswahlzustand($("modus"), "data-modus", modus);
+  entwurfSpeichern();
 };
 $("format").onclick = e => {
   const knopf = e.target.closest("button[data-format]:not(:disabled)");
   if(!knopf) return;
   format = knopf.dataset.format;
-  [...$("format").children].forEach(b => b.classList.toggle("an", b === knopf));
+  auswahlzustand($("format"), "data-format", format);
+  entwurfSpeichern();
 };
 
 function setzeStatus(text, art){
+  const el = $("aText");
+  el.textContent = text;
+  el.className = art ? "aktionsmeldung " + art : "aktionsmeldung";
+  el.title = text;
+  try{ sessionStorage.setItem("mimic.aktion", JSON.stringify({text, art:art || ""})); }catch(_){}
+}
+
+function setzeJobStatus(text, art){
   const el = $("sText");
   el.textContent = text;
   el.className = art || "";
+  el.title = text;
 }
 
 function sperre(anAn){
@@ -998,6 +1236,17 @@ function sperre(anAn){
   $("bSpeichern").disabled = anAn;
   $("bWarm").disabled = anAn;
   $("bStopp").disabled = !anAn;
+  $("bKlon").disabled = anAn;
+  $("bEntwurfAuf").disabled = anAn;
+  $("bNeu").disabled = anAn;
+  $("feld").readOnly = anAn;
+  for(const el of document.querySelectorAll("#modus button,#format button,#stimmen button," +
+                                             ".tempo input,#bGlados")) el.disabled = anAn;
+  const mp3 = $("format").querySelector("[data-format=mp3]");
+  if(!anAn && mp3.dataset.verfuegbar === "false") mp3.disabled = true;
+  const qwen = $("modus").querySelector("[data-modus=qwen]");
+  if(!anAn && qwen.dataset.verfuegbar === "false") qwen.disabled = true;
+  for(const el of $("blattVerwalten").querySelectorAll("button")) el.disabled = anAn;
   $("fort").classList.toggle("an", anAn);
 }
 
@@ -1035,13 +1284,36 @@ async function zielWaehlen(){
 async function ablegen(){
   const antwort = await fetch("/api/export", {headers: {"X-Mimic-Token": T}});
   if(!antwort.ok) throw new Error("HTTP " + antwort.status);
+  const exportId = antwort.headers.get("X-Mimic-Export-Id");
   const strom = await antwort.blob();
   const schreiber = await zielGriff.createWritable();
   await schreiber.write(strom);
   await schreiber.close();
   const name = zielGriff.name;
   zielGriff = null;
+  if(!exportId) throw new Error("Export-Kennung fehlt");
+  await api("/api/export/ack", {id: exportId});
   return name;
+}
+
+async function herunterladen(){
+  const antwort = await fetch("/api/export", {headers: {"X-Mimic-Token": T}});
+  if(!antwort.ok) throw new Error("HTTP " + antwort.status);
+  const exportId = antwort.headers.get("X-Mimic-Export-Id");
+  if(!exportId) throw new Error("Export-Kennung fehlt");
+  const blob = await antwort.blob();
+  const adresse = URL.createObjectURL(blob);
+  try{
+    const link = document.createElement("a");
+    link.href = adresse;
+    link.download = vorschlag();
+    document.body.append(link);
+    link.click();
+    link.remove();
+    await api("/api/export/ack", {id: exportId});
+  }finally{
+    setTimeout(() => URL.revokeObjectURL(adresse), 1000);
+  }
 }
 
 async function starten(datei){
@@ -1051,13 +1323,14 @@ async function starten(datei){
   if(datei && !await zielWaehlen()) return;
   pegel = []; zeichneWelle();
   sperre(true);
-  setzeStatus("wird vorbereitet…");
+  setzeJobStatus("wird vorbereitet…");
   try{
     await api("/api/speak", {text, mode: modus, voice: gewaehlt, ...klangwerte(),
                              speichern: !!datei, format: datei ? format : null});
   }catch(fehler){
     zielGriff = null;
     sperre(false);
+    setzeJobStatus("Auftrag fehlgeschlagen", "fehler");
     setzeStatus("" + fehler, "fehler");
   }
 }
@@ -1082,10 +1355,35 @@ function zeigeKlang(){
 }
 for(const regler of KLANG){
   const feld = $(regler.id);
-  feld.oninput = zeigeKlang;
-  feld.ondblclick = () => { feld.value = regler.vorgabe; zeigeKlang(); };
+  feld.oninput = () => { zeigeKlang(); entwurfSpeichern(); };
+  feld.ondblclick = () => { feld.value = regler.vorgabe; zeigeKlang(); entwurfSpeichern(); };
 }
 zeigeKlang();
+
+async function entwurfWiederherstellen(){
+  try{
+    const antwort = await fetch("/api/draft", {headers: {"X-Mimic-Token": T}});
+    if(antwort.ok){
+      const stand = await antwort.json();
+      if(typeof stand.text === "string") $("feld").value = stand.text;
+      if(typeof stand.voice === "string") wiederhergestellteStimme = stand.voice;
+      if(["mf","soar","qwen"].includes(stand.modus)) modus = stand.modus;
+      if(["wav","mp3"].includes(stand.format)) format = stand.format;
+      if(stand.klang && typeof stand.klang === "object"){
+        for(const regler of KLANG){
+          if(stand.klang[regler.id] !== undefined) $(regler.id).value = stand.klang[regler.id];
+        }
+      }
+      auswahlzustand($("modus"), "data-modus", modus);
+      auswahlzustand($("format"), "data-format", format);
+      zeigeKlang(); markierungAktualisieren();
+      setzeStatus("Letzten Entwurf wiederhergestellt", "gut");
+    }
+    const meldung = JSON.parse(sessionStorage.getItem("mimic.aktion") || "null");
+    if(meldung && meldung.text) setzeStatus(meldung.text, meldung.art);
+  }catch(_){ /* Ein fehlender/beschaedigter Entwurf blockiert die App nicht. */ }
+}
+entwurfWiederherstellen();
 // Die Werte aus Valves eigener Anleitung: Tonhoehe aufs Raster gezwungen und
 // dort gehalten, Silben gelegentlich einen Halbton daneben, Formanten hoch.
 $("bGlados").onclick = () => {
@@ -1095,6 +1393,7 @@ $("bGlados").onclick = () => {
   $("formant").value = an ? 2 : 0;
   $("bGlados").classList.toggle("an", an);
   zeigeKlang();
+  entwurfSpeichern();
 };
 function klangwerte(){
   return Object.fromEntries(KLANG.map(r => [r.id, +$(r.id).value]));
@@ -1102,12 +1401,12 @@ function klangwerte(){
 
 $("bSpiel").onclick = () => starten(false);
 $("bSpeichern").onclick = () => starten(true);
-$("bStopp").onclick = () => { api("/api/stop", {}).catch(()=>{}); setzeStatus("bricht ab…"); };
+$("bStopp").onclick = () => { api("/api/stop", {}).catch(()=>{}); setzeJobStatus("bricht ab…"); };
 $("bWarm").onclick = async () => {
   $("bWarm").disabled = true;
   setzeStatus("Warmlauf angefordert…");
   try{
-    const wert = await api("/api/warm", {mode: modus});
+    const wert = await api("/api/warm", {mode: modus, voice: gewaehlt});
     setzeStatus(wert.message || "Warmlauf laeuft", wert.ok ? "gut" : "fehler");
   }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
   finally{ if(!laeuft) $("bWarm").disabled = false; }
@@ -1132,9 +1431,10 @@ function zeit(s){
   return Math.floor(s/3600) + "h " + Math.floor(s%3600/60) + "m";
 }
 
-let marke = 0, letzteStimmen = "";
+let marke = 0, letzteStimmen = "", tickLaeuft = false, frischVorgemerkt = false;
+let tickVersprechen = Promise.resolve(), exportWirdZugestellt = false;
 
-async function tick(neuLesen){
+async function tickEinmal(neuLesen){
   let wert;
   try{
     wert = await api(`/api/state?seit=${marke}${neuLesen ? "&frisch=1" : ""}`);
@@ -1144,10 +1444,25 @@ async function tick(neuLesen){
     return;
   }
 
-  const schlussel = wert.voices.join(" ");
+  const antwortCursor = Number(wert.cursor ?? marke);
+  if(Number.isFinite(antwortCursor) && antwortCursor < marke) return;
+  if(Number.isFinite(antwortCursor)) marke = Math.max(marke, antwortCursor);
+
+  const schlussel = wert.voices.join("\\u0000");
   if(schlussel !== letzteStimmen){ letzteStimmen = schlussel; stimmen = wert.voices; zeichneStimmen(); }
 
   const d = wert.service || {};
+  if(Array.isArray(d.modes)){
+    const qwen = $("modus").querySelector("[data-modus=qwen]");
+    const verfuegbar = d.modes.includes("qwen");
+    qwen.dataset.verfuegbar = verfuegbar ? "true" : "false";
+    qwen.disabled = laeuft || !verfuegbar;
+    qwen.title = verfuegbar ? "Qwen Voice Clone" : "Qwen fehlt — mimic setup qwen-klon ausführen";
+    if(!verfuegbar && modus === "qwen"){
+      modus = "mf";
+      auswahlzustand($("modus"), "data-modus", modus);
+    }
+  }
   const lampe = $("lampe");
   const zustand = d.state || "kalt";
   lampe.textContent = zustand;
@@ -1164,16 +1479,16 @@ async function tick(neuLesen){
   const mp3Knopf = $("format").querySelector('[data-format=mp3]');
   if(wert.mp3 === false && !mp3Knopf.disabled){
     mp3Knopf.disabled = true;
+    mp3Knopf.dataset.verfuegbar = "false";
     mp3Knopf.title = "kein lame und kein ffmpeg gefunden";
   }
 
   const auftrag = wert.job || {};
   if(wert.levels && wert.levels.length){ pegel.push(...wert.levels); zeichneWelle(); }
-  marke = wert.cursor ?? marke;
 
   if(auftrag.running){
     if(!laeuft) sperre(true);
-    setzeStatus(auftrag.message || "spricht…");
+    setzeJobStatus(auftrag.message || "spricht…");
     $("sSub").textContent = `Einsatz ${auftrag.index}/${auftrag.total} · ${auftrag.voice} · ${auftrag.mode}`;
     $("fortBar").style.width = (auftrag.total ? (auftrag.index - 1) / auftrag.total * 100 : 0) + "%";
   }else{
@@ -1182,8 +1497,9 @@ async function tick(neuLesen){
       $("fortBar").style.width = "100%";
     }
     // Auch nach einem Neuladen den letzten Ausgang zeigen, nicht stumm "bereit".
-    setzeStatus(auftrag.message || "bereit", !auftrag.message ? "" : auftrag.ok === false ? "fehler" : "gut");
-    if(auftrag.download){
+    setzeJobStatus(auftrag.message || "bereit", !auftrag.message ? "" : auftrag.ok === false ? "fehler" : "gut");
+    if(auftrag.download && !exportWirdZugestellt){
+      exportWirdZugestellt = true;
       if(zielGriff){
         ablegen().then(name => setzeStatus(`gespeichert: ${name}`, "gut"))
                  .catch(fehler => {
@@ -1195,24 +1511,55 @@ async function tick(neuLesen){
                    zielGriff = null;
                    setzeStatus("Schreiben fehlgeschlagen (" + fehler +
                                ") — geht in den Download-Ordner", "warn");
-                   location.href = "/api/export";
-                 });
+                   return herunterladen().then(() => setzeStatus("Export heruntergeladen", "gut"));
+                 })
+                   .catch(fehler => setzeStatus("Export bleibt bereit: " + fehler, "fehler"))
+                   .finally(() => { exportWirdZugestellt = false; });
       }else{
-        location.href = "/api/export?t=" + encodeURIComponent(T);
+        herunterladen().then(() => setzeStatus("Export heruntergeladen", "gut"))
+                       .catch(fehler => setzeStatus("Export bleibt bereit: " + fehler, "fehler"))
+                       .finally(() => { exportWirdZugestellt = false; });
       }
     }
+    if(!auftrag.download) exportWirdZugestellt = false;
     if(!auftrag.message) $("sSub").textContent = "—";
   }
 }
 
+function tick(neuLesen=false){
+  frischVorgemerkt = frischVorgemerkt || neuLesen;
+  if(tickLaeuft) return tickVersprechen;
+  tickLaeuft = true;
+  tickVersprechen = (async () => {
+    do{
+      const frisch = frischVorgemerkt;
+      frischVorgemerkt = false;
+      await tickEinmal(frisch);
+    }while(frischVorgemerkt && !tot);
+  })().finally(() => { tickLaeuft = false; });
+  return tickVersprechen;
+}
+
 /* ── Stimmenwerkstatt ─────────────────────────────────────────────── */
 let charaktere = [], inventar = [], deckel = 90, letzteAufnahme = null, frischeStimme = "";
+let aufnahmeLaeuft = false, dialogRueckkehr = null;
 let letzterAufnahmefehler = "";   // damit derselbe Grund nicht bei jedem Puls neu gesetzt wird
 
 function schubladeAuf(an){
+  if(!an && aufnahmeLaeuft){
+    setzeStatus("Aufnahme zuerst stoppen — die Werkstatt bleibt sichtbar", "warn");
+    $("bRec").focus();
+    return false;
+  }
+  if(an) dialogRueckkehr = document.activeElement;
   $("schublade").classList.toggle("auf", an);
   $("schleier").classList.toggle("auf", an);
+  $("schublade").toggleAttribute("inert", !an);
+  $("schublade").setAttribute("aria-hidden", an ? "false" : "true");
+  $("hauptinhalt").toggleAttribute("inert", an);
   if(an){ inventarLaden(); $("kName").focus(); }
+  else if(dialogRueckkehr && document.contains(dialogRueckkehr)) dialogRueckkehr.focus();
+  return true;
 }
 $("bKlon").onclick = () => schubladeAuf(true);
 $("bEntwurfAuf").onclick = () => {
@@ -1225,12 +1572,35 @@ $("schleier").onclick = () => schubladeAuf(false);
 $("reiter").onclick = e => {
   const knopf = e.target.closest("button[data-blatt]");
   if(!knopf) return;
-  [...$("reiter").children].forEach(b => b.classList.toggle("an", b === knopf));
-  $("blattNeu").classList.toggle("aus", knopf.dataset.blatt !== "neu");
-  $("blattEntwerfen").classList.toggle("aus", knopf.dataset.blatt !== "entwerfen");
-  $("blattVerwalten").classList.toggle("aus", knopf.dataset.blatt !== "verwalten");
+  [...$("reiter").children].forEach(b => {
+    const aktiv = b === knopf;
+    b.classList.toggle("an", aktiv); b.setAttribute("aria-selected", aktiv ? "true" : "false");
+    b.tabIndex = aktiv ? 0 : -1;
+  });
+  for(const [name, id] of [["neu","blattNeu"],["entwerfen","blattEntwerfen"],["verwalten","blattVerwalten"]]){
+    const aus = knopf.dataset.blatt !== name;
+    $(id).classList.toggle("aus", aus); $(id).hidden = aus;
+  }
   if(knopf.dataset.blatt === "entwerfen") entwurfPuls();
 };
+$("reiter").addEventListener("keydown", e => {
+  if(!["ArrowLeft","ArrowRight","Home","End"].includes(e.key)) return;
+  const tabs = [...$("reiter").querySelectorAll('[role="tab"]')];
+  let index = tabs.indexOf(document.activeElement);
+  if(e.key === "Home") index = 0; else if(e.key === "End") index = tabs.length - 1;
+  else index = (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  e.preventDefault(); tabs[index].focus(); tabs[index].click();
+});
+
+$("schublade").addEventListener("keydown", e => {
+  if(e.key !== "Tab") return;
+  const fokus = [...$("schublade").querySelectorAll("button,input,textarea,audio,[tabindex]")]
+    .filter(el => !el.disabled && el.tabIndex >= 0 && !el.hidden && el.offsetParent !== null);
+  if(!fokus.length) return;
+  const erster = fokus[0], letzter = fokus.at(-1);
+  if(e.shiftKey && document.activeElement === erster){ e.preventDefault(); letzter.focus(); }
+  else if(!e.shiftKey && document.activeElement === letzter){ e.preventDefault(); erster.focus(); }
+});
 
 /* ── Entwerfen ────────────────────────────────────────────────────────
    Der Generator laeuft als Subprozess in eigener Umgebung und meldet je
@@ -1484,15 +1854,25 @@ $("bRec").onclick = async () => {
   }
 };
 
-$("bNochmal").onclick = () => { $("bVerwerfen").click(); setTimeout(() => $("bRec").click(), 120); };
-$("bVerwerfen").onclick = async () => {
-  try{ await api("/api/record/discard", {}); }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+function aufnahmeAnzeigeLeeren(){
   letzteAufnahme = null;
   $("kAudio").style.display = "none";
   $("kEntscheid").style.display = "none";
   $("kUrteil").className = "hinweis";
   $("kUrteil").textContent = "Ziel 8–15 s. Ruhiger Raum, ~20 cm Abstand, am Stück durchsprechen.";
+}
+async function aufnahmeVerwerfen(){
+  try{ await api("/api/record/discard", {}); }
+  catch(fehler){ setzeStatus("" + fehler, "fehler"); return false; }
+  aufnahmeAnzeigeLeeren();
+  return true;
+}
+$("bNochmal").onclick = async () => {
+  $("bNochmal").disabled = true;
+  if(await aufnahmeVerwerfen()) $("bRec").click();
+  $("bNochmal").disabled = false;
 };
+$("bVerwerfen").onclick = aufnahmeVerwerfen;
 $("bBehalten").onclick = async () => {
   try{
     const wert = await api("/api/record/keep", {text: $("kText").value});
@@ -1524,8 +1904,13 @@ $("bProbe").onclick = () => probeSprechen(frischeStimme);
 
 function zeigeAufnahme(stand){
   const knopf = $("bRec");
+  aufnahmeLaeuft = !!stand.laeuft;
   knopf.classList.toggle("laeuft", stand.laeuft);
   knopf.title = stand.laeuft ? "Aufnahme stoppen" : "Aufnahme starten";
+  knopf.setAttribute("aria-label", knopf.title);
+  const global = $("aufnahmeGlobal");
+  global.hidden = !stand.laeuft;
+  if(stand.laeuft) global.textContent = "● Aufnahme läuft · " + stand.sekunden.toFixed(1).replace(".", ",") + " s";
   if(stand.laeuft){
     $("kUhr").textContent = stand.sekunden.toFixed(1).replace(".", ",") + " s";
     $("kZeiger").style.left = Math.min(100, stand.sekunden / (stand.deckel_s || 90) * 100) + "%";
@@ -1564,8 +1949,11 @@ function zeigeAufnahme(stand){
 }
 
 groesse();
-tick(true);
-setInterval(() => tick(false), 220);
+async function pollingSchleife(){
+  await tick(false);
+  if(!tot) setTimeout(pollingSchleife, 220);
+}
+tick(true).finally(() => { if(!tot) setTimeout(pollingSchleife, 220); });
 // Direkteinstieg: #werkstatt oder #werkstatt-verwalten
 if(location.hash.startsWith("#werkstatt")){
   schubladeAuf(true);
