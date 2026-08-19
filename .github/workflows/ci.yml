@@ -33,4 +33,12 @@ jobs:
           /tmp/mimic-wheel-venv/bin/python -c 'import mimic; print(mimic.__version__)'
           /tmp/mimic-wheel-venv/bin/mimic --help
       - name: systemd-Units prüfen
-        run: systemd-analyze verify systemd/*.service systemd/*.socket
+        run: |
+          # Die Units starten absichtlich aus ~/.local/bin. Das Wheel wurde im
+          # vorigen Schritt isoliert unter /tmp installiert; fuer verify werden
+          # genau diese bereits geprueften Entry-Points am Produktionspfad
+          # sichtbar gemacht, ohne ein zweites Paket zu installieren.
+          install -d -m 0700 "$HOME/.local/bin"
+          ln -sf /tmp/mimic-wheel-venv/bin/mimic-frontend "$HOME/.local/bin/mimic-frontend"
+          ln -sf /tmp/mimic-wheel-venv/bin/mimic-worker "$HOME/.local/bin/mimic-worker"
+          systemd-analyze verify systemd/*.service systemd/*.socket
