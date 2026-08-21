@@ -161,7 +161,6 @@ class EntwurfTests(unittest.TestCase):
                 nackt = zeile.strip()
                 self.assertFalse(nackt.startswith(("from .", "from mimic", "import mimic")),
                                  f"{pfad.name} importiert aus dem Paket: {nackt}")
-
     def test_jeder_motor_hat_eigene_umgebung_und_skript(self):
         """Zusammengelegte venvs waeren der Pin-Konflikt, den der Spike gezeigt hat."""
         from mimic.entwurf import MOTOREN, VORGABE_MOTOR, venv_pfad
@@ -252,6 +251,31 @@ class EntwurfTests(unittest.TestCase):
                     os.environ.pop("XDG_DATA_HOME", None)
                 else:
                     os.environ["XDG_DATA_HOME"] = alt
+
+
+class TranskriptionsTests(unittest.TestCase):
+    def test_fremdausgabe_wird_uebersprungen_und_json_uebernommen(self):
+        from mimic import transkription
+
+        with tempfile.TemporaryDirectory() as ordner:
+            stub = Path(ordner) / "whisper-stub"
+            stub.write_text("#!/bin/sh\n"
+                            "echo 'Modell wird geladen'\n"
+                            "echo '{\"text\":\"  Hallo   Welt. \",\"sprache\":\"de\","
+                            "\"wahrscheinlichkeit\":0.98}'\n")
+            stub.chmod(0o755)
+            with mock.patch.object(transkription, "umgebung_da", return_value=True), \
+                 mock.patch.object(transkription, "python_pfad", return_value=stub):
+                wert = transkription.transkribieren(Path(ordner) / "aufnahme.wav")
+        self.assertEqual("Hallo Welt.", wert["text"])
+        self.assertEqual("de", wert["sprache"])
+
+    def test_fehlende_umgebung_nennt_setup_befehl(self):
+        from mimic import transkription
+
+        with mock.patch.object(transkription, "umgebung_da", return_value=False):
+            with self.assertRaisesRegex(RuntimeError, "setup --transkription"):
+                transkription.transkribieren(Path("aufnahme.wav"))
 
 
 class StimmenwurzelTests(unittest.TestCase):

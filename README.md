@@ -192,7 +192,7 @@ Skript zeichnet die Pegel der laufenden Ausgabe.
 
 ### Stimmenwerkstatt
 
-**Klonen** öffnet die Werkstatt-Schublade. Reiter *Neu aufnehmen*: Profilname
+**Klonen** öffnet die Werkstatt-Schublade. Reiter *Aufnehmen / Datei*: Profilname
 (live gegen `VOICE_RE` und die vorhandenen Profile geprüft), eine der Vorlagen
 aus `charaktere.py` oder eigener Text, die Regieanweisung als Teleprompter
 darüber. Der Aufnahmeknopf startet `pw-record` mit 48 kHz mono s16 direkt ins
@@ -204,6 +204,23 @@ Take abhören, dann *Behalten* (schreibt `ref.wav`/`ref.txt` mit 0700/0600 und
 lässt das Profil vom Dienst gegenprüfen), *Nochmal* oder *Verwerfen*. Ein
 abgebrochener erster Versuch lässt kein leeres Verzeichnis zurück. Nach dem
 Speichern sprichst du direkt einen Probesatz mit der frischen Stimme.
+
+Im selben Reiter kann statt des Mikrofons eine vorhandene **MP3- oder
+WAV-Datei** gewählt werden. Mimic nimmt bis zu 64 MiB an, wandelt sie lokal mit
+`ffmpeg` in dieselbe 48-kHz-Mono-Referenz wie eine direkte Aufnahme und zeigt
+sie vor dem Speichern zum Anhören. Die üblichen 3–60-s-Grenzen, die
+Zielbereichswarnung und die atomare Profilprüfung gelten unverändert. Der
+angegebene Referenztext kann von Hand eingetragen oder nach dem Upload lokal
+mit faster-whisper erkannt werden; das Ergebnis landet zur Kontrolle im
+Textfeld und wird erst mit *Behalten* als `ref.txt` gespeichert.
+
+Die getrennte Transkriptionsumgebung wird einmalig eingerichtet (das Modell
+`small` kommt beim ersten Transkribieren und kann mit
+`MIMIC_WHISPER_MODEL` geändert werden):
+
+```bash
+mimic setup --transkription
+```
 
 Reiter *Entwerfen*: eine Stimme aus einer Beschreibung erzeugen, statt sie
 einzusprechen. Motor wählen, Beschreibung (englisch) plus Probesatz, drei

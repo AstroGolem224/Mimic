@@ -755,6 +755,19 @@ def _systemctl(*argumente: str) -> int:
 
 
 def setup(args: argparse.Namespace) -> int:
+    if getattr(args, "transkription", False):
+        from .transkription import umgebung_bauen, umgebung_da
+
+        if umgebung_da():
+            print("  Transkription steht schon")
+            return 0
+        try:
+            umgebung_bauen()
+        except (RuntimeError, OSError) as fehler:
+            print(f"transkription: {fehler}", file=sys.stderr)
+            return 1
+        return 0
+
     # Hinter einem Schalter, nicht im Regelweg: die Generator-Umgebung laedt
     # mehrere GB und braucht Minuten, waehrend `mimic setup` sonst in Sekunden
     # durchlaeuft und gefahrlos zweimal aufgerufen werden kann.
@@ -880,6 +893,8 @@ def parser() -> argparse.ArgumentParser:
                               help="nur die Generator-Umgebungen bauen (mehrere GB, Minuten). "
                                    f"Ohne Angabe alle: "
                                    f"{', '.join(sorted({*MOTOREN, EINDEUTSCHER_V2.name}))}")
+    setup_parser.add_argument("--transkription", action="store_true",
+                              help="lokale Whisper-Umgebung fuer Audio-Uploads bauen")
     setup_parser.set_defaults(function=setup)
     gui_parser = commands.add_parser("gui")
     gui_parser.set_defaults(function=gui)

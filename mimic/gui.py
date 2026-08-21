@@ -48,6 +48,7 @@ from .effekte import (breite_wert, formant_wert, hall_wert, kruemel_wert, raster
 from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
                       VORGABE_MOTOR, Entwurf, umgebungen_da)
 from .protocol import MODES, read_frame
+from .transkription import transkribieren, umgebung_da as transkription_da
 from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
                      default_voices_dir, load_voice)
 
@@ -63,6 +64,8 @@ DAUER_MIN_S, DAUER_MAX_S = 3.0, 60.0
 DAUER_ZIEL = (8.0, 15.0)
 AUFNAHME_DECKEL_S = 90.0    # Notbremse gegen eine vergessene laufende Aufnahme
 AUFNEHMER = "pw-record"     # als Name gehalten, damit Tests ein Stubprogramm einhaengen koennen
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+UPLOAD_ENDUNGEN = {".mp3", ".wav"}
 WIEDERGABE_ENDE_TIMEOUT_S = 5.0  # pw-cat darf nach dem letzten PCM-Block kurz leerlaufen
 WIEDERGABE_KILL_TIMEOUT_S = 1.0  # ein gestoppter Player darf die GUI nie festhalten
 # 192 kbps ist fuer eine Monospur reichlich und die Datei bleibt klein; die
@@ -380,6 +383,7 @@ class Aufnahme:
         self.meldung: object | None = None  # stderr des Aufnehmers, erst nach dessen Ende gelesen
         self.abbruch = ""                   # Grund, falls der Aufnehmer von selbst ging
         self.force = False
+        self.wird_bearbeitet = False
 
     def starten(self, name: str, force: bool) -> None:
         if not VOICE_RE.fullmatch(name):
@@ -502,6 +506,87 @@ class Aufnahme:
             self.letzte = ergebnis
         return ergebnis
 
+    def hochladen(self, name: str, dateiname: str, daten: bytes, force: bool) -> dict:
+        """Nimmt MP3/WAV aus dem Browser an und bereitet sie wie eine Aufnahme vor."""
+        if not VOICE_RE.fullmatch(name):
+            raise ValueError("Name nur a-z, 0-9, _ und -, max. 32 Zeichen, Anfang alphanumerisch")
+        endung = Path(dateiname).suffix.lower()
+        if endung not in UPLOAD_ENDUNGEN:
+            raise ValueError("Nur MP3- oder WAV-Dateien sind erlaubt")
+        if not daten:
+            raise ValueError("Die Audiodatei ist leer")
+        if len(daten) > MAX_UPLOAD_BYTES:
+            raise ValueError(f"Die Audiodatei ist groesser als {MAX_UPLOAD_BYTES // 1024 // 1024} MiB")
+        root = default_voices_dir()
+        zielprofil = root / name
+        if zielprofil.exists() and not force:
+            raise ValueError(f"{name!r} existiert schon -- Ueberschreiben bestaetigen")
+        with self.lock:
+            if self.prozess is not None:
+                raise RuntimeError("erst die laufende Aufnahme stoppen")
+            if self.wird_bearbeitet:
+                raise RuntimeError("eine Audiodatei wird bereits verarbeitet")
+            if self.letzte is not None:
+                raise RuntimeError("vorherige Aufnahme zuerst behalten oder verwerfen")
+            self.wird_bearbeitet = True
+        profil = quelle = wav = None
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root.chmod(0o700)
+            profil = Path(tempfile.mkdtemp(prefix=f".{name}.upload.", dir=root))
+            profil.chmod(0o700)
+            quelle = profil / f"upload{endung}"
+            quelle.write_bytes(daten)
+            quelle.chmod(0o600)
+            wav = profil / "ref.wav.tmp"
+            wandlung = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", str(quelle), "-ac", "1",
+                 "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", str(wav)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if wandlung.returncode != 0:
+                grund = wandlung.stderr.decode(errors="replace").strip()
+                raise ValueError(f"ffmpeg konnte die Audiodatei nicht lesen: {grund}")
+            wav.chmod(0o600)
+            if wav.stat().st_size > MAX_WAV_BYTES:
+                raise ValueError("Die umgewandelte Aufnahme ist zu gross")
+            dauer = _dauer(wav)
+            brauchbar, hinweis = dauer_urteil(dauer)
+            ergebnis = {"name": name, "dauer_s": round(dauer, 1),
+                        "brauchbar": brauchbar, "hinweis": hinweis,
+                        "quelle": "upload"}
+            quelle.unlink(missing_ok=True)
+            with self.lock:
+                self.name, self.profil, self.datei, self.force = name, profil, wav, force
+                self.letzte = ergebnis
+                self.abbruch = ""
+            return ergebnis
+        except (OSError, wave.Error, subprocess.SubprocessError) as fehler:
+            raise ValueError(f"Audiodatei unbrauchbar: {fehler}") from None
+        finally:
+            with self.lock:
+                self.wird_bearbeitet = False
+                behalten = self.letzte is not None
+            if not behalten:
+                if quelle is not None:
+                    quelle.unlink(missing_ok=True)
+                self._aufraeumen(wav, profil)
+
+    def transkribieren(self) -> dict:
+        with self.lock:
+            if self.prozess is not None:
+                raise RuntimeError("erst die laufende Aufnahme stoppen")
+            if self.letzte is None or self.datei is None:
+                raise RuntimeError("keine fertige Aufnahme vorhanden")
+            if self.wird_bearbeitet:
+                raise RuntimeError("die Audiodatei wird bereits verarbeitet")
+            self.wird_bearbeitet = True
+            datei = self.datei
+        try:
+            return transkribieren(datei)
+        finally:
+            with self.lock:
+                self.wird_bearbeitet = False
+
     def behalten(self, text: str) -> dict:
         text = " ".join(text.split())
         if not text:
@@ -509,6 +594,8 @@ class Aufnahme:
         if len(text.encode()) > MAX_TEXT_BYTES:
             raise ValueError("Referenztext ist zu lang")
         with self.lock:
+            if self.wird_bearbeitet:
+                raise RuntimeError("die Audiodatei wird noch verarbeitet")
             if self.letzte is None or self.profil is None or self.datei is None:
                 raise RuntimeError("keine fertige Aufnahme vorhanden")
             if not self.letzte["brauchbar"]:
@@ -533,6 +620,8 @@ class Aufnahme:
         with self.lock:
             if self.prozess is not None:
                 raise RuntimeError("erst die laufende Aufnahme stoppen")
+            if self.wird_bearbeitet:
+                raise RuntimeError("die Audiodatei wird noch verarbeitet")
             profil, datei = self.profil, self.datei
             self.letzte = None
             self.abbruch = ""
@@ -1254,6 +1343,9 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         pfad = self.path.split("?", 1)[0]
         if not self._erlaubt():
             return
+        if pfad == "/api/record/upload":
+            self._upload()
+            return
         try:
             wunsch = self._koerper()
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
@@ -1309,6 +1401,37 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._json(500, {"message": f"Dateisystem: {fehler}"})
             return
         self._json(200, {"ok": True, "removed": entfernt})
+
+    def _upload(self) -> None:
+        from urllib.parse import parse_qs, urlsplit
+        try:
+            laenge = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            self._json(400, {"message": "Content-Length ist ungueltig"})
+            return
+        if laenge <= 0:
+            self._json(400, {"message": "Audiodatei fehlt"})
+            return
+        if laenge > MAX_UPLOAD_BYTES:
+            self._json(413, {"message": f"Audiodatei ist groesser als "
+                                        f"{MAX_UPLOAD_BYTES // 1024 // 1024} MiB"})
+            return
+        abfrage = parse_qs(urlsplit(self.path).query)
+        name = abfrage.get("name", [""])[0]
+        dateiname = abfrage.get("filename", [""])[0]
+        force = abfrage.get("force", ["0"])[0] == "1"
+        try:
+            if self.sitzung.auftrag["running"]:
+                raise RuntimeError("es laeuft ein Sprechauftrag")
+            ergebnis = self.sitzung.aufnahme.hochladen(
+                name, dateiname, self.rfile.read(laenge), force)
+        except ValueError as fehler:
+            self._json(400, {"message": str(fehler)})
+            return
+        except RuntimeError as fehler:
+            self._json(409, {"message": str(fehler)})
+            return
+        self._json(200, {"ok": True, **ergebnis})
 
     def _export_bestaetigen(self, wunsch: dict) -> None:
         try:
@@ -1396,6 +1519,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, **aufnahme.stoppen()})
             elif pfad == "/api/record/keep":
                 self._json(200, {"ok": True, **aufnahme.behalten(self._feld_text(wunsch, "text"))})
+            elif pfad == "/api/record/transcribe":
+                self._json(200, {"ok": True, **aufnahme.transkribieren()})
             elif pfad == "/api/record/discard":
                 aufnahme.verwerfen()
                 self._json(200, {"ok": True})
@@ -1413,7 +1538,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._json(400, {"message": str(fehler)})
             return
         except RuntimeError as fehler:
-            self._json(409, {"message": str(fehler)})
+            status = 503 if "setup --transkription" in str(fehler) else 409
+            self._json(status, {"message": str(fehler)})
             return
         except OSError as fehler:
             self._json(500, {"message": f"Dateisystem: {fehler}"})
@@ -1435,7 +1561,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         self._json(200, {"voices": self.sitzung.stimmen(frisch), "service": self.sitzung.dienst(),
                          "job": auftrag, "levels": neue, "cursor": marke,
                          "record": self.sitzung.aufnahme.stand(),
-                         "mp3": mp3_kodierer() is not None})
+                         "mp3": mp3_kodierer() is not None,
+                         "transkription": transkription_da()})
 
     def _sprechen(self, wunsch: dict) -> None:
         text = wunsch.get("text")
@@ -1546,6 +1673,7 @@ def _fenster(url: str) -> int:
         return subprocess.run([programm, f"--app={url}", f"--user-data-dir={profil}",
                                "--window-size=1280,860", "--class=Mimic",
                                "--no-first-run", "--no-default-browser-check",
+                               "--force-dark-mode", "--enable-features=WebUIDarkMode",
                                "--disable-features=Translate,MediaRouter"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
     finally:

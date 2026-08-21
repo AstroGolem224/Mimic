@@ -922,6 +922,60 @@ class AufnahmeTests(unittest.TestCase):
                     self._restore_env(saved)
 
     @staticmethod
+    def _wav_bytes(sekunden: int = 4) -> bytes:
+        import wave
+
+        puffer = io.BytesIO()
+        with wave.open(puffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(8_000)
+            wav.writeframes(bytes(8_000 * 2 * sekunden))
+        return puffer.getvalue()
+
+    def test_wav_upload_wird_vorgehoert_transkribiert_und_als_profil_behalten(self):
+        from mimic import gui
+        from mimic.voices import close_voice, load_voice
+
+        with tempfile.TemporaryDirectory() as ordner:
+            heim = Path(ordner)
+            saved = {"MIMIC_VOICES_DIR": os.environ.get("MIMIC_VOICES_DIR")}
+            os.environ["MIMIC_VOICES_DIR"] = str(heim / "voices")
+            try:
+                aufnahme = gui.Aufnahme()
+                stand = aufnahme.hochladen("uploadprobe", "stimme.WAV",
+                                            self._wav_bytes(), force=False)
+                self.assertTrue(stand["brauchbar"])
+                self.assertEqual("upload", stand["quelle"])
+                with mock.patch.object(gui, "transkribieren", return_value={
+                        "text": "Das ist der erkannte Wortlaut.", "sprache": "de",
+                        "wahrscheinlichkeit": 0.99}):
+                    transkript = aufnahme.transkribieren()
+                self.assertEqual("Das ist der erkannte Wortlaut.", transkript["text"])
+                self.assertEqual("uploadprobe", aufnahme.behalten(transkript["text"])["name"])
+                profil = load_voice("uploadprobe", mit_gain=False)
+                try:
+                    self.assertEqual(transkript["text"], profil.prompt_text)
+                finally:
+                    close_voice(profil)
+            finally:
+                self._restore_env(saved)
+
+    def test_upload_lehnt_fremde_endung_ab_ohne_bauruine(self):
+        from mimic import gui
+
+        with tempfile.TemporaryDirectory() as ordner:
+            heim = Path(ordner)
+            saved = {"MIMIC_VOICES_DIR": os.environ.get("MIMIC_VOICES_DIR")}
+            os.environ["MIMIC_VOICES_DIR"] = str(heim / "voices")
+            try:
+                with self.assertRaisesRegex(ValueError, "MP3- oder WAV"):
+                    gui.Aufnahme().hochladen("uploadprobe", "stimme.flac", b"audio", False)
+                self.assertFalse((heim / "voices").exists())
+            finally:
+                self._restore_env(saved)
+
+    @staticmethod
     def _restore_env(saved):
         for key, value in saved.items():
             if value is None:

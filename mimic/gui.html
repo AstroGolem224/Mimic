@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d1216">
 <title>Mimic</title>
 <style>
 /* ═══ VITRINE ════════════════════════════════════════════════════════════
@@ -513,6 +515,10 @@ textarea::selection{background:rgba(168,120,255,.34)}
 .blatt-s.aus{display:none}
 
 .feldgruppe{display:flex;flex-direction:column;gap:6px}
+.datei-upload{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.datei-upload .hinweis{flex:1;min-width:12rem;overflow-wrap:anywhere}
+.datei-option{display:flex;align-items:center;gap:8px;color:var(--text-leise);font-size:12px}
+.datei-option input{accent-color:var(--cyan)}
 .feldgruppe > u,.feldgruppe > label,.feldgruppe > .feld-label{
   text-decoration:none;font-family:"Fira Sans Compressed","Fira Sans",sans-serif;
   font-size:9.5px;letter-spacing:.24em;text-transform:uppercase;color:var(--text-still);
@@ -831,7 +837,7 @@ Doppelklick setzt auf 0 zurueck">
     <button class="knopf zu" id="bZu" title="Schließen (Esc)" aria-label="Stimmenwerkstatt schließen">✕</button>
   </div>
   <div class="reiter" id="reiter" role="tablist" aria-label="Bereich der Stimmenwerkstatt">
-    <button id="tabNeu" data-blatt="neu" class="an" role="tab" aria-selected="true" aria-controls="blattNeu">Neu aufnehmen</button>
+    <button id="tabNeu" data-blatt="neu" class="an" role="tab" aria-selected="true" aria-controls="blattNeu">Aufnehmen / Datei</button>
     <button id="tabEntwerfen" data-blatt="entwerfen" role="tab" aria-selected="false" aria-controls="blattEntwerfen" tabindex="-1">Entwerfen</button>
     <button id="tabVerwalten" data-blatt="verwalten" role="tab" aria-selected="false" aria-controls="blattVerwalten" tabindex="-1">Verwalten</button>
   </div>
@@ -857,6 +863,19 @@ Doppelklick setzt auf 0 zurueck">
         <span id="kSchaetzung">~0 s bei normalem Tempo</span></div>
     </div>
 
+    <div class="feldgruppe">
+      <span class="feld-label" id="dateiLabel">Vorhandene Aufnahme klonen</span>
+      <div class="datei-upload">
+        <input type="file" id="kDatei" accept=".mp3,.wav,audio/mpeg,audio/wav" hidden>
+        <button class="knopf" id="bDatei" aria-describedby="kDateiStand">MP3/WAV auswählen</button>
+        <span class="hinweis" id="kDateiStand">3–60 s, maximal 64 MiB. Die Datei bleibt lokal.</span>
+      </div>
+      <label class="datei-option" for="kAutoTranskript">
+        <input type="checkbox" id="kAutoTranskript" checked>
+        Gesprochenen Text nach dem Upload automatisch transkribieren
+      </label>
+    </div>
+
     <div class="pult">
       <button class="knopf rec" id="bRec" title="Aufnahme starten" aria-label="Aufnahme starten"><i aria-hidden="true"></i></button>
       <div class="uhr">
@@ -877,6 +896,7 @@ Doppelklick setzt auf 0 zurueck">
 
     <div class="reihe" id="kEntscheid" style="display:none;gap:7px">
       <button class="knopf" id="bBehalten">Behalten</button>
+      <button class="knopf" id="bTranskribieren">Transkribieren</button>
       <button class="knopf" id="bNochmal">Nochmal</button>
       <button class="knopf gefahr" id="bVerwerfen" style="margin-left:0">Verwerfen</button>
     </div>
@@ -960,7 +980,7 @@ function serverTot(){
   $("sSub").textContent = "kein Neuladen möglich";
   for(const id of ["bSpiel", "bSpeichern", "bStopp", "bWarm", "bNeu", "bKlon",
                    "bEntwurfAuf", "bRec", "bBehalten", "bNochmal", "bVerwerfen",
-                   "bProbe", "bEntwerfen", "bEntwurfStop"])
+                   "bProbe", "bDatei", "bTranskribieren", "bEntwerfen", "bEntwurfStop"])
     $(id).disabled = true;
 }
 
@@ -1322,6 +1342,7 @@ async function starten(datei){
   zielGriff = null;
   if(datei && !await zielWaehlen()) return;
   pegel = []; zeichneWelle();
+  marke = 0;
   sperre(true);
   setzeJobStatus("wird vorbereitet…");
   try{
@@ -1437,6 +1458,7 @@ function zeit(s){
 
 let marke = 0, letzteStimmen = "", tickLaeuft = false, frischVorgemerkt = false;
 let tickVersprechen = Promise.resolve(), exportWirdZugestellt = false;
+let transkriptionBereit = false;
 
 async function tickEinmal(neuLesen){
   let wert;
@@ -1448,9 +1470,14 @@ async function tickEinmal(neuLesen){
     return;
   }
 
+  // Nur die Pegel-Anzeige braucht den Frischeschutz -- sie haengt Werte an und
+  // vertraegt keine veraltete/doppelte Antwort. Job-Status, Geraetezustand und
+  // Stimmenliste sind volle Momentaufnahmen und duerfen aus JEDER Antwort
+  // uebernommen werden, sonst haelt eine einzige spaet eintreffende Antwort
+  // (unterwegs seit vor einem Auftragsneustart) die Anzeige fuer immer fest.
   const antwortCursor = Number(wert.cursor ?? marke);
-  if(Number.isFinite(antwortCursor) && antwortCursor < marke) return;
-  if(Number.isFinite(antwortCursor)) marke = Math.max(marke, antwortCursor);
+  const veraltet = Number.isFinite(antwortCursor) && antwortCursor < marke;
+  if(!veraltet && Number.isFinite(antwortCursor)) marke = Math.max(marke, antwortCursor);
 
   const schlussel = wert.voices.join("\\u0000");
   if(schlussel !== letzteStimmen){ letzteStimmen = schlussel; stimmen = wert.voices; zeichneStimmen(); }
@@ -1480,6 +1507,13 @@ async function tickEinmal(neuLesen){
   $("tUp").textContent = zeit(d.uptime_s);
 
   if(wert.record) zeigeAufnahme(wert.record);
+  transkriptionBereit = wert.transkription === true;
+  $("kAutoTranskript").disabled = !transkriptionBereit;
+  $("bTranskribieren").disabled = !transkriptionBereit || !letzteAufnahme;
+  const sttTitel = transkriptionBereit ? "Gesprochenen Wortlaut lokal erkennen"
+    : "Einmal im Terminal: mimic setup --transkription";
+  $("kAutoTranskript").title = sttTitel;
+  $("bTranskribieren").title = sttTitel;
   const mp3Knopf = $("format").querySelector('[data-format=mp3]');
   if(wert.mp3 === false && !mp3Knopf.disabled){
     mp3Knopf.disabled = true;
@@ -1488,7 +1522,7 @@ async function tickEinmal(neuLesen){
   }
 
   const auftrag = wert.job || {};
-  if(wert.levels && wert.levels.length){ pegel.push(...wert.levels); zeichneWelle(); }
+  if(!veraltet && wert.levels && wert.levels.length){ pegel.push(...wert.levels); zeichneWelle(); }
 
   if(auftrag.running){
     if(!laeuft) sperre(true);
@@ -1836,6 +1870,81 @@ function zaehle(){
 }
 $("kText").addEventListener("input", zaehle);
 
+$("bDatei").onclick = () => $("kDatei").click();
+$("kDatei").onchange = async () => {
+  const datei = $("kDatei").files[0];
+  if(!datei) return;
+  const name = $("kName").value.trim();
+  if(!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(name)){
+    $("kDateiStand").className = "hinweis schlimm";
+    $("kDateiStand").textContent = "Zuerst einen gültigen Profilnamen angeben.";
+    $("kDatei").value = "";
+    $("kName").focus();
+    return;
+  }
+  if(!/\.(mp3|wav)$/i.test(datei.name)){
+    $("kDateiStand").className = "hinweis schlimm";
+    $("kDateiStand").textContent = "Nur MP3- oder WAV-Dateien sind erlaubt.";
+    $("kDatei").value = "";
+    return;
+  }
+  if(datei.size > 64 * 1024 * 1024){
+    $("kDateiStand").className = "hinweis schlimm";
+    $("kDateiStand").textContent = "Die Datei ist größer als 64 MiB.";
+    $("kDatei").value = "";
+    return;
+  }
+  $("bDatei").disabled = true;
+  $("kDateiStand").className = "hinweis";
+  $("kDateiStand").textContent = `${datei.name} wird analysiert…`;
+  try{
+    if(letzteAufnahme) await api("/api/record/discard", {});
+    const vorhanden = inventar.some(v => v.name === name);
+    const abfrage = new URLSearchParams({name, filename: datei.name, force: vorhanden ? "1" : "0"});
+    const antwort = await fetch("/api/record/upload?" + abfrage, {
+      method: "POST", headers: {"X-Mimic-Token": T, "Content-Type": datei.type || "application/octet-stream"},
+      body: datei,
+    });
+    if(!antwort.ok){
+      let meldung = "HTTP " + antwort.status;
+      try{ meldung = (await antwort.json()).message || meldung; }catch(_){ }
+      throw new Error(meldung);
+    }
+    const wert = await antwort.json();
+    $("kDateiStand").className = "hinweis gut";
+    $("kDateiStand").textContent = `${datei.name} · ${wert.dauer_s.toFixed(1).replace(".", ",")} s · bereit`;
+    await tick(true);
+    if($("kAutoTranskript").checked && transkriptionBereit) await transkribiereAufnahme();
+  }catch(fehler){
+    $("kDateiStand").className = "hinweis schlimm";
+    $("kDateiStand").textContent = "" + fehler;
+  }finally{
+    $("bDatei").disabled = false;
+    $("kDatei").value = "";
+  }
+};
+
+async function transkribiereAufnahme(){
+  const knopf = $("bTranskribieren");
+  knopf.disabled = true;
+  $("kDateiStand").className = "hinweis";
+  $("kDateiStand").textContent = "Whisper transkribiert lokal…";
+  try{
+    const wert = await api("/api/record/transcribe", {});
+    $("kText").value = wert.text;
+    zaehle();
+    const sprache = wert.sprache ? ` · Sprache ${wert.sprache}` : "";
+    $("kDateiStand").className = "hinweis gut";
+    $("kDateiStand").textContent = `Transkript übernommen${sprache}. Bitte kurz prüfen.`;
+  }catch(fehler){
+    $("kDateiStand").className = "hinweis schlimm";
+    $("kDateiStand").textContent = "" + fehler;
+  }finally{
+    knopf.disabled = !transkriptionBereit || !letzteAufnahme;
+  }
+}
+$("bTranskribieren").onclick = transkribiereAufnahme;
+
 $("bRec").onclick = async () => {
   const knopf = $("bRec");
   if(knopf.classList.contains("laeuft")){
@@ -1862,6 +1971,7 @@ function aufnahmeAnzeigeLeeren(){
   letzteAufnahme = null;
   $("kAudio").style.display = "none";
   $("kEntscheid").style.display = "none";
+  $("bTranskribieren").disabled = true;
   $("kUrteil").className = "hinweis";
   $("kUrteil").textContent = "Ziel 8–15 s. Ruhiger Raum, ~20 cm Abstand, am Stück durchsprechen.";
 }
@@ -1873,7 +1983,8 @@ async function aufnahmeVerwerfen(){
 }
 $("bNochmal").onclick = async () => {
   $("bNochmal").disabled = true;
-  if(await aufnahmeVerwerfen()) $("bRec").click();
+  const warUpload = letzteAufnahme && letzteAufnahme.quelle === "upload";
+  if(await aufnahmeVerwerfen()) (warUpload ? $("bDatei") : $("bRec")).click();
   $("bNochmal").disabled = false;
 };
 $("bVerwerfen").onclick = aufnahmeVerwerfen;
@@ -1949,6 +2060,7 @@ function zeigeAufnahme(stand){
     spieler.src = "/api/take?t=" + encodeURIComponent(T) + "&v=" + fertig.dauer_s;
     $("kEntscheid").style.display = "flex";
     $("bBehalten").disabled = !fertig.brauchbar;
+    $("bTranskribieren").disabled = !transkriptionBereit;
   }
 }
 
