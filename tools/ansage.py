@@ -50,7 +50,13 @@ from pathlib import Path
 
 # 0 = ungekuerzt. Die Ansage soll den ganzen Fliesstext sprechen, nicht seinen
 # Anfang; wer sie kuerzer will, setzt hier eine Zeichenzahl.
-GRENZE = 0
+# Auf 600 gesetzt am 2026-08-14. Gemessen: ungekuerzte Ansagen ergaben
+# Stuecke von 897 + 804 + 428 Zeichen zu je 63--79 s -- drei Minuten fuer
+# EINE Antwort. Vier bis sechs Sitzungen teilen sich einen Sprecher, und
+# jeder neue Stop verdraengt die laufende Ansage: 6 Verdraengungen und 6
+# Abbrueche an einem Tag. Bei 600 Zeichen dauert eine Ansage rund 45 s und
+# ueberlebt die naechste Antwort.
+GRENZE = 600
 # Der Dienst nimmt 1000 Zeichen je Anfrage (frontend.MAX_TEXT_CHARS). Laengeres
 # wird an Satzgrenzen zerlegt und nacheinander gesprochen.
 STUECK_ZEICHEN = 900
@@ -390,10 +396,10 @@ def zusammenfassen(text: str, grenze: int = GRENZE) -> str:
     """Aus einer Markdown-Antwort einen sprechbaren Satz machen.
 
     Was keine Stimme woertlich vorlesen kann, wird uebersetzt statt gestrichen:
-    Codebloecke und Tabellen zu einem Satz ueber ihren Inhalt, Pfade und
-    Bezeichner in die Form, in der ein Mensch sie vorliest, Adressen auf ihre
-    Domain, mehrteilige Befehle auf die blosse Ansage. Gestrichen wird nur
-    noch, was auch beschrieben nichts hergibt -- Hashes und UUIDs.
+    Codebloecke und Tabellen zu einem Satz ueber ihren Inhalt, Pfade in die
+    Form, in der ein Mensch sie vorliest, Adressen auf ihre Domain. Gestrichen
+    wird nur noch, was auch beschrieben nichts hergibt -- Bezeichner und
+    Befehle in Backticks, die kein Pfad sind.
     """
     text = _CODEBLOCK.sub(lambda t: blockbeschreibung(t.group(0)), text)
     text = _TABELLE.sub(lambda t: _tabellenbeschreibung(t.group(0)), text)
@@ -535,14 +541,11 @@ def _laufzeit() -> Path:
 
 def _sperre():
     """Exklusive Sperre auf die Audioausgabe, oder None, wenn schon jemand spricht."""
-    griff = None
     try:
         griff = open(_laufzeit() / "mimic-ansage.lock", "w")
         fcntl.flock(griff, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return griff
     except OSError:
-        if griff is not None:
-            griff.close()
         return None
 
 
@@ -714,22 +717,12 @@ def sprechen(text: str, sitzung: str = "", griff=None) -> int:
     # diese Ansage.
     if abgeschaltet():
         _protokoll("abgeschaltet", text, sitzung=sitzung or "-")
-        if griff is not None:
-            griff.close()
         return 0
     if griff is None:
         griff = _sperre_holen(sitzung)
     if griff is None:
         _protokoll("verworfen", text, grund="sperre")
         return 0
-    try:
-        return _sprechen_belegt(text, sitzung)
-    finally:
-        griff.close()
-
-
-def _sprechen_belegt(text: str, sitzung: str) -> int:
-    """Sprechen, waehrend der aufrufende Wrapper die Audiosperre sicher haelt."""
     _merke_pid(sitzung)
     _protokoll("spricht", text, sitzung=sitzung or "-")
 
@@ -749,7 +742,13 @@ def _sprechen_belegt(text: str, sitzung: str) -> int:
     for nummer, stueck in enumerate(stuecke, 1):
         begonnen = time.monotonic()
         try:
-            lauf = subprocess.run([programm, "say", stueck, "--voice", gewaehlt],
+            # --mode mf statt der CLI-Vorgabe soar: seit 2026-08-17 spricht auch das
+            # Handy ueber Mimic, und das braucht zwingend mf (soar misst RTF 1,159,
+            # also langsamer als Echtzeit -- der AudioTrack liefe leer). Der Worker
+            # haelt nur EINEN Modus; jeder Wechsel ist ein Neustart von 8--9 s und
+            # wirft die laufende Anfrage mit `mode_restart` ab. Gemessen: 4 Neustarts
+            # in 40 Minuten, TTFA am Handy dadurch 12 s statt 200 ms.
+            lauf = subprocess.run([programm, "say", stueck, "--voice", gewaehlt, "--mode", "mf"],
                                   timeout=SPRECH_FRIST_S,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         except (OSError, subprocess.SubprocessError) as fehler:

@@ -226,9 +226,9 @@ class Zusammenfassen(unittest.TestCase):
                          "Skill steht: ein Link auf github punkt com ist offen.")
 
     def test_ungekuerzt_kommt_alles_durch(self):
-        """GRENZE=0 ist der Normalfall: gesprochen wird der ganze Fliesstext."""
+        """grenze=0 schaltet die Kuerzung ab: gesprochen wird der ganze Fliesstext."""
         lang = "Der Kern der Sache ist ziemlich verwickelt " + "und geht noch weiter " * 30
-        ergebnis = ansage.zusammenfassen(f"Gemerged. {lang}.")
+        ergebnis = ansage.zusammenfassen(f"Gemerged. {lang}.", grenze=0)
         self.assertTrue(ergebnis.startswith("Gemerged. Der Kern der Sache"), ergebnis)
         self.assertTrue(ergebnis.endswith("weiter."), ergebnis)
 
