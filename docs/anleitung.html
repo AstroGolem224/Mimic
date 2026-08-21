@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d1216">
+<title>Mimic — Dokumentation</title>
+<style>
+:root{
+  --tinte:#06090b;
+  --anthrazit:#0d1216;
+  --anthrazit-hoch:#151c22;
+  --glas:rgba(23,32,39,.52);
+  --glas-tief:rgba(14,20,25,.66);
+  --rand:rgba(150,225,230,.11);
+  --rand-hell:rgba(180,240,245,.22);
+
+  --cyan:#2fe3d3;
+  --cyan-matt:#1a9c93;
+  --cyan-tief:#07343a;
+  --violett:#a878ff;
+  --violett-matt:#7a4fd6;
+  --violett-tief:#211636;
+  --bernstein:#ffb45c;
+  --koralle:#ff5f6d;
+
+  --text:#dcebed;
+  --text-leise:#7e959b;
+  --text-still:#82979d;
+
+  --erhaben:-5px -5px 13px rgba(255,255,255,.030), 7px 9px 22px rgba(0,0,0,.58);
+  --vertieft:inset 5px 5px 13px rgba(0,0,0,.60), inset -3px -3px 9px rgba(255,255,255,.028);
+  --r:16px;
+  --takt:cubic-bezier(.22,.68,.36,1);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;
+  background:
+    radial-gradient(1100px 700px at 15% -10%, rgba(47,227,211,.07), transparent 60%),
+    radial-gradient(900px 600px at 110% 10%, rgba(168,120,255,.07), transparent 55%),
+    var(--tinte);
+  color:var(--text);
+  font:15px/1.65 "Segoe UI", system-ui, -apple-system, sans-serif;
+  display:grid;
+  grid-template-columns:280px 1fr;
+  min-height:100vh;
+}
+h1,h2,h3,h4{font-family:inherit;font-weight:700;letter-spacing:.02em;color:var(--text)}
+h1{font-size:28px}
+h2{
+  font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--cyan);
+  margin:0 0 18px;padding-bottom:10px;border-bottom:1px solid var(--rand);
+  display:flex;align-items:center;gap:10px;
+}
+h2::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--rand),transparent)}
+h3{font-size:17px;color:var(--text);margin:28px 0 10px}
+h4{font-size:14px;color:var(--violett);margin:20px 0 8px;text-transform:uppercase;letter-spacing:.08em;font-size:11px}
+p{margin:0 0 12px;color:var(--text)}
+a{color:var(--cyan)}
+code{
+  background:rgba(0,0,0,.4);border:1px solid var(--rand);border-radius:5px;
+  padding:1px 6px;font:13px/1.4 "JetBrains Mono","Cascadia Code",monospace;color:#a8f0e8;
+}
+pre{
+  background:linear-gradient(158deg,var(--glas),var(--glas-tief));
+  border:1px solid var(--rand);border-radius:var(--r);
+  box-shadow:var(--vertieft);
+  padding:16px 18px;overflow-x:auto;margin:0 0 16px;
+}
+pre code{background:none;border:none;padding:0;color:#c9e8e4}
+
+/* ── Navigation ─────────────────────────────────────────── */
+nav{
+  position:sticky;top:0;height:100vh;overflow-y:auto;
+  padding:26px 18px;border-right:1px solid var(--rand);
+  background:linear-gradient(180deg,rgba(10,15,18,.7),rgba(6,9,11,.9));
+  backdrop-filter:blur(14px);
+}
+.logo{display:flex;align-items:baseline;gap:8px;margin-bottom:4px}
+.logo b{
+  font-size:22px;letter-spacing:.14em;
+  background:linear-gradient(102deg,var(--cyan) 0%,#8fe9ff 34%,var(--violett) 82%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.logo span{font-size:10px;letter-spacing:.14em;color:var(--text-leise);text-transform:uppercase}
+nav .unter{font-size:12px;color:var(--text-leise);margin:0 0 22px}
+nav ul{list-style:none;margin:0;padding:0}
+nav li a{
+  display:block;padding:6px 10px;margin:1px 0;border-radius:8px;
+  color:var(--text-still);text-decoration:none;font-size:13px;
+  border-left:2px solid transparent;transition:all .15s var(--takt);
+}
+nav li a:hover{color:var(--text);background:rgba(47,227,211,.06)}
+nav .gruppe{
+  font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--violett);
+  margin:18px 0 4px;padding:0 10px;
+}
+nav .gruppe:first-of-type{margin-top:0}
+
+/* ── Inhalt ─────────────────────────────────────────────── */
+main{padding:48px 56px 120px;max-width:920px}
+header.titel{margin-bottom:44px}
+header.titel .kicker{
+  font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--text-leise);
+  margin-bottom:10px;
+}
+header.titel p{font-size:17px;color:var(--text-still);max-width:640px}
+section{margin-bottom:56px;scroll-margin-top:20px}
+
+.karte{
+  background:linear-gradient(158deg,var(--glas),var(--glas-tief));
+  border:1px solid var(--rand);border-radius:var(--r);
+  box-shadow:var(--erhaben);padding:18px 20px;margin:0 0 16px;
+}
+.karte.warnung{border-color:rgba(255,180,92,.35)}
+.karte.warnung::before{content:"⚠ ";color:var(--bernstein)}
+.karte.tipp{border-color:rgba(47,227,211,.3)}
+.karte.tipp::before{content:"💡 ";}
+
+figure{margin:0 0 22px}
+figure img{
+  width:100%;display:block;border-radius:12px;
+  border:1px solid var(--rand-hell);box-shadow:var(--erhaben);
+}
+figcaption{font-size:12px;color:var(--text-leise);margin-top:8px;text-align:center}
+
+table{width:100%;border-collapse:collapse;margin:0 0 18px;font-size:13.5px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--rand)}
+th{color:var(--cyan);font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600}
+tr:hover td{background:rgba(47,227,211,.03)}
+td code{white-space:nowrap}
+
+.tag{
+  display:inline-block;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 8px;border-radius:20px;border:1px solid var(--rand-hell);color:var(--text-still);
+  margin-right:6px;
+}
+.tag.cyan{color:var(--cyan);border-color:var(--cyan-matt);background:rgba(47,227,211,.08)}
+.tag.violett{color:var(--violett);border-color:var(--violett-matt);background:rgba(168,120,255,.08)}
+
+.diagramm{
+  font-family:"JetBrains Mono","Cascadia Code",monospace;font-size:12.5px;line-height:1.7;
+  background:rgba(0,0,0,.35);border:1px solid var(--rand);border-radius:var(--r);
+  padding:20px 24px;overflow-x:auto;box-shadow:var(--vertieft);color:var(--text-still);
+  white-space:pre;margin:0 0 18px;
+}
+.diagramm b{color:var(--cyan);font-weight:600}
+.diagramm i{color:var(--violett);font-style:normal;font-weight:600}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:800px){.grid2{grid-template-columns:1fr}}
+
+footer{
+  border-top:1px solid var(--rand);padding-top:20px;margin-top:60px;
+  font-size:12px;color:var(--text-leise);
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo"><b>MIMIC</b><span>Doku</span></div>
+  <p class="unter">Self-hosted Voice-Cloning-TTS<br>Stand 2026-08-21</p>
+
+  <div class="gruppe">Einstieg</div>
+  <ul>
+    <li><a href="#ueberblick">Überblick</a></li>
+    <li><a href="#installation">Installation</a></li>
+  </ul>
+
+  <div class="gruppe">Bedienung</div>
+  <ul>
+    <li><a href="#fenster">Das Fenster</a></li>
+    <li><a href="#klangregler">Klangregler</a></li>
+    <li><a href="#werkstatt">Stimmenwerkstatt</a></li>
+    <li><a href="#cli">Kommandozeile</a></li>
+  </ul>
+
+  <div class="gruppe">Stimmen</div>
+  <ul>
+    <li><a href="#profile">Stimmprofile</a></li>
+    <li><a href="#einstellungen">Stimmeinstellungen</a></li>
+    <li><a href="#entwerfen">Stimmen entwerfen</a></li>
+    <li><a href="#eindeutschen">Fremde Stimmen eindeutschen</a></li>
+    <li><a href="#aussprache">Aussprache</a></li>
+  </ul>
+
+  <div class="gruppe">Architektur</div>
+  <ul>
+    <li><a href="#architektur">Dienste &amp; Protokoll</a></li>
+    <li><a href="#worker">GPU-Worker</a></li>
+    <li><a href="#systemd">systemd-Betrieb</a></li>
+    <li><a href="#tests">Tests</a></li>
+  </ul>
+
+  <div class="gruppe">Sonstiges</div>
+  <ul>
+    <li><a href="#ansage">Ansage</a></li>
+    <li><a href="#fehlerbehebung">Fehlerbehebung</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<header class="titel">
+  <div class="kicker">Vollständige Dokumentation &amp; Anleitung</div>
+  <h1>Mimic</h1>
+  <p>Selbst gehostetes Voice-Cloning-TTS auf Basis von
+    <a href="https://github.com/rednote-hilab/dots.tts" target="_blank">dots.tts</a> (Apache-2.0).
+    Läuft vollständig lokal auf der eigenen GPU, spricht mit geklonten Stimmen und
+    lässt sich per Fenster, Kommandozeile oder HTTP-Dienst ansteuern.</p>
+</header>
+
+<!-- ═══════════════════════ ÜBERBLICK ═══════════════════════ -->
+<section id="ueberblick">
+  <h2>Überblick</h2>
+  <p>Mimic besteht aus einem leichten <b>Frontend</b>-Dienst (validiert, immer erreichbar)
+    und einem <b>GPU-Worker</b> (besitzt exklusiv die Grafikkarte, lädt bei Bedarf nach
+    und beendet sich nach Leerlauf von selbst). Beide werden über Unix-Sockets von
+    systemd bei Bedarf gestartet — im Ruhezustand läuft kein Prozess und belegt keinen
+    VRAM.</p>
+  <p>Drei Nutzer greifen darauf zu:</p>
+  <div class="grid2">
+    <div class="karte"><b>dAImon</b><br><span style="color:var(--text-still)">Charakterstufe, Streaming-Betrieb — spricht laufend, in Echtzeit.</span></div>
+    <div class="karte"><b>MMC</b><br><span style="color:var(--text-still)">Sprachaufnahmen zur Bauzeit, offline erzeugt.</span></div>
+  </div>
+  <div class="karte"><b>Ansage</b> — dritter, kleiner Konsument: ein Claude-Code-Stop-Hook, der über Bluetooth-Kopfhörer meldet, dass eine Aufgabe fertig ist. Siehe <a href="#ansage">Ansage</a>.</div>
+
+  <h4>Drei Motoren</h4>
+  <table>
+    <tr><th>Modus</th><th>Modell</th><th>Charakter</th></tr>
+    <tr><td><span class="tag cyan">mf</span></td><td>dots.tts-mf</td><td>Realtime, schnell und direkt — Vorgabe für Streaming</td></tr>
+    <tr><td><span class="tag cyan">soar</span></td><td>dots.tts-soar</td><td>Batch, ausdrucksstärker — besser für gespeicherte Dateien</td></tr>
+    <tr><td><span class="tag violett">qwen</span></td><td>Qwen3-TTS-1.7B</td><td>beste Klonqualität, längerer Kaltstart, läuft in isoliertem Subprozess</td></tr>
+  </table>
+  <p>Alle drei können nicht gleichzeitig geladen sein — ein Moduswechsel ist ein
+    kontrollierter Prozess-Neustart des Workers.</p>
+</section>
+
+<!-- ═══════════════════════ INSTALLATION ═══════════════════════ -->
+<section id="installation">
+  <h2>Installation</h2>
+  <pre><code>uv tool install --python 3.12 .
+mimic setup</code></pre>
+  <p><code>mimic setup</code> legt den Stimmenordner an, installiert die fünf
+    systemd-Unit-Dateien aus <code>systemd/</code>, aktiviert die Sockets und prüft
+    am Ende per <code>/status</code>, ob der Dienst antwortet. Zweimal aufrufen ist
+    gefahrlos — geänderte Units werden ersetzt und die betroffenen Sockets neu
+    gestartet. Der Befehl braucht das Repo-Verzeichnis, weil die Unit-Dateien von
+    dort kopiert werden.</p>
+
+  <h4>Optionale Umgebungen nachrüsten</h4>
+  <table>
+    <tr><th>Befehl</th><th>Wofür</th></tr>
+    <tr><td><code>mimic setup --entwurf</code></td><td>beide Entwurfsmotoren (voxcpm + qwen), <a href="#entwerfen">Stimmen entwerfen</a></td></tr>
+    <tr><td><code>mimic setup --entwurf moss</code></td><td>Eindeutschen Version 1</td></tr>
+    <tr><td><code>mimic setup --entwurf qwen-klon</code></td><td>Eindeutschen Version 2 + direkter Qwen-Sprechmodus</td></tr>
+    <tr><td><code>mimic setup --transkription</code></td><td>lokale Referenztext-Erkennung (faster-whisper)</td></tr>
+  </table>
+  <div class="karte">Jede Umgebung lädt mehrere GB und läuft in einer eigenen, isolierten <code>venv</code> unter <code>~/.local/share/mimic/</code> — nur so, weil jeder Motor eigene, untereinander unverträgliche torch-/transformers-Versionen braucht. Sie werden nur während des jeweiligen Vorgangs als Subprozess gestartet, nicht dauerhaft geladen (Qwen als Sprechmodus ist die Ausnahme: er bleibt nach dem ersten Laden warm).</div>
+
+  <h4>Arbeitsflächen-Starter</h4>
+  <pre><code>install -Dm755 systemd/mimic.desktop ~/.local/share/applications/mimic.desktop
+ln -sfn ~/.local/share/applications/mimic.desktop "$(xdg-user-dir DESKTOP)/mimic.desktop"</code></pre>
+</section>
+
+<!-- ═══════════════════════ FENSTER ═══════════════════════ -->
+<section id="fenster">
+  <h2>Das Fenster</h2>
+  <pre><code>mimic gui</code></pre>
+  <p><code>mimic gui</code> öffnet ein Chromium-App-Fenster gegen einen kurzlebigen
+    Loopback-HTTP-Server, der nur solange lebt wie das Fenster selbst. Links stehen
+    die ladbaren Stimmen, rechts das Skriptfeld.</p>
+
+  <figure>
+    <img src="bilder/hauptansicht.png" alt="Mimic-Hauptfenster: Stimmenliste links, Skripteditor rechts, Transportleiste unten">
+    <figcaption>Hauptansicht — Stimmenliste, Skripteditor, Wellenform und Transportleiste</figcaption>
+  </figure>
+
+  <h4>Skript schreiben</h4>
+  <p>Text markieren und links eine Stimme anklicken weist genau dieser Auswahl den
+    Sprecher zu. Im Skript erscheint der Wechsel als <code>[stimme]</code>, Kopf und
+    zugehöriger Text tragen dieselbe, stabile Farbe. Die Köpfe steuern nur den Parser
+    und werden nicht mitgesprochen.</p>
+  <ul>
+    <li><code>[stimme]Text…</code> — wechselt den Sprecher ab hier</li>
+    <li><code>#stimme: "Text"</code> — altes Format, bleibt lesbar</li>
+    <li><code>[sighs]</code>, <code>[laughs]</code>, <code>[whispers]</code> — Regieaktionen, bleiben im Modelltext (Motorfähigkeit, keine Garantie)</li>
+    <li><code>// Kommentar</code> — wird beim Sprechen übersprungen</li>
+    <li>Eine Zeile ohne Kopf erbt den Sprecher von oben</li>
+  </ul>
+  <p><code>Strg</code>+<code>Enter</code> spricht sofort los.</p>
+
+  <h4>Transportleiste</h4>
+  <table>
+    <tr><th>Element</th><th>Wirkung</th></tr>
+    <tr><td>▶ Abspielen</td><td>streamt live durch <code>pw-cat</code></td></tr>
+    <tr><td>Exportieren</td><td>sammelt dieselben Blöcke in eine Datei — WAV oder MP3 (192 kbps, <code>lame</code>/<code>ffmpeg</code>)</td></tr>
+    <tr><td>Stopp / <code>Esc</code></td><td>bricht sofort ab, Worker erkennt den Abbruch</td></tr>
+    <tr><td>Warmlauf</td><td>lädt den gewählten Motor mit der gewählten Stimme vor</td></tr>
+    <tr><td>MF · SOAR · QWEN</td><td>Motorwahl für den <em>nächsten</em> Auftrag</td></tr>
+  </table>
+  <p>Der letzte Skriptentwurf (Text, Stimme, Motor, Format, Regler) wird geschützt
+    unter <code>$XDG_STATE_HOME/mimic/gui-draft.json</code> gespeichert und beim
+    nächsten Öffnen automatisch wiederhergestellt.</p>
+</section>
+
+<!-- ═══════════════════════ KLANGREGLER ═══════════════════════ -->
+<section id="klangregler">
+  <h2>Klangregler</h2>
+  <figure>
+    <img src="bilder/klangregler.png" alt="Nahaufnahme der Klangregler in der Transportleiste">
+    <figcaption>Tempo, Lage, Raster, Formant, Streuung und die Klangfarbe-Effekte</figcaption>
+  </figure>
+  <table>
+    <tr><th>Regler</th><th>Bereich</th><th>Wirkung</th></tr>
+    <tr><td><code>tempo</code></td><td>0,5–2,0×</td><td>Sprechgeschwindigkeit; unter 0,5 zerfällt die Prosodie, über 2,0 unverständlich</td></tr>
+    <tr><td><code>tonhoehe</code> (Lage)</td><td>−12 bis 12 HT</td><td>feste Tonhöhenverschiebung, ±1 Oktave</td></tr>
+    <tr><td><code>raster</code></td><td>0–1</td><td>zwingt jede Silbe aufs Halbtonraster — der GLaDOS-Kern</td></tr>
+    <tr><td><code>formant</code></td><td>−12 bis 12 HT</td><td>verschiebt die Klangfarbe, ohne die Tonhöhe mitzunehmen</td></tr>
+    <tr><td><code>streuung</code></td><td>0–4 HT</td><td>zufällige Silben-Abweichung, simuliert Handarbeit an der Tonhöhe</td></tr>
+    <tr><td><code>hall</code></td><td>0–1</td><td>Nachhall, 0 trocken bis 1 voller Raum</td></tr>
+    <tr><td><code>verzerrung</code></td><td>0–1</td><td>weiche Sättigung, 0 sauber bis 1 übersteuert</td></tr>
+    <tr><td><code>kruemel</code></td><td>0–1</td><td>Bitcrusher, 0 glatt bis 1 vier Bit</td></tr>
+    <tr><td><code>breite</code></td><td>0–1</td><td>Chorus bis Chor, 0 eine Stimme bis 1 vier Kopien</td></tr>
+  </table>
+  <div class="karte tipp">Alle Regler in der Oberfläche kommen <b>zusätzlich</b> auf einen in <code>settings.json</code> fest eingestellten Profilwert drauf — Profil −3 Halbtöne plus Regler +1 ergibt −2. So bleibt eine fest eingestellte Stimme trotzdem nachstellbar.</div>
+
+  <h4>GLaDOS-Preset</h4>
+  <p>Kein eigener Effekt, sondern eine Kombination aus Tonhöhenkorrektur, nach Valves
+    eigener Anleitung zu Ellen McLains Originalaufnahme (<em>pitch constrained,
+    pitch modulation suppressed, formant moved up</em>):</p>
+  <pre><code>{"tonhoehe": 2.0, "raster": 1.0, "streuung": 1.0, "formant": 3.0}</code></pre>
+  <p>Zum Ausprobieren ohne eigenes Profil: <code>mimic say "…" --glados</code></p>
+
+  <h4>Benannte Klangfarben</h4>
+  <p>Zusätzlich zu den Live-Reglern gibt es fünf benannte Effekte, die dauerhaft in
+    <code>settings.json</code> je Stimme hinterlegt werden (Reiter <em>Klangfarbe</em>):</p>
+  <table>
+    <tr><th>Name</th><th>Klangbild</th></tr>
+    <tr><td><code>roboter</code></td><td>Tremolo/Ringmodulation bei 55 Hz — metallische Beimischung</td></tr>
+    <tr><td><code>tv</code></td><td>Bandpass 320–3000 Hz, weiche Sättigung, leichtes Rauschen — Lautsprecher von 1985</td></tr>
+    <tr><td><code>telefon</code></td><td>Butterworth-Bandpass 300–3400 Hz, Rauschen vor dem Filter — Leitungsrauschen</td></tr>
+    <tr><td><code>vocoder</code></td><td>Kanalvocoder, 16 Bänder, Sägezahnträger folgt der Grundfrequenz</td></tr>
+    <tr><td><code>kollektiv</code></td><td>zwei verstimmte, verzögerte Kopien plus leichtes Tremolo — "viele sprechen dasselbe"</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════ WERKSTATT ═══════════════════════ -->
+<section id="werkstatt">
+  <h2>Stimmenwerkstatt</h2>
+  <p>Der Knopf <b>Klonen</b> öffnet die Werkstatt-Schublade mit drei Reitern.</p>
+
+  <h3>Aufnehmen / Datei</h3>
+  <figure>
+    <img src="bilder/werkstatt-aufnehmen.png" alt="Reiter Aufnehmen / Datei der Stimmenwerkstatt">
+    <figcaption>Profilname, Vorlage oder eigener Text, Mikrofon-Aufnahme oder Datei-Upload</figcaption>
+  </figure>
+  <p>Profilname wird live gegen die Namensregel geprüft (Kleinbuchstaben, Ziffern,
+    <code>_</code>/<code>-</code>, max. 32 Zeichen, Beginn alphanumerisch). Vorlagen
+    aus <code>charaktere.py</code> liefern Regieanweisung und Referenztext gleich mit;
+    für eigene Stimmen wird der Text frei geschrieben — er sollte Aussage, Frage und
+    Ausruf enthalten, weil dots.tts Prosodie mitklont.</p>
+  <p>Der Aufnahmeknopf nimmt direkt mit 48 kHz mono ins Profilverzeichnis auf. Die
+    Zielzone zeigt live: unter 3 s lehnt der Dienst ab, <b>8–15 s ist der einzige
+    gemessene Bereich</b>, ab 60 s ist Schluss, nach 90 s stoppt eine Notbremse eine
+    vergessene Aufnahme.</p>
+  <p>Statt Mikrofon kann auch eine vorhandene <b>MP3- oder WAV-Datei</b> gewählt
+    werden (bis 64 MiB, lokal per ffmpeg gewandelt). Der Referenztext lässt sich von
+    Hand eintragen oder nach dem Upload lokal per faster-whisper automatisch
+    transkribieren — das Ergebnis landet zur Kontrolle im Textfeld und wird erst mit
+    <em>Behalten</em> übernommen.</p>
+
+  <h3>Entwerfen</h3>
+  <figure>
+    <img src="bilder/werkstatt-entwerfen.png" alt="Reiter Entwerfen der Stimmenwerkstatt">
+    <figcaption>Motorwahl, englische Beschreibung, deutscher Probesatz</figcaption>
+  </figure>
+  <p>Erzeugt eine Stimme aus einer <b>Beschreibung</b> statt sie einzusprechen —
+    Details unter <a href="#entwerfen">Stimmen entwerfen</a>.</p>
+
+  <h3>Verwalten</h3>
+  <figure>
+    <img src="bilder/werkstatt-verwalten.png" alt="Reiter Verwalten der Stimmenwerkstatt mit Profilliste">
+    <figcaption>Alle Profile mit Dauer und Referenztext, defekte mit Grund</figcaption>
+  </figure>
+  <p>Referenz anhören, Probesatz sprechen, löschen — Löschen ist zweistufig, der
+    erste Klick schärft nur. Aufnahme und Sprechauftrag schließen sich gegenseitig
+    aus.</p>
+</section>
+
+<!-- ═══════════════════════ CLI ═══════════════════════ -->
+<section id="cli">
+  <h2>Kommandozeile</h2>
+  <p>Ein dünner Client, der sich per Unix-Socket mit dem Frontend verbindet — alles
+    Modellwissen bleibt im Worker.</p>
+  <table>
+    <tr><th>Befehl</th><th>Beispiel</th><th>Zweck</th></tr>
+    <tr><td><code>say</code></td><td><code>mimic say "Hallo" --voice matthias --mode mf</code></td><td>Text sprechen — live oder mit <code>-o datei.wav</code> in eine Datei</td></tr>
+    <tr><td><code>status</code></td><td><code>mimic status</code></td><td>Diensteststatus als JSON</td></tr>
+    <tr><td><code>voices</code></td><td><code>mimic voices</code></td><td>Profile mit Dauer, <code>!</code> markiert Ausreißer</td></tr>
+    <tr><td><code>gui</code></td><td><code>mimic gui</code></td><td>öffnet das Fenster</td></tr>
+    <tr><td><code>record</code></td><td><code>mimic record matthias_krieger</code></td><td>interaktive Terminal-Aufnahme</td></tr>
+    <tr><td><code>import</code></td><td><code>mimic import name datei.mp3 --text "…"</code></td><td>Profil aus vorhandener Audiodatei</td></tr>
+    <tr><td><code>design</code></td><td><code>mimic design "a calm voice" --voice x</code></td><td>Stimme aus Beschreibung entwerfen</td></tr>
+    <tr><td><code>eindeutschen</code></td><td><code>mimic eindeutschen name datei.mp3</code></td><td>fremde Stimme eindeutschen (v1, MOSS)</td></tr>
+    <tr><td><code>eindeutschen2</code></td><td><code>mimic eindeutschen2 name datei.mp3</code></td><td>fremde Stimme eindeutschen (v2, Qwen x-vector)</td></tr>
+    <tr><td><code>setup</code></td><td><code>mimic setup [--entwurf|--transkription]</code></td><td>Dienst einrichten / Umgebungen nachrüsten</td></tr>
+  </table>
+  <p>Gemeinsame Klangregler-Optionen bei <code>say</code>: <code>--tempo --tonhoehe
+    --streuung --raster --formant --hall --verzerrung --kruemel --breite --glados</code>.
+    Exit-Code 0 bei Erfolg, 1 bei jedem Anwendungsfehler, 130 bei <code>Strg</code>+<code>C</code>.</p>
+</section>
+
+<!-- ═══════════════════════ PROFILE ═══════════════════════ -->
+<section id="profile">
+  <h2>Stimmprofile</h2>
+  <p>Ein Profil ist ein Verzeichnis unter
+    <code>~/.local/share/mimic/voices/&lt;name&gt;/</code>, Modus zwingend
+    <code>0700</code>:</p>
+  <table>
+    <tr><th>Datei</th><th>Pflicht</th><th>Anforderung</th></tr>
+    <tr><td><code>ref.wav</code></td><td>ja</td><td>48 kHz mono, 3–60 s, Modus 0600, max. 10 MiB</td></tr>
+    <tr><td><code>ref.txt</code></td><td>ja</td><td>UTF-8, wörtliches Transkript, Modus 0600, max. 4 KiB</td></tr>
+    <tr><td><code>settings.json</code></td><td>optional</td><td>Sprache, Klangregler — siehe unten</td></tr>
+    <tr><td><code>qwen-source.wav</code></td><td>optional</td><td>nur bei <code>eindeutschen2</code>-Profilen, Original für den direkten Qwen-Modus</td></tr>
+  </table>
+  <p>Namensregel: <code>^[a-z0-9][a-z0-9_-]{0,31}$</code> — Kleinbuchstaben/Ziffern,
+    Beginn alphanumerisch, <code>_</code>/<code>-</code> erlaubt, max. 32 Zeichen.</p>
+  <div class="karte">Die Validierung öffnet Verzeichnis und Dateien dateideskriptor-basiert (<code>O_NOFOLLOW</code>, Rechte- und Größenprüfung vor dem Lesen) — ein nachträglicher Symlink-Tausch während der Prüfung kann nicht mehr umlenken.</div>
+</section>
+
+<!-- ═══════════════════════ EINSTELLUNGEN ═══════════════════════ -->
+<section id="einstellungen">
+  <h2>Stimmeinstellungen</h2>
+  <p><code>settings.json</code> gilt dauerhaft für eine Stimme: Sprache (<code>de</code>/<code>en</code>,
+    Vorgabe <code>en</code> — bewusst, weil <code>de</code> englischen Fachbegriffen
+    deutsche Phonetik aufzwingt), <code>speaker_scale</code> (0,5–2,0), eine benannte
+    Klangfarbe und die vier Klangregler <code>tonhoehe</code>, <code>raster</code>,
+    <code>streuung</code>, <code>formant</code>. Die Vorlage
+    <code>settings.example.json</code> im Repo erklärt jeden Schlüssel samt Grenzen.</p>
+</section>
+
+<!-- ═══════════════════════ ENTWERFEN ═══════════════════════ -->
+<section id="entwerfen">
+  <h2>Stimmen entwerfen</h2>
+  <p>Statt einzusprechen: eine Stimme aus einer englischen Beschreibung generieren.
+    Zwei Motoren, beide Apache-2.0, beide sprechen den Zieltext nativ Deutsch:</p>
+  <table>
+    <tr><th>Motor</th><th>Modell</th><th>Rate</th><th>Charakter</th></tr>
+    <tr><td><code>voxcpm</code> (Vorgabe)</td><td>VoxCPM2, 2B</td><td>48 kHz</td><td>schönere Stimmen, Aussprache streut gelegentlich</td></tr>
+    <tr><td><code>qwen</code></td><td>Qwen3-TTS-1.7B VoiceDesign</td><td>24 kHz</td><td>fehlerfreies Deutsch, halbe Bandbreite</td></tr>
+  </table>
+  <p>Der Probesatz wird wörtlich das <code>ref.txt</code> des späteren Profils — er
+    steht unter denselben Anforderungen wie ein eingesprochener Referenztext (Aussage,
+    Frage, Ausruf, rund zehn Sekunden). Bis zu vier Kandidaten je Lauf, jeder einzeln
+    anhörbar und unter einem Namen zu behalten — von da an ist es eine normale Stimme.</p>
+  <div class="karte warnung">Entwurf und Sprechauftrag schließen sich gegenseitig aus — beide teilen sich dieselbe GPU, sonst verhungert einer im VRAM.</div>
+  <p>Kein Motor läuft im Worker-Prozess: beide bringen eigene, mit dots.tts
+    unverträgliche torch-/transformers-Versionen mit und laufen deshalb als
+    Subprozess in einer eigenen <code>venv</code>, die nur während des Entwurfs lebt.</p>
+</section>
+
+<!-- ═══════════════════════ EINDEUTSCHEN ═══════════════════════ -->
+<section id="eindeutschen">
+  <h2>Fremde Stimmen eindeutschen</h2>
+  <p>Eine anderswo erzeugte oder gekaufte Stimme spricht Deutsch oft mit fremdem
+    Einschlag. <code>mimic import</code> kann das nicht heilen, und dots.tts auch
+    nicht: die Engine hat keine Sprachmarke, sie klont, was sie hört, Akzent
+    inklusive. Ein Filter hilft nicht — ein Akzent ist kein Frequenzband, sondern
+    eine Aussprache. <code>eindeutschen</code> schiebt deshalb einen Schritt davor,
+    der die Stimme zuerst auf Deutsch neu sprechen lässt.</p>
+
+  <div class="grid2">
+    <div class="karte">
+      <b>Version 1 — <code>mimic eindeutschen</code></b>
+      <p style="margin-top:8px">MOSS-TTS-Local-Transformer (4B) hört die komplette
+        Originalaufnahme als Kontext, behält die Stimmfarbe und spricht den Text mit
+        <code>language="German"</code> neu.</p>
+      <p><b>Bekannte Schwäche:</b> kann englische Phonetik/Rhythmus der Vorlage
+        teilweise mitziehen, weil die ganze Aufnahme als Kontext dient.</p>
+    </div>
+    <div class="karte">
+      <b>Version 2 — <code>mimic eindeutschen2</code></b>
+      <p style="margin-top:8px">Qwen3-TTS Base im <code>x-vector-only</code>-Modus:
+        aus der Vorlage wird nur die Sprecheridentität konditioniert, keine
+        englischen Audio-Codes oder Text-Prompts. Der deutsche Text wird nativ
+        erzeugt.</p>
+      <p>Legt zwei Referenzen an: <code>ref.wav</code> (deutsch, für MF/SOAR) und
+        <code>qwen-source.wav</code> (Original, für den direkten Qwen-Modus).</p>
+    </div>
+  </div>
+
+  <pre><code>uv run mimic setup --entwurf moss          # einmalig, laedt einige GB
+uv run mimic eindeutschen ether ~/Downloads/voice_preview_ether.mp3 --force
+
+uv run mimic setup --entwurf qwen-klon
+uv run mimic eindeutschen2 nordom_v2 ~/Documents/archived_voices/Nordom.mp3</code></pre>
+
+  <div class="karte warnung">Die Ausgabedauer steuert das Modell <b>nicht</b> — sie hängt am Sprechtempo der Vorlage. Derselbe Text kam einmal als 8,0 s, einmal als 23,0 s zurück, und aus 23 s macht dots.tts hörbares Gebrumm. Beide Befehle würfeln deshalb bis zu dreimal (<code>--wuerfe</code>) auf den 8–15-s-Zielbereich und warnen ausdrücklich, statt einen Fehltreffer stillschweigend zu importieren.</div>
+</section>
+
+<!-- ═══════════════════════ AUSSPRACHE ═══════════════════════ -->
+<section id="aussprache">
+  <h2>Aussprache</h2>
+  <p><code>~/.local/share/mimic/pronunciation.json</code> ersetzt Wörter
+    <b>vor</b> der Synthese, case-insensitiv, mit Mehrwort-Einträgen gegen
+    Homographen (<code>weg da</code> → <code>weck da</code>, ohne dabei
+    <em>"Der Weg ist lang"</em> zu verändern). Abschaltbar je Anfrage über
+    <code>"aussprache": false</code> — Vorgabe ist an.</p>
+</section>
+
+<!-- ═══════════════════════ ARCHITEKTUR ═══════════════════════ -->
+<section id="architektur">
+  <h2>Dienste &amp; Protokoll</h2>
+  <p>Zwei getrennte Prozesse, jeder über einen eigenen Unix-Socket per systemd
+    aktiviert:</p>
+
+  <div class="diagramm">Client (CLI / GUI)
+  │  POST /speak  (JSON: Text, Stimme, Modus, Regler)
+  ▼
+<b>Frontend</b>  ── Socket <i>mimic.socket</i> ── validiert Text/Regler, dauerhaft aktiv
+  │  POST /synthesize
+  ▼
+<b>Worker</b>    ── Socket <i>mimic-worker.socket</i> ── einziger GPU-Eigentümer, idle-exit nach 120 s
+  │
+  ▼
+Frame-Stream:  <i>H</i> (Header) → <i>A</i>* (Audio) → <i>E</i> (Ende)
+  │  über HTTP Chunked-Encoding, 1:1 an den Client zurückgereicht</div>
+
+  <table>
+    <tr><th></th><th>Frontend</th><th>Worker</th></tr>
+    <tr><td>GPU-Zugriff</td><td>nein</td><td>ja, exklusiv</td></tr>
+    <tr><td>Lebensdauer</td><td>dauerhaft</td><td>idle-exit nach 120 s</td></tr>
+    <tr><td>Validierung</td><td>Text-Länge, Regler-Grenzen</td><td>vertraut dem Frontend</td></tr>
+    <tr><td>Speichergrenze</td><td>512 MiB</td><td>10 GiB</td></tr>
+  </table>
+
+  <h4>Frame-Protokoll</h4>
+  <p>Binäres, modellunabhängiges Format: 1 Byte Typ + 4 Byte Big-Endian-Länge +
+    Payload.</p>
+  <table>
+    <tr><th>Typ</th><th>Payload</th><th>Wann</th></tr>
+    <tr><td><code>H</code></td><td>JSON: sample_rate, channels, format, request_id</td><td>einmalig, zu Beginn</td></tr>
+    <tr><td><code>A</code></td><td>rohes 16-bit-PCM</td><td>beliebig oft</td></tr>
+    <tr><td><code>E</code></td><td>JSON: status, samples / reason, message</td><td>einmalig, am Ende</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════ WORKER ═══════════════════════ -->
+<section id="worker">
+  <h2>GPU-Worker</h2>
+  <p>Der Worker hält eine Prioritätswarteschlange (Modus <code>mf</code> vor
+    <code>soar</code> vor <code>qwen</code>, dann FIFO) und einen einzigen
+    Owner-Thread, der für die gesamte Prozesslaufzeit das Modell besitzt.</p>
+
+  <h4>Wache gegen hängende Modellaufrufe</h4>
+  <p>Ein eigener Wächter-Thread reißt den Prozess kontrolliert ab, wenn ein
+    Modellaufruf deutlich länger dauert als jede gemessene Anfrage (Standard
+    120+60 s, Qwen 240+60 s) — der einzige Ausweg, wenn ein CUDA-Aufruf komplett
+    hängt, weil sonst der einzige Modellbesitzer-Thread für immer blockiert bliebe.</p>
+
+  <h4>VRAM-Management</h4>
+  <ul>
+    <li>Freien VRAM vor jedem Laden per <code>nvidia-smi</code> prüfen (mind. 8 GB)</li>
+    <li>Cache nach jedem Auftrag/Warmlauf freigeben</li>
+    <li>Optionale Kooperation mit einem externen GPU-Hub: fragt vor dem Laden um
+      Erlaubnis; ein nicht erreichbarer Hub gilt als offen (Fail-Open), eine
+      erreichte, aber ablehnende Antwort blockiert das Laden</li>
+  </ul>
+
+  <h4>Qwen als isolierter Subprozess</h4>
+  <p>Läuft nicht im Worker-Prozess, sondern über eine dots.tts-kompatible Hülle um
+    einen dauerhaft warmgehaltenen Subprozess in der isolierten
+    <code>entwurf-venv-qwen-klon</code>-Umgebung — Kommunikation über
+    stdin/stdout-JSON-Zeilen.</p>
+
+  <h4>Streaming-Ablauf je Auftrag</h4>
+  <p>Text → Aussprachetabelle + Zahlenausschreibung → Satzsegmentierung → je Satz bis
+    zu vier Generierungsversuche mit Stummerkennung → Klangkette auf jeden PCM-Block
+    → Frames sofort an den Client. Zwischen Sätzen eine kurze Atempause, nur an
+    echten Satzenden.</p>
+</section>
+
+<!-- ═══════════════════════ SYSTEMD ═══════════════════════ -->
+<section id="systemd">
+  <h2>systemd-Betrieb</h2>
+  <p>Fünf User-Units unter <code>~/.config/systemd/user/</code>, installiert von
+    <code>mimic setup</code>:</p>
+
+  <div class="diagramm">sockets.target
+   │
+   ├── mimic.socket ──(Verbindung)──► mimic.service ──► Frontend (dauerhaft)
+   │
+   └── mimic-worker.socket ──(Verbindung)──► mimic-worker.service ──► Worker (idle-exit)
+            │
+            └─ OnFailure ──► mimic-worker-reset.service</div>
+
+  <table>
+    <tr><th>Unit</th><th>Rolle</th></tr>
+    <tr><td><code>mimic.socket</code> / <code>.service</code></td><td>Frontend, dauerhaft aktiv, <code>MemoryMax=512M</code></td></tr>
+    <tr><td><code>mimic-worker.socket</code> / <code>.service</code></td><td>GPU-Worker, geplanter Idle-Exit ist der Normalfall, <code>MemoryMax=10G</code></td></tr>
+    <tr><td><code>mimic-worker-reset.service</code></td><td>fängt einen sofortigen Neustart-Sturm ab, falls der Worker stirbt, bevor er eine wartende Verbindung annimmt</td></tr>
+    <tr><td><code>mimic.desktop</code></td><td>Arbeitsflächen-Starter für <code>mimic gui</code></td></tr>
+  </table>
+  <div class="karte">Ohne die Reset-Unit bliebe Mimic nach einem solchen Absturz-Sturm dauerhaft tot, bis von Hand <code>systemctl --user reset-failed</code> aufgerufen wird — systemds eigenes Start-Ratenlimit würde die Socket-Unit sonst in den Zustand <code>failed</code> versetzen.</div>
+</section>
+
+<!-- ═══════════════════════ TESTS ═══════════════════════ -->
+<section id="tests">
+  <h2>Tests</h2>
+  <pre><code>bash tests/run.sh          # GPU-frei, alle Testdateien
+bash tests/run.sh --gpu    # zusaetzlich destruktive Eindaemmungsproben</code></pre>
+  <table>
+    <tr><th>Datei</th><th>Deckt ab</th></tr>
+    <tr><td><code>test_phase1.py</code></td><td>Frontend↔Worker-Grundfunktionen, VRAM-Erschöpfung, Idle-Exit</td></tr>
+    <tr><td><code>test_phase2.py</code></td><td>GPU-Hub-Protokoll, Effektkette, GUI-Auth, Journal-Logging</td></tr>
+    <tr><td><code>test_entwurf.py</code></td><td>Entwurfsreiter ohne GPU, Worker-Wache, Symlink-Sicherung</td></tr>
+    <tr><td><code>test_ansage.py</code></td><td>Ansage-Stop-Hook ohne Audio/laufenden Dienst</td></tr>
+    <tr><td><code>test_gpu_containment.py</code></td><td>echte, destruktive Eindämmungsproben — nur mit <code>--gpu</code></td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════ ANSAGE ═══════════════════════ -->
+<section id="ansage">
+  <h2>Ansage</h2>
+  <p><code>tools/ansage.py</code> hängt als Stop-Hook in Claude Code und lässt Mimic
+    sagen, dass eine Aufgabe fertig ist — "Fertig." plus die ersten Sätze der letzten
+    Antwort. Scheitert absichtlich lautlos, wenn der Dienst aus ist oder keine MAC
+    hinterlegt wurde.</p>
+  <pre><code>tools/einrichten.sh     # installiert, hinterlegt die MAC, haengt den Hook ein, probt</code></pre>
+</section>
+
+<!-- ═══════════════════════ FEHLERBEHEBUNG ═══════════════════════ -->
+<section id="fehlerbehebung">
+  <h2>Fehlerbehebung</h2>
+  <table>
+    <tr><th>Symptom</th><th>Ursache / Abhilfe</th></tr>
+    <tr><td>Dienst dauerhaft nicht erreichbar nach Absturz</td><td><code>systemctl --user reset-failed mimic-worker.socket mimic-worker.service</code> — oder abwarten, <code>mimic-worker-reset.service</code> tut das automatisch</td></tr>
+    <tr><td>MP3-Export-Knopf ist grau</td><td>weder <code>lame</code> noch <code>ffmpeg</code> installiert</td></tr>
+    <tr><td><code>load_denied</code> beim Laden</td><td>ein externer GPU-Hub hat die Erlaubnis verweigert — anderer Prozess belegt die Karte</td></tr>
+    <tr><td>Qwen-Schalter ist deaktiviert</td><td><code>mimic setup --entwurf qwen-klon</code> noch nicht ausgeführt</td></tr>
+    <tr><td>Entwurf hängt bei "Modell lädt"</td><td>bekannte Falle bei eigenen Erweiterungen: stderr muss in stdout umgeleitet sein, sonst blockiert der Subprozess nach 64 KB</td></tr>
+    <tr><td>Aufnahme unter 3 s / über 60 s</td><td>Dienst lehnt hart ab — Zielbereich ist 8–15 s</td></tr>
+  </table>
+</section>
+
+<footer>
+  Mimic — Engine: <a href="https://github.com/rednote-hilab/dots.tts" target="_blank">dots.tts</a> (Apache-2.0).
+  Diese Doku beschreibt den Stand vom 2026-08-21 und wurde aus README.md und dem Quellcode erstellt.
+</footer>
+
+</main>
+</body>
+</html>
