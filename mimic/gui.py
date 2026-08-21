@@ -43,15 +43,15 @@ from pathlib import Path
 
 from .charaktere import CHARAKTERE
 from .cli import _dauer, open_request, profil_aus_datei, request
-from .effekte import (EFFEKTE, breite_wert, formant_wert, hall_wert, kruemel_wert,
-                      raster_wert, streuung_wert, tempo_faktor, tonhoehe_wert,
-                      verzerrung_wert)
+from .effekte import (EFFEKTE, breite_wert, formant_wert, hall_wert, ist_effekt,
+                      kruemel_wert, raster_wert, streuung_wert, tempo_faktor,
+                      tonhoehe_wert, verzerrung_wert)
 from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
                       VORGABE_MOTOR, Entwurf, umgebungen_da)
 from .protocol import MODES, read_frame
 from .transkription import transkribieren, umgebung_da as transkription_da
 from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
-                     default_voices_dir, load_voice, speichere_effekt)
+                     default_voices_dir, load_voice, speichere_effekte)
 
 SPRECHERPAUSE_MS = 300      # Luft zwischen zwei Einsaetzen
 PEGEL_FENSTER = 600         # Proben je Balken im Wellenband, bei 24 kHz 40 Balken/s
@@ -339,14 +339,14 @@ def stimmen_details() -> list[dict]:
     inventar = []
     for name in eintraege:
         eintrag: dict = {"name": name, "ok": True, "grund": "", "dauer_s": None, "text": "",
-                         "effekt": ""}
+                         "effekte": []}
         try:
             profil = load_voice(name, root, mit_gain=False)
         except VoiceError as fehler:
             eintrag.update(ok=False, grund=f"{fehler.reason}: {fehler.message}")
         else:
             eintrag["text"] = profil.prompt_text
-            eintrag["effekt"] = profil.effekt
+            eintrag["effekte"] = list(profil.effekte)
             close_voice(profil)
             try:
                 eintrag["dauer_s"] = round(_dauer(root / name / "ref.wav"), 1)
@@ -1537,13 +1537,29 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                 stimme_loeschen(name)
                 self._json(200, {"ok": True})
             elif pfad == "/api/voice/effekt":
+                # Schaltet GENAU EINEN Namen in der gespeicherten Liste an
+                # oder aus -- mehrere Klangfarben duerfen gleichzeitig aktiv
+                # sein, ein Klick kippt nur die Mitgliedschaft dieses einen.
                 name = self._feld_text(wunsch, "name")
                 effekt = self._feld_text(wunsch, "effekt")
+                if not ist_effekt(effekt):
+                    raise ValueError(f"effekt muss eines von {sorted(EFFEKTE)} sein")
                 konflikt = self.sitzung.loeschkonflikt(name)
                 if konflikt:
                     raise RuntimeError(konflikt)
-                speichere_effekt(name, effekt)
-                self._json(200, {"ok": True, "effekt": effekt})
+                # Lesen-Kippen-Schreiben muss atomar gegen einen zweiten,
+                # schnell folgenden Klick sein -- sonst gewinnt der zuletzt
+                # ZURUECKGEKEHRTE Schreiber, nicht der zuletzt GEKLICKTE, und
+                # eine Klangfarbe verschwindet wieder, ohne dass ein Klick sie
+                # abgewaehlt haette.
+                with self.sitzung.lock:
+                    profil = load_voice(name, mit_gain=False)
+                    close_voice(profil)
+                    aktuell = set(profil.effekte)
+                    aktuell ^= {effekt}
+                    neu = tuple(n for n in EFFEKTE if n in aktuell)
+                    speichere_effekte(name, neu)
+                self._json(200, {"ok": True, "effekte": list(neu)})
             else:
                 self._json(404, {"message": "unbekannter Endpunkt"})
                 return

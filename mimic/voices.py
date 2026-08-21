@@ -48,7 +48,8 @@ class VoiceProfile:
     gain: float = 1.0
     language: str = DEFAULT_SPRACHE
     speaker_scale: float = DEFAULT_SCALE
-    effekt: str = ""            # leer = unbearbeitet, sonst ein Name aus effekte.EFFEKTE
+    effekte: tuple[str, ...] = ()   # leer = unbearbeitet, sonst Namen aus effekte.EFFEKTE,
+                                     # mehrere gleichzeitig erlaubt, in EFFEKTE-Reihenfolge
     tonhoehe: float = 0.0       # Halbtoene, dauerhaft fuer diese Stimme
     streuung: float = 0.0       # Halbtoene, um die eine Silbe daneben liegen darf
     raster: float = 0.0         # 0 aus, 1 zwingt jede Silbe auf den Halbton
@@ -266,10 +267,22 @@ def _read_settings(profile_fd: int) -> tuple[str, float, str, dict]:
     if type(scale) not in (int, float) or not SCALE_MIN <= scale <= SCALE_MAX:
         raise VoiceError("invalid_voice_profile",
                          f"speaker_scale muss zwischen {SCALE_MIN} und {SCALE_MAX} liegen")
-    effekt = roh.get("effekt", "")
-    if effekt and not ist_effekt(effekt):
+    # "effekte" (Liste) ist die aktuelle Form, mehrere Klangfarben gleichzeitig.
+    # "effekt" (einzelner Name) bleibt lesbar -- aeltere Profile haben nur das.
+    effekte_roh = roh.get("effekte")
+    if effekte_roh is None:
+        alt = roh.get("effekt", "")
+        effekte_roh = [alt] if alt else []
+    if not isinstance(effekte_roh, list) or not all(isinstance(n, str) for n in effekte_roh):
+        raise VoiceError("invalid_voice_profile", "effekte muss eine Liste von Namen sein")
+    unbekannt = [n for n in effekte_roh if not ist_effekt(n)]
+    if unbekannt:
         raise VoiceError("invalid_voice_profile",
-                         f"effekt muss eines von {sorted(EFFEKTE)} sein")
+                         f"effekte muss aus {sorted(EFFEKTE)} bestehen, "
+                         f"unbekannt: {sorted(set(unbekannt))}")
+    # Feste, kettenweite Reihenfolge statt Speicherreihenfolge -- sonst haengt
+    # der Klang davon ab, in welcher Klickreihenfolge die Chips gesetzt wurden.
+    effekte = tuple(n for n in EFFEKTE if n in effekte_roh)
     # Die Klangregler gehoeren zur Stimme, nicht zum Auftrag: eine Stimme, die
     # nach GLaDOS klingen soll, tut das in jedem Text. Die Regler in der
     # Oberflaeche kommen oben drauf, sie ersetzen den Profilwert nicht.
@@ -288,21 +301,26 @@ def _read_settings(profile_fd: int) -> tuple[str, float, str, dict]:
             raise VoiceError("invalid_voice_profile",
                              f"{name} muss zwischen {mini} und {maxi} liegen")
         regler[name] = float(wert)
-    return sprache, float(scale), effekt, regler
+    return sprache, float(scale), effekte, regler
 
 
-def speichere_effekt(name: str, effekt: str, voices_dir: Path | None = None) -> None:
-    """Schreibt `effekt` dauerhaft in settings.json des Profils.
+def speichere_effekte(name: str, effekte: tuple[str, ...],
+                      voices_dir: Path | None = None) -> None:
+    """Schreibt `effekte` (mehrere gleichzeitig erlaubt) dauerhaft in settings.json.
 
     Andere Felder (Sprache, speaker_scale, Klangregler) bleiben unangetastet --
     die Datei wird gelesen, nur der eine Schluessel veraendert, dann atomar
-    zurueckgeschrieben. Leerer effekt loescht den Schluessel wieder (Vorgabe:
-    unbearbeitet).
+    zurueckgeschrieben. Leere Liste loescht den Schluessel wieder (Vorgabe:
+    unbearbeitet). Das alte, einzelne `effekt`-Feld wird beim Schreiben immer
+    durch das neue `effekte`-Feld ersetzt -- ein Profil traegt nie beide.
     """
     if not VOICE_RE.fullmatch(name):
         raise VoiceError("unknown_voice", "ungueltiger Stimmname")
-    if effekt and not ist_effekt(effekt):
-        raise VoiceError("invalid_voice_profile", f"effekt muss eines von {sorted(EFFEKTE)} sein")
+    unbekannt = [n for n in effekte if not ist_effekt(n)]
+    if unbekannt:
+        raise VoiceError("invalid_voice_profile",
+                         f"effekte muss aus {sorted(EFFEKTE)} bestehen, "
+                         f"unbekannt: {sorted(set(unbekannt))}")
     root = voices_dir or default_voices_dir()
     profil = root / name
     try:
@@ -324,10 +342,11 @@ def speichere_effekt(name: str, effekt: str, voices_dir: Path | None = None) -> 
             raise VoiceError("invalid_voice_profile", "settings.json ist beschaedigt") from None
         if not isinstance(roh, dict):
             raise VoiceError("invalid_voice_profile", "settings.json muss ein Objekt sein")
-    if effekt:
-        roh["effekt"] = effekt
+    roh.pop("effekt", None)
+    if effekte:
+        roh["effekte"] = list(effekte)
     else:
-        roh.pop("effekt", None)
+        roh.pop("effekte", None)
     daten = json.dumps(roh, ensure_ascii=False).encode()
     if len(daten) > MAX_SETTINGS_BYTES:
         raise VoiceError("invalid_voice_profile", "settings.json waere zu gross")
@@ -411,10 +430,10 @@ def load_voice(name: str, voices_dir: Path | None = None, *,
             raise VoiceError("invalid_voice_profile", "ref.wav muss 3 bis 60 Sekunden lang sein")
         # Der Pfad muss nach Rueckkehr noch existieren; dup uebernimmt die Lebenszeit.
         gain = _reference_gain(wav_path) if mit_gain else 1.0
-        sprache, scale, effekt, regler = _read_settings(profile_fd)
+        sprache, scale, effekte, regler = _read_settings(profile_fd)
         kept_fd = os.dup(wav_fd)
         return VoiceProfile(name, f"/proc/self/fd/{kept_fd}", prompt, gain, sprache, scale,
-                            effekt, **regler)
+                            effekte, **regler)
     finally:
         for fd in (txt_fd, wav_fd, profile_fd, root_fd):
             if fd is not None:

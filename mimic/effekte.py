@@ -9,10 +9,14 @@ haelt seinen Zustand ueber Blockgrenzen hinweg: eine Tremolo-Phase, die bei
 jedem Block neu bei null beginnt, klickt hoerbar. Deshalb ein Objekt je
 Aeusserung statt einer Funktion.
 
-Bewusst NICHT hier: Tonhoehe. Ein Pitch-Shift ohne Tempoaenderung braucht einen
-Phasenvocoder, kostet Latenz im Streaming und ist ueberfluessig -- die Tonhoehe
-ist eine Eigenschaft der Stimme, also verschiebt man die Referenz einmalig
+Bewusst NICHT hier: Tonhoehe fuer die Hauptstimme. Ein Pitch-Shift ohne
+Tempoaenderung braucht einen Phasenvocoder, kostet Latenz im Streaming und ist
+fuer EINE Stimme ueberfluessig -- die Tonhoehe ist eine Eigenschaft der
+Stimme, also verschiebt man die Referenz einmalig
 (`ffmpeg -af asetrate=...,atempo=...`) und der Klon spricht dauerhaft hoeher.
+Ausnahme: `kollektiv` braucht mehrere UNTERSCHIEDLICHE Tonlagen gleichzeitig
+(eine Referenz kann nur eine sein), darum leiht sich `_kollektiv` dort den
+vorhandenen `Klangregler`-Pitch-Shifter je Nebenstimme.
 """
 
 from __future__ import annotations
@@ -29,12 +33,18 @@ import numpy as np
 EFFEKTE = ("roboter", "tv", "telefon", "vocoder", "kollektiv")
 
 _TREMOLO_HZ = 55.0          # Ringmodulation knapp ueber der Grundfrequenz
-_TREMOLO_TIEFE = 0.25       # 0 = aus, 1 = bis zur Stille
+_TREMOLO_TIEFE = 0.6        # 0 = aus, 1 = bis zur Stille -- am Hoertest von 0.325 kaum
+                            # wahrnehmbar, jetzt fast doppelt so tief
 _KOLLEKTIV_TREMOLO_HZ = 38.0
 _KOLLEKTIV_TIEFE = 0.18
-# Zwei Kopien, teilerfremde Verzoegerungen: bei glatten Vielfachen entstuende
-# ein Kammfilter mit hoerbarem Grundton statt mehrerer Sprecher.
-_KOLLEKTIV_STIMMEN = ((17.0, 0.42), (29.0, 0.30))       # (Verzoegerung ms, Pegel)
+# Zwei Kopien, teilerfremde Verzoegerungen -- bewusst UEBER der alten
+# Echoschwelle (~30 ms): die Kopien sollen als eigene, leicht versetzte
+# Stimmen auffallen, nicht nur als Verdickung der einen.
+_KOLLEKTIV_STIMMEN = ((30.0, 0.336), (50.0, 0.24))      # (Verzoegerung ms, Pegel) -- 20 % leiser
+# Tonlage (feste Halbtonverschiebung) und Streuung (zufaellige Silbenabweichung,
+# siehe Klangregler) je Nebenstimme -- eine hoeher, eine tiefer, beide mit
+# eigenem Wackeln, sonst waeren es nur zwei zeitversetzte Kopien derselben Stimme.
+_KOLLEKTIV_TONLAGE = ((4.0, 1.5), (-5.0, 2.0))          # (Halbtoene, Streuung HT)
 # Fernsehband. Unten schneidet der Hochpass die Waerme weg, oben nimmt der
 # Tiefpass die Zischlaute -- zusammen ergibt das den Lautsprecher im Gehaeuse.
 _TV_HOCHPASS_HZ = 320.0
@@ -49,17 +59,19 @@ _TELEFON_ORDNUNG = 4
 _TELEFON_RAUSCHEN = 0.015
 # Kanalvocoder. Baender logarithmisch geteilt -- gleichmaessig geteilt laege
 # die Haelfte oberhalb der Formanten, die den Vokal ueberhaupt ausmachen. Die
-# Huellkurve je Band folgt mit 30 Hz: schnell genug fuer Konsonanten, langsam
-# genug, dass die Grundfrequenz nicht durchschlaegt.
-# 16 statt 24 Baender: gemessen 13.0 statt 19.1 ms je Sekunde Audio, und der
-# Pegel faellt besser aus, weil breitere Baender mehr Oberwellen einfangen.
+# Huellkurve je Band folgt mit 50 Hz -- noch straffer als die 40 Hz der
+# zweiten Fassung, fuer schaerfere Konsonanten, aber immer noch klar unter
+# den 70-100 Hz tiefster Maennerstimmen, damit die Grundfrequenz nicht
+# durchschlaegt. Mehr Baender (20+) waeren fuer die Verstaendlichkeit besser,
+# sprengen hier aber das Rechenlast-Budget (gemessen 15.6 statt <15 ms/s bei
+# 20 Baendern) -- 16 bleibt, bis das Budget selbst zur Debatte steht.
 _VOCODER_BAENDER = 16
 # Unten 80 Hz, nicht 180: die Grundfrequenz einer tiefen Maennerstimme liegt
 # bei 70 bis 100 Hz, und ein Band, das erst darueber anfaengt, sieht von ihr
 # nichts -- gemessen an einem 150-Hz-Ton kam die Ausgabe mit Spitze 278 statt
 # 7641 heraus, also praktisch stumm.
 _VOCODER_BAND_HZ = (80.0, 7000.0)
-_VOCODER_HUELLE_HZ = 30.0
+_VOCODER_HUELLE_HZ = 50.0
 _VOCODER_TRAEGER_HZ = 110.0     # Rueckfall, solange die Stimme stimmlos ist
 
 
@@ -176,9 +188,10 @@ class Effekt:
     """Zustandsbehafteter Blockfilter. `verarbeite` bekommt und liefert PCM."""
 
     # Wie laut die Summe der modulierten Baender neben dem Original steht.
-    # Gemessen an Sprache und stehenden Toenen: 2.4 trifft den Pegel des
-    # Eingangs, ohne dass laute Vokale in die Begrenzung laufen.
-    VOCODER_PEGEL = 2.4
+    # 2.4 traf zwar den Pegel des Eingangs, kam im Hoertest aber zu leise und
+    # zu undeutlich an. 3.4 reichte im zweiten Hoertest immer noch nicht --
+    # 4.2 gibt nochmal spuerbar mehr Kopfraum, bevor die Begrenzung greift.
+    VOCODER_PEGEL = 4.2
 
     def __init__(self, name: str, rate: int):
         self.name = name
@@ -200,12 +213,19 @@ class Effekt:
             self.grundton = _Tonhoehenleser(rate)
             self.traeger_phase = 0.0
             self.letzte_f0 = _VOCODER_TRAEGER_HZ
-        laengste = max(ms for ms, _ in _KOLLEKTIV_STIMMEN) if name == "kollektiv" else 0.0
-        # Verlauf der EINGANGSproben statt Ringpuffer mit Schreibkopf: die
-        # Kopien lesen nur Vergangenes, nie Ausgegebenes -- damit ist das ein
-        # FIR-Filter und in einem Rutsch rechenbar. Ein Ringpuffer zwingt zur
-        # Schleife, weil der Index je Probe weiterwandert.
-        self.verlauf = np.zeros(int(rate * laengste / 1000) + 1, dtype=np.float64)
+        self.stimmen: list = []
+        if name == "kollektiv":
+            # Jede Nebenstimme bekommt einen eigenen Klangregler (nur fuer die
+            # Tonlage, faktor=1 laesst die Dauer unangetastet) und einen eigenen
+            # Verlauf -- die Kopien sind jetzt unterschiedlich hohe Stimmen,
+            # nicht mehr dieselbe Aufnahme, nur zeitversetzt.
+            for (ms, pegel), (halbtoene, streuung) in zip(_KOLLEKTIV_STIMMEN, _KOLLEKTIV_TONLAGE):
+                self.stimmen.append({
+                    "regler": Klangregler(1.0, rate, halbtoene=halbtoene, streuung=streuung),
+                    "verlauf": np.zeros(0, dtype=np.float64),
+                    "versatz": int(rate * ms / 1000),
+                    "pegel": pegel,
+                })
 
     def verarbeite(self, pcm: bytes) -> bytes:
         """Byte-Fassung fuer Aufrufer ausserhalb der Kette (Tests, `demo`)."""
@@ -250,18 +270,29 @@ class Effekt:
         return proben * faktor
 
     def _kollektiv(self, proben: np.ndarray) -> np.ndarray:
-        """Zwei verstimmte Kopien hinter dem Original: viele sprechen dasselbe.
+        """Zwei verstimmte, anders tonlagige Kopien hinter dem Original.
 
-        Die Verzoegerungen liegen unter 30 ms, also unter der Echoschwelle --
-        wahrgenommen wird nicht "nochmal", sondern "mehrere".
+        Jede Nebenstimme laeuft zuerst durch ihren eigenen Klangregler (feste
+        Tonlage plus Streuung), dann durch eine Verzoegerung -- eine hoehere
+        und eine tiefere Stimme statt zweier Echos derselben Aufnahme. Der
+        Klangregler liefert je Aufruf unterschiedlich viele Proben (WSOLA
+        puffert intern); darum ein wachsender Verlauf statt eines festen
+        Rings, der bei Bedarf vorn mit Stille aufgefuellt wird -- das kostet
+        am Anfang einer Aeusserung hoechstens ein paar stumme Millisekunden
+        der Nebenstimme, nie einen Laengenfehler in der Summe.
         """
-        vorrat = len(self.verlauf)
-        alles = np.concatenate((self.verlauf, proben))
         summe = proben.copy()
-        for ms, pegel in _KOLLEKTIV_STIMMEN:
-            versatz = int(self.rate * ms / 1000)
-            summe += alles[vorrat - versatz:vorrat - versatz + len(proben)] * pegel
-        self.verlauf = alles[-vorrat:]
+        for stimme in self.stimmen:
+            gepitcht_pcm = stimme["regler"].verarbeite(_begrenze_feld(proben).tobytes())
+            gepitcht = np.frombuffer(gepitcht_pcm, dtype="<i2").astype(np.float64)
+            verlauf = np.concatenate((stimme["verlauf"], gepitcht))
+            versatz = stimme["versatz"]
+            brauche = versatz + len(proben)
+            if len(verlauf) < brauche:
+                verlauf = np.concatenate((np.zeros(brauche - len(verlauf)), verlauf))
+            summe += verlauf[len(verlauf) - brauche:len(verlauf) - versatz] * stimme["pegel"]
+            # Nur so viel Vergangenheit behalten, wie der eigene Versatz braucht.
+            stimme["verlauf"] = verlauf[-(versatz + len(proben)):]
         return summe * 0.7                          # Platz fuer die Kopien
 
     def _rauschen(self, anzahl: int) -> np.ndarray:
@@ -961,7 +992,7 @@ class Kette:
     Gegenwert.
     """
 
-    def __init__(self, rate: int, *, effekt: str = "", faktor: float = 1.0,
+    def __init__(self, rate: int, *, effekte: tuple[str, ...] = (), faktor: float = 1.0,
                  halbtoene: float = 0.0, streuung: float = 0.0,
                  raster: float = 0.0, formant: float = 0.0,
                  verzerrung: float = 0.0, kruemel: float = 0.0,
@@ -975,8 +1006,12 @@ class Kette:
             self.stufen.append(Verzerrer(verzerrung, rate))
         if kruemel:
             self.stufen.append(Kruemel(kruemel, rate))
-        if effekt:
-            self.stufen.append(Effekt(effekt, rate))
+        # Mehrere Klangfarben gleichzeitig: je eine Effekt-Stufe. Reihenfolge
+        # ist immer die von EFFEKTE, nicht die des Aufrufers -- sonst klaenge
+        # dieselbe Kombination je nach Klickreihenfolge der Chips anders.
+        for name in EFFEKTE:
+            if name in effekte:
+                self.stufen.append(Effekt(name, rate))
         if breite:
             self.stufen.append(Breite(breite, rate))
         if hall:
@@ -1178,12 +1213,12 @@ def demo() -> None:
 
     # Leere Kette: nichts zu tun, und das sagt sie auch.
     assert not Kette(rate), "Kette ohne Stufe muss falsch sein"
-    assert Kette(rate, effekt="roboter") and Kette(rate, halbtoene=1.0)
+    assert Kette(rate, effekte=("roboter",)) and Kette(rate, halbtoene=1.0)
     assert durch_kette(Kette(rate), roh) == roh, "leere Kette muss durchreichen"
 
     # Eine einzelne Stufe in der Kette klingt wie dieselbe Stufe allein.
     allein = Effekt("roboter", rate)
-    assert durch_kette(Kette(rate, effekt="roboter"), roh) == allein.verarbeite(roh)
+    assert durch_kette(Kette(rate, effekte=("roboter",)), roh) == allein.verarbeite(roh)
     assert durch_kette(Kette(rate, halbtoene=3.0), sekunde) == durch(
         Klangregler(1.0, rate, halbtoene=3.0), sekunde)
 
@@ -1198,8 +1233,19 @@ def demo() -> None:
         fenster = (achse > achse[traeger] + 20.0) & (achse < achse[traeger] + 200.0)
         return float(achse[fenster][int(np.argmax(spektrum[fenster]))] - achse[traeger])
 
-    gemischt = durch_kette(Kette(rate, effekt="roboter", halbtoene=5.0), sekunde)
+    gemischt = durch_kette(Kette(rate, effekte=("roboter",), halbtoene=5.0), sekunde)
     assert abs(tremolo_hz(gemischt) - _TREMOLO_HZ) < 3.0, tremolo_hz(gemischt)
+
+    # Mehrere Klangfarben gleichzeitig: die Kette haengt beide Effekt-Stufen
+    # hintereinander, das Ergebnis ist weder nur roboter noch nur kollektiv.
+    nur_roboter = durch_kette(Kette(rate, effekte=("roboter",)), sekunde)
+    nur_kollektiv = durch_kette(Kette(rate, effekte=("kollektiv",)), sekunde)
+    beide = durch_kette(Kette(rate, effekte=("roboter", "kollektiv")), sekunde)
+    assert len(beide) == len(sekunde) == len(nur_roboter) == len(nur_kollektiv)
+    assert beide != nur_roboter and beide != nur_kollektiv
+    # Reihenfolge folgt EFFEKTE, nicht der Aufrufreihenfolge -- roboter zuerst,
+    # unabhaengig davon, in welcher Reihenfolge die Chips angeklickt wurden.
+    assert beide == durch_kette(Kette(rate, effekte=("kollektiv", "roboter")), sekunde)
 
     # -- Hall --------------------------------------------------------------
     # Ein einzelner Impuls muss ueber Blockgrenzen hinweg nachklingen: der
@@ -1311,9 +1357,9 @@ def demo() -> None:
     stueckweise = durch_bloecke(Effekt("vocoder", rate), sekunde)
     assert groesster_sprung(stueckweise) < 8000, groesster_sprung(stueckweise)
 
-    kette = Kette(rate, effekt="vocoder")
+    kette = Kette(rate, effekte=("vocoder",))
     kette.verarbeite(sekunde[:chunk])                   # warm
-    kette = Kette(rate, effekt="vocoder")
+    kette = Kette(rate, effekte=("vocoder",))
     begonnen = time.perf_counter()
     for i in range(0, len(sekunde), chunk):
         kette.verarbeite(sekunde[i:i + chunk])

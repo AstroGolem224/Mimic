@@ -97,7 +97,7 @@ def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = Non
                             "correlation_id": "1" * 32, **request})
     job.delivered.set()
     profile = SimpleNamespace(wav_path="stub.wav", prompt_text="stub", gain=1.0,
-                              **{"language": "en", "speaker_scale": 1.5, "effekt": "",
+                              **{"language": "en", "speaker_scale": 1.5, "effekte": (),
                                  "tonhoehe": 0.0, "streuung": 0.0, "raster": 0.0,
                                  "formant": 0.0, "hall": 0.0, "verzerrung": 0.0,
                                  "kruemel": 0.0, "breite": 0.0, **(stimme or {})})
@@ -1007,7 +1007,7 @@ class EffektTests(unittest.TestCase):
     def test_effekt_veraendert_das_pcm(self):
         runtime = StubRuntime([[pcm(9000), pcm(-9000)]])
         _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist."},
-                                     stimme={"effekt": "roboter"})
+                                     stimme={"effekte": ("roboter",)})
         audio = b"".join(payload for kind, payload in events if kind == "A")
         self.assertEqual(len(pcm(9000) + pcm(-9000)), len(audio))
         self.assertNotEqual(pcm(9000) + pcm(-9000), audio)
@@ -1017,7 +1017,7 @@ class EffektTests(unittest.TestCase):
         # zwei Kopien auf das Signal: ein Take knapp unter STUMM_PEAK kam damit
         # als hoerbar heraus und wurde nicht wiederholt. Seit die Kette erst in
         # `sende()` laeuft, misst `spitze` das rohe Modellsignal -- PHASE2 2a,
-        # Kriterium P2-L. Bloecke gross genug, dass die Kopien (17 und 29 ms)
+        # Kriterium P2-L. Bloecke gross genug, dass die Kopien (30 und 50 ms)
         # hineinfallen; bei acht Proben lesen sie noch Nullen.
         from mimic import worker
 
@@ -1033,7 +1033,7 @@ class EffektTests(unittest.TestCase):
 
         runtime = StubRuntime([[quiet], [quiet, loud]])
         _engine, events = run_engine(runtime, {"text": "Ein Satz, der lang genug ist."},
-                                     stimme={"effekt": "kollektiv"})
+                                     stimme={"effekte": ("kollektiv",)})
         self.assertEqual(2, len(runtime.texts), "der stumme Take muss wiederholt werden")
         audio = b"".join(payload for kind, payload in events if kind == "A")
         self.assertEqual(len(quiet + loud), len(audio))
@@ -1047,7 +1047,7 @@ class EffektTests(unittest.TestCase):
                 runtime = StubRuntime([[eingang]])
                 _engine, events = run_engine(
                     runtime, {"text": "Ein Satz, der lang genug ist."},
-                    stimme={"effekt": name})
+                    stimme={"effekte": (name,)})
                 self.assertEqual("ok", json.loads(events[-1][1])["status"])
                 audio = b"".join(p for kind, p in events if kind == "A")
                 self.assertEqual(len(eingang), len(audio))
@@ -1070,6 +1070,46 @@ class EffektTests(unittest.TestCase):
         with self.assertRaises(VoiceError) as erhoben:
             load_voice("probe", root)
         self.assertIn("effekt", erhoben.exception.message)
+
+    def test_mehrere_effekte_gleichzeitig_und_altes_einzelfeld_bleibt_lesbar(self):
+        from mimic.voices import load_voice, speichere_effekte
+        import wave as wave_modul
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "voices"
+        profil = root / "probe"
+        profil.mkdir(mode=0o700, parents=True)
+        root.chmod(0o700)
+        with wave_modul.open(str(profil / "ref.wav"), "wb") as wav:
+            wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(48_000)
+            wav.writeframes(array.array("h", [1000] * 48_000 * 4).tobytes())
+        (profil / "ref.txt").write_text("Ein Satz.\n", encoding="utf-8")
+        (profil / "ref.wav").chmod(0o600)
+        (profil / "ref.txt").chmod(0o600)
+
+        # Altes Format: ein einzelner Name im Feld "effekt".
+        (profil / "settings.json").write_text(json.dumps({"effekt": "roboter"}),
+                                              encoding="utf-8")
+        (profil / "settings.json").chmod(0o600)
+        self.assertEqual(("roboter",), load_voice("probe", root, mit_gain=False).effekte)
+
+        # Neues Format, absichtlich in "falscher" Reihenfolge gespeichert --
+        # geladen wird trotzdem in der Reihenfolge von EFFEKTE (roboter vor vocoder).
+        (profil / "settings.json").write_text(
+            json.dumps({"effekte": ["vocoder", "roboter"]}), encoding="utf-8")
+        (profil / "settings.json").chmod(0o600)
+        self.assertEqual(("roboter", "vocoder"),
+                         load_voice("probe", root, mit_gain=False).effekte)
+
+        # speichere_effekte schreibt atomar und ersetzt ein altes "effekt"-Feld.
+        (profil / "settings.json").write_text(json.dumps({"effekt": "tv"}), encoding="utf-8")
+        (profil / "settings.json").chmod(0o600)
+        # speichere_effekte schreibt die gegebene Reihenfolge unveraendert --
+        # die kanonische EFFEKTE-Reihenfolge stellt erst load_voice her.
+        speichere_effekte("probe", ("kollektiv", "roboter"), root)
+        gespeichert = json.loads((profil / "settings.json").read_text())
+        self.assertNotIn("effekt", gespeichert)
+        self.assertEqual(["kollektiv", "roboter"], gespeichert["effekte"])
+        self.assertEqual(("roboter", "kollektiv"),
+                         load_voice("probe", root, mit_gain=False).effekte)
 
     def test_tonhoehe_und_streuung_kommen_aus_dem_profil(self):
         """Kein stiller Rueckfall: eine Stimme, die wegen eines Tippfehlers

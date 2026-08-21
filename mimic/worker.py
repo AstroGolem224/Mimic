@@ -680,7 +680,7 @@ class Engine:
                                          + verzerrung_wert(request.get("verzerrung")))
             kruemel = kruemel_wert(profile.kruemel + kruemel_wert(request.get("kruemel")))
             breite = breite_wert(profile.breite + breite_wert(request.get("breite")))
-            kette = Kette(sample_rate, effekt=profile.effekt, faktor=faktor,
+            kette = Kette(sample_rate, effekte=profile.effekte, faktor=faktor,
                           halbtoene=halbtoene, streuung=streuung, raster=raster,
                           formant=formant, hall=hall, verzerrung=verzerrung,
                           kruemel=kruemel, breite=breite)

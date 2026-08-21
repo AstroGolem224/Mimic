@@ -1807,15 +1807,16 @@ function zeichneVerwaltung(){
     const farben = el.querySelector(".klangfarbe");
     effekte.forEach(name => {
       const chip = document.createElement("button");
-      chip.className = "chip klein" + (v.effekt === name ? " an" : "");
+      // Mehrfachauswahl: jeder Chip schaltet nur sich selbst, andere aktive
+      // Chips bleiben unangetastet -- kein radiogroup-Verhalten wie bei GLaDOS.
+      chip.className = "chip klein" + (v.effekte.includes(name) ? " an" : "");
       chip.textContent = name;
-      chip.title = `Klangfarbe ${name} dauerhaft fuer ${v.name} setzen`;
+      chip.title = `Klangfarbe ${name} bei ${v.name} an- oder abschalten`;
       chip.disabled = !v.ok;
       chip.onclick = async () => {
-        const neu = v.effekt === name ? "" : name;
         try{
-          await api("/api/voice/effekt", {name: v.name, effekt: neu});
-          setzeStatus(`Klangfarbe von ${v.name}: ${neu || "keine"}`, "gut");
+          const antwort = await api("/api/voice/effekt", {name: v.name, effekt: name});
+          setzeStatus(`Klangfarben von ${v.name}: ${antwort.effekte.length ? antwort.effekte.join(", ") : "keine"}`, "gut");
           await inventarLaden();
         }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
       };
@@ -2022,11 +2023,31 @@ $("bBehalten").onclick = async () => {
   }
 };
 
+// Statt eines einzigen, irgendwann faden Satzes: bei jedem Probehoeren einer
+// zufaellig aus dieser Liste -- gerade beim Effekte-Durchklicken (Klangfarbe,
+// Regler) hoert man denselben Satz sonst dutzendfach hintereinander.
+const WITZE = [
+  `Was macht ein Pirat am Computer? — Er drückt die Enter-Taste.`,
+  `Warum hat der Mathematiker Angst vor dem Minus? — Weil es negativ auffällt.`,
+  `Was sagt ein Krokodil, das einen Clown gefressen hat? — „Schmeckt irgendwie komisch."`,
+  `Warum können Geister so schlecht lügen? — Weil man durch sie hindurchsieht.`,
+  `Was ist braun und schwimmt im Wasser? — Ein U-Brot.`,
+  `Treffen sich zwei Magneten. Sagt der eine: „Was soll ich bloß anziehen?"`,
+  `Warum summen Bienen? — Weil sie den Text nicht kennen.`,
+  `Was macht eine Wolke mit Juckreiz? — Sie fliegt zum Wolkenkratzer.`,
+  `Wie nennt man einen Bumerang, der nicht zurückkommt? — Stock.`,
+  `Was ist grün und klopft an der Tür? — Ein Klopfsalat.`,
+  `Kommt ein Cowboy vom Friseur. — Pony weg.`,
+];
+function zufallsWitz(){
+  return WITZE[Math.floor(Math.random() * WITZE.length)];
+}
+
 async function probeSprechen(name){
   const stimme = name || frischeStimme;
   if(!stimme) return;
   try{
-    await api("/api/speak", {text: `#${stimme}: "Probe. Klingt das nach mir? Ja!"`,
+    await api("/api/speak", {text: `#${stimme}: "${zufallsWitz()}"`,
                              mode: modus, voice: stimme, ...klangwerte(),
                              speichern: false});
     sperre(true);
