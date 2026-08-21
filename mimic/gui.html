@@ -1579,7 +1579,7 @@ function tick(neuLesen=false){
 }
 
 /* ── Stimmenwerkstatt ─────────────────────────────────────────────── */
-let charaktere = [], inventar = [], deckel = 90, letzteAufnahme = null, frischeStimme = "";
+let charaktere = [], inventar = [], effekte = [], deckel = 90, letzteAufnahme = null, frischeStimme = "";
 let aufnahmeLaeuft = false, dialogRueckkehr = null;
 let letzterAufnahmefehler = "";   // damit derselbe Grund nicht bei jedem Puls neu gesetzt wird
 
@@ -1751,7 +1751,7 @@ $("bEntwurfStop").onclick = async () => {
 async function inventarLaden(){
   try{
     const wert = await api("/api/inventar");
-    charaktere = wert.charaktere; inventar = wert.voices;
+    charaktere = wert.charaktere; inventar = wert.voices; effekte = wert.effekte || [];
     deckel = 90;
     zeichneChips(); zeichneVerwaltung(); pruefeName();
   }catch(fehler){ $("kNameHinweis").textContent = "" + fehler; }
@@ -1792,6 +1792,7 @@ function zeichneVerwaltung(){
     const el = document.createElement("div");
     el.className = "karte" + (v.ok ? "" : " kaputt");
     el.innerHTML = `<div class="kopf"><b></b><s></s></div><div class="ref"></div>
+      <div class="chips klangfarbe" role="group" aria-label="Klangfarbe"></div>
       <div class="reihe">
         <button class="knopf klein" data-tun="hoeren">Referenz hören</button>
         <button class="knopf klein" data-tun="sprechen">Probesatz</button>
@@ -1803,6 +1804,23 @@ function zeichneVerwaltung(){
     const hoeren = el.querySelector('[data-tun=hoeren]');
     const sprechen = el.querySelector('[data-tun=sprechen]');
     const loeschen = el.querySelector('[data-tun=loeschen]');
+    const farben = el.querySelector(".klangfarbe");
+    effekte.forEach(name => {
+      const chip = document.createElement("button");
+      chip.className = "chip klein" + (v.effekt === name ? " an" : "");
+      chip.textContent = name;
+      chip.title = `Klangfarbe ${name} dauerhaft fuer ${v.name} setzen`;
+      chip.disabled = !v.ok;
+      chip.onclick = async () => {
+        const neu = v.effekt === name ? "" : name;
+        try{
+          await api("/api/voice/effekt", {name: v.name, effekt: neu});
+          setzeStatus(`Klangfarbe von ${v.name}: ${neu || "keine"}`, "gut");
+          await inventarLaden();
+        }catch(fehler){ setzeStatus("" + fehler, "fehler"); }
+      };
+      farben.appendChild(chip);
+    });
     if(!v.ok){ hoeren.disabled = true; sprechen.disabled = true; }
     hoeren.onclick = () => {
       const spieler = $("kAudio");

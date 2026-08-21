@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import tempfile
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -288,6 +289,59 @@ def _read_settings(profile_fd: int) -> tuple[str, float, str, dict]:
                              f"{name} muss zwischen {mini} und {maxi} liegen")
         regler[name] = float(wert)
     return sprache, float(scale), effekt, regler
+
+
+def speichere_effekt(name: str, effekt: str, voices_dir: Path | None = None) -> None:
+    """Schreibt `effekt` dauerhaft in settings.json des Profils.
+
+    Andere Felder (Sprache, speaker_scale, Klangregler) bleiben unangetastet --
+    die Datei wird gelesen, nur der eine Schluessel veraendert, dann atomar
+    zurueckgeschrieben. Leerer effekt loescht den Schluessel wieder (Vorgabe:
+    unbearbeitet).
+    """
+    if not VOICE_RE.fullmatch(name):
+        raise VoiceError("unknown_voice", "ungueltiger Stimmname")
+    if effekt and not ist_effekt(effekt):
+        raise VoiceError("invalid_voice_profile", f"effekt muss eines von {sorted(EFFEKTE)} sein")
+    root = voices_dir or default_voices_dir()
+    profil = root / name
+    try:
+        info = profil.lstat()
+    except FileNotFoundError:
+        raise VoiceError("unknown_voice", f"Stimme {name!r} existiert nicht") from None
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise VoiceError("invalid_voice_profile", "Profilverzeichnis hat unsichere Eigenschaften")
+    pfad = profil / "settings.json"
+    roh: dict = {}
+    if pfad.exists() or pfad.is_symlink():
+        einfo = pfad.lstat()
+        if not stat.S_ISREG(einfo.st_mode) or einfo.st_uid != os.getuid():
+            raise VoiceError("invalid_voice_profile", "settings.json hat unsichere Eigenschaften")
+        try:
+            roh = json.loads(pfad.read_text("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise VoiceError("invalid_voice_profile", "settings.json ist beschaedigt") from None
+        if not isinstance(roh, dict):
+            raise VoiceError("invalid_voice_profile", "settings.json muss ein Objekt sein")
+    if effekt:
+        roh["effekt"] = effekt
+    else:
+        roh.pop("effekt", None)
+    daten = json.dumps(roh, ensure_ascii=False).encode()
+    if len(daten) > MAX_SETTINGS_BYTES:
+        raise VoiceError("invalid_voice_profile", "settings.json waere zu gross")
+    fd, tmp_roh = tempfile.mkstemp(prefix=".settings.", dir=profil)
+    tmp = Path(tmp_roh)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb", closefd=True) as handle:
+            handle.write(daten)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, pfad)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def load_voice(name: str, voices_dir: Path | None = None, *,

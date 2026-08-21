@@ -43,14 +43,15 @@ from pathlib import Path
 
 from .charaktere import CHARAKTERE
 from .cli import _dauer, open_request, profil_aus_datei, request
-from .effekte import (breite_wert, formant_wert, hall_wert, kruemel_wert, raster_wert,
-                      streuung_wert, tempo_faktor, tonhoehe_wert, verzerrung_wert)
+from .effekte import (EFFEKTE, breite_wert, formant_wert, hall_wert, kruemel_wert,
+                      raster_wert, streuung_wert, tempo_faktor, tonhoehe_wert,
+                      verzerrung_wert)
 from .entwurf import (MAX_KANDIDATEN, MOTOREN, STANDARDBESCHREIBUNG, STANDARDTEXT,
                       VORGABE_MOTOR, Entwurf, umgebungen_da)
 from .protocol import MODES, read_frame
 from .transkription import transkribieren, umgebung_da as transkription_da
 from .voices import (MAX_TEXT_BYTES, MAX_WAV_BYTES, VOICE_RE, VoiceError, close_voice,
-                     default_voices_dir, load_voice)
+                     default_voices_dir, load_voice, speichere_effekt)
 
 SPRECHERPAUSE_MS = 300      # Luft zwischen zwei Einsaetzen
 PEGEL_FENSTER = 600         # Proben je Balken im Wellenband, bei 24 kHz 40 Balken/s
@@ -337,13 +338,15 @@ def stimmen_details() -> list[dict]:
         return []
     inventar = []
     for name in eintraege:
-        eintrag: dict = {"name": name, "ok": True, "grund": "", "dauer_s": None, "text": ""}
+        eintrag: dict = {"name": name, "ok": True, "grund": "", "dauer_s": None, "text": "",
+                         "effekt": ""}
         try:
             profil = load_voice(name, root, mit_gain=False)
         except VoiceError as fehler:
             eintrag.update(ok=False, grund=f"{fehler.reason}: {fehler.message}")
         else:
             eintrag["text"] = profil.prompt_text
+            eintrag["effekt"] = profil.effekt
             close_voice(profil)
             try:
                 eintrag["dauer_s"] = round(_dauer(root / name / "ref.wav"), 1)
@@ -1278,6 +1281,7 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._json(200, {"voices": stimmen_details(),
                              "charaktere": [{"name": name, "regie": wert.regie, "text": wert.text}
                                             for name, wert in sorted(CHARAKTERE.items())],
+                             "effekte": list(EFFEKTE),
                              "dauer": {"min": DAUER_MIN_S, "max": DAUER_MAX_S,
                                        "ziel": list(DAUER_ZIEL)}})
         elif pfad == "/api/reference":
@@ -1360,7 +1364,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
             self._warm(wunsch)
         elif pfad == "/api/export/ack":
             self._export_bestaetigen(wunsch)
-        elif pfad.startswith("/api/record/") or pfad == "/api/voice/delete":
+        elif (pfad.startswith("/api/record/") or
+              pfad in ("/api/voice/delete", "/api/voice/effekt")):
             self._profilpflege(pfad, wunsch)
         elif pfad.startswith("/api/design/"):
             self._entwerfen(pfad, wunsch)
@@ -1531,6 +1536,14 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
                     raise RuntimeError(konflikt)
                 stimme_loeschen(name)
                 self._json(200, {"ok": True})
+            elif pfad == "/api/voice/effekt":
+                name = self._feld_text(wunsch, "name")
+                effekt = self._feld_text(wunsch, "effekt")
+                konflikt = self.sitzung.loeschkonflikt(name)
+                if konflikt:
+                    raise RuntimeError(konflikt)
+                speichere_effekt(name, effekt)
+                self._json(200, {"ok": True, "effekt": effekt})
             else:
                 self._json(404, {"message": "unbekannter Endpunkt"})
                 return
@@ -1540,6 +1553,10 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
         except RuntimeError as fehler:
             status = 503 if "setup --transkription" in str(fehler) else 409
             self._json(status, {"message": str(fehler)})
+            return
+        except VoiceError as fehler:
+            status = 404 if fehler.reason == "unknown_voice" else 400
+            self._json(status, {"message": fehler.message, "reason": fehler.reason})
             return
         except OSError as fehler:
             self._json(500, {"message": f"Dateisystem: {fehler}"})
