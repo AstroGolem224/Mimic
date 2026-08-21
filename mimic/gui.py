@@ -1603,9 +1603,8 @@ class _GuiHandler(http.server.BaseHTTPRequestHandler):
 
     def _warm(self, wunsch: dict) -> None:
         # Den Modus der Oberflaeche waermen, nicht einen festen. Fest "soar"
-        # erzwang genau den Neustart, den der Warmlauf verhindern soll: das
-        # Fenster spricht per Vorgabe mf, der Worker haette also erst soar
-        # geladen und beim ersten Satz wieder abgeworfen (mode_restart).
+        # haette den ersten Satz des Fensters (Vorgabe mf) auf das Nachladen
+        # warten lassen -- der Warmlauf soll genau diese Wartezeit tilgen.
         modus = wunsch.get("mode") or "mf"
         if modus not in MODES:
             self._json(400, {"message": "mode muss mf, soar oder qwen sein"})

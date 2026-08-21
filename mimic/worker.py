@@ -346,10 +346,6 @@ class FatalWorkerError(WorkerRefusal):
     """Der Modellzustand ist nicht mehr vertrauenswuerdig; Prozess muss enden."""
 
 
-class ModeSwitch(FatalWorkerError):
-    """Die Anfrage muss nach dem kontrollierten Prozessende einmal wiederholt werden."""
-
-
 @dataclass(order=True)
 class Job:
     priority: int
@@ -529,17 +525,16 @@ class Engine:
         started = time.monotonic()
         outcome, reason = "ok", ""
         try:
-            if self.state == "warm":
-                if mode in self.runtimes:
-                    return
-                raise ModeSwitch("mode_restart", f"Moduswechsel zu {mode} braucht Worker-Neustart",
-                                 worker_pid=os.getpid())
+            if self.state == "warm" and mode in self.runtimes:
+                return
             self._publish_loading(mode)
             try:
                 runtime = self._load(mode)
             except BaseException:
                 with self.condition:
-                    self.state = "cold"
+                    # Andere Modi bleiben nutzbar: nur ohne jede Runtime ist
+                    # der Worker wirklich kalt.
+                    self.state = "warm" if self.runtimes else "cold"
                     self.loading_mode = None
                 raise
             with self.condition:
@@ -625,19 +620,19 @@ class Engine:
         outcome, reason = "error", "worker_unavailable"
         profile = None
         generator = None
-        cold = self.state != "warm"
+        # Kalt heisst: DIESER Modus ist nicht geladen. Andere Modi duerfen
+        # daneben warm bleiben -- ein Moduswechsel ist ein Nachladen, kein
+        # Worker-Neustart mehr.
+        cold = mode not in self.runtimes
         try:
             profile = load_voice(voice)
-            if self.state == "warm" and mode not in self.runtimes:
-                raise ModeSwitch("mode_restart", f"Moduswechsel zu {mode} braucht Worker-Neustart",
-                                 worker_pid=os.getpid())
             if cold:
                 self._publish_loading(mode)
                 try:
                     runtime = self._load(mode)
                 except BaseException:
                     with self.condition:
-                        self.state = "cold"
+                        self.state = "warm" if self.runtimes else "cold"
                         self.loading_mode = None
                     raise
                 with self.condition:

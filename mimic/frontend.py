@@ -89,21 +89,6 @@ def _set_response_timeout(response: http.client.HTTPResponse, timeout: float) ->
     sock.settimeout(timeout)
 
 
-def _wait_worker_exit(pid: object, timeout: float = CONNECT_TIMEOUT) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return False
-        time.sleep(0.01)
-    return False
-
-
 class _ConsumerDisconnected(Exception):
     pass
 
@@ -351,12 +336,9 @@ class FrontendHandler(BaseHTTPRequestHandler):
         self._json(status, value)
 
     def _proxy(self, request: dict) -> None:
-        for retry in range(2):
-            if not self._proxy_once(request, retry_mode=(retry == 0)):
-                return
-        self._error("worker_unavailable", "Worker-Neustart war nicht erfolgreich")
+        self._proxy_once(request)
 
-    def _proxy_once(self, request: dict, *, retry_mode: bool) -> bool:
+    def _proxy_once(self, request: dict) -> bool:
         body = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode()
         first_audio_timeout = (QWEN_FIRST_AUDIO_TIMEOUT
                                if request.get("mode") == "qwen" else FIRST_AUDIO_TIMEOUT)
@@ -398,12 +380,6 @@ class FrontendHandler(BaseHTTPRequestHandler):
                 elif kind == "E":
                     end = json.loads(payload)
                     reason = end.get("reason", "worker_unavailable")
-                    if reason == "mode_restart" and retry_mode:
-                        reader.close()
-                        if _wait_worker_exit(end.get("worker_pid")):
-                            return True
-                        self._error("worker_unavailable", "Worker-Neustart blieb aus")
-                        return False
                     details = {key: end[key] for key in ERROR_DETAIL_FIELDS if key in end}
                     self._error(reason,
                                 end.get("message", "Worker hat vor dem Stream abgebrochen"),

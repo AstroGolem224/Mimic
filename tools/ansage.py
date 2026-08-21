@@ -742,13 +742,11 @@ def sprechen(text: str, sitzung: str = "", griff=None) -> int:
     for nummer, stueck in enumerate(stuecke, 1):
         begonnen = time.monotonic()
         try:
-            # --mode mf statt der CLI-Vorgabe soar: seit 2026-08-17 spricht auch das
-            # Handy ueber Mimic, und das braucht zwingend mf (soar misst RTF 1,159,
-            # also langsamer als Echtzeit -- der AudioTrack liefe leer). Der Worker
-            # haelt nur EINEN Modus; jeder Wechsel ist ein Neustart von 8--9 s und
-            # wirft die laufende Anfrage mit `mode_restart` ab. Gemessen: 4 Neustarts
-            # in 40 Minuten, TTFA am Handy dadurch 12 s statt 200 ms.
-            lauf = subprocess.run([programm, "say", stueck, "--voice", gewaehlt, "--mode", "mf"],
+            # Kein --mode mehr: der Worker haelt seit dem Mehrmodus-Umbau
+            # mehrere Modi gleichzeitig warm, ein Wechsel ist kein Neustart
+            # mehr. Die Ansage darf also wieder der CLI-Vorgabe folgen, ohne
+            # dem Handy (das zwingend mf braucht) den Worker wegzuwerfen.
+            lauf = subprocess.run([programm, "say", stueck, "--voice", gewaehlt],
                                   timeout=SPRECH_FRIST_S,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         except (OSError, subprocess.SubprocessError) as fehler:

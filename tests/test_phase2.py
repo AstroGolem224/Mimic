@@ -74,13 +74,17 @@ class StubRuntime:
 
 
 def run_engine(runtime: StubRuntime, request: dict, *, stimme: dict | None = None,
-               emit=None):
+               emit=None, load=None):
     from mimic import worker
 
     engine = worker.Engine.__new__(worker.Engine)
     engine.runtimes = {"mf": runtime}
     engine.state = "warm"
     engine.state_lock = threading.Lock()
+    engine.condition = threading.Condition()
+    engine.loading_mode = None
+    if load is not None:
+        engine._load = load
     engine.mode = "mf"
     engine.last_load_s = 0.0
     engine.started = time.monotonic()
@@ -295,16 +299,19 @@ class WorkerDefectTests(unittest.TestCase):
                       if kind == "A" and payload.strip(b"\x00")]
         self.assertEqual([loud, loud], gesprochen)
 
-    def test_moduswechsel_beendet_worker_ohne_runtime_zu_raeumen(self):
+    def test_moduswechsel_laedt_nach_statt_worker_zu_beenden(self):
         from mimic import worker
 
         old_runtime = StubRuntime([])
-        engine, events = run_engine(old_runtime, {"mode": "soar"})
+        loud = bytes(2048)[:2] + (32000).to_bytes(2, "little", signed=True) * 1023
+        new_runtime = StubRuntime([[loud]])
+        engine, events = run_engine(old_runtime, {"mode": "soar"},
+                                    load=lambda _mode: new_runtime)
         self.assertIs(old_runtime, engine.runtimes["mf"])
-        self.assertTrue(engine.fatal.is_set())
+        self.assertIs(new_runtime, engine.runtimes["soar"])
+        self.assertFalse(engine.fatal.is_set())
         end = json.loads(events[-1][1])
-        self.assertEqual("mode_restart", end["reason"])
-        self.assertEqual(os.getpid(), end["worker_pid"])
+        self.assertEqual("ok", end["status"])
 
         engine.state = "loading"
         engine.jobs = mock.Mock()
@@ -342,15 +349,15 @@ class WorkerDefectTests(unittest.TestCase):
         self.assertEqual("cold", engine.state)
         self.assertEqual("load_denied", json.loads(events[-1][1])["reason"])
 
-    def test_frontend_wiederholt_moduswechsel_genau_einmal(self):
+    def test_frontend_proxied_genau_einmal_ohne_moduswechsel_retry(self):
         from mimic.frontend import FrontendHandler
 
         handler = FrontendHandler.__new__(FrontendHandler)
         calls = []
-        handler._proxy_once = lambda request, retry_mode: calls.append(retry_mode) or retry_mode
+        handler._proxy_once = lambda request: calls.append(request) or True
         handler._error = lambda *_args, **_kwargs: self.fail("unerwarteter Fehler")
         handler._proxy({"mode": "soar"})
-        self.assertEqual([True, False], calls)
+        self.assertEqual([{"mode": "soar"}], calls)
 
     def test_frontend_reicht_hub_reason_nach_aussen(self):
         from mimic import frontend
@@ -382,7 +389,7 @@ class WorkerDefectTests(unittest.TestCase):
         with mock.patch.object(frontend, "UnixHTTPConnection", return_value=Connection()), \
              mock.patch.object(frontend, "_set_response_timeout"), \
              mock.patch.object(frontend, "read_frame", return_value=("E", payload)):
-            retry = handler._proxy_once({"text": "x"}, retry_mode=False)
+            retry = handler._proxy_once({"text": "x"})
         self.assertFalse(retry)
         self.assertEqual(503, result["status"])
         self.assertEqual("load_denied", result["value"]["reason"])
@@ -796,7 +803,7 @@ class Phase2bTests(unittest.TestCase):
                 pass
 
         with mock.patch.object(frontend, "_WorkerReader", FakeReader):
-            handler._proxy_once({"text": "x"}, retry_mode=False)
+            handler._proxy_once({"text": "x"})
         self.assertEqual("future_worker_reason", result["value"]["reason"])
 
     def test_frontend_warm_reicht_202_200_409_durch_und_lehnt_fremden_modus_ab(self):
