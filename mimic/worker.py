@@ -38,9 +38,16 @@ REVISIONS = {
     "qwen": ("Qwen/Qwen3-TTS-12Hz-1.7B-Base",
              "fd4b254389122332181a7c3db7f27e918eec64e3"),
 }
+# Expandable Segments sorgen dafuer, dass empty_cache() belegte Bloecke
+# wirklich an den Treiber zurueckgibt. Mit dem Standard-Allocator blieb der
+# Warmlauf-Peak dauerhaft stehen: gemessen am 2026-08-21 hielt der Worker
+# 11 GiB VRAM, obwohl das Modell selbst nur ~5 GiB wiegt. Muss vor dem ersten
+# torch-Import gesetzt sein; der passiert lazy in _load().
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 MIN_VRAM_MIB = int(os.environ.get("MIMIC_MIN_VRAM_MIB", "8000"))
 MODEL_VRAM_MIB = int(os.environ.get("MIMIC_MODEL_VRAM_MIB", "6222"))
-IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "300"))
+IDLE_TIMEOUT = float(os.environ.get("MIMIC_IDLE_TIMEOUT", "120"))
 REQUEST_TIMEOUT = float(os.environ.get("MIMIC_REQUEST_TIMEOUT", "120"))
 QWEN_REQUEST_TIMEOUT = float(os.environ.get("MIMIC_QWEN_REQUEST_TIMEOUT", "240"))
 WORKER_MAX_BODY_BYTES = int(os.environ.get("MIMIC_WORKER_MAX_BODY_BYTES", str(64 * 1024)))
@@ -301,6 +308,19 @@ class QwenRuntime:
         self._stoppen()
 
 
+def vram_cache_freigeben() -> None:
+    """Gibt den PyTorch-Allocator-Cache an den Treiber zurueck.
+
+    Wirkt nur zusammen mit expandable_segments (siehe PYTORCH_CUDA_ALLOC_CONF
+    oben): ohne sie behaelt der Allocator die Bloecke trotzdem. torch wird
+    ueber sys.modules geholt, damit der qwen-Modus (kein torch im Worker)
+    hier nicht faelschlich das Paket laedt.
+    """
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def suppress_dots_payload_logging() -> None:
     """Unterdrueckt Bibliothekslogs, die Ziel- und Referenztext enthalten."""
     logger = logging.getLogger("dots_tts")
@@ -536,6 +556,10 @@ class Engine:
             outcome = "error"
             reason = exc.reason if isinstance(exc, WorkerRefusal) else "worker_unavailable"
         finally:
+            # Nach dem Warmlauf haengt dessen Allokationsspitze noch im Cache;
+            # freigeben, bevor der Worker als "warm" daliegt und mit Ollama um
+            # VRAM konkurriert.
+            vram_cache_freigeben()
             with self.condition:
                 self.warming_mode = None
             self.write_status("warm" if self.state == "warm" else "kalt")
@@ -801,6 +825,11 @@ class Engine:
                     close()
             if profile is not None:
                 close_voice(profile)
+            # Wie nach dem Warmlauf: die Spitze des Auftrags nicht im Cache
+            # stehen lassen. Kostet den NAECHSTEN Auftrag ein paar ms fuer
+            # Neuallokation, haelt aber den Ruhe-Fussabdruck beim Gewicht des
+            # Modells statt beim historischen Maximum.
+            vram_cache_freigeben()
             elapsed = time.monotonic() - started
             audio_s = samples / int(getattr(self.runtimes.get(mode), "sample_rate", 48_000))
             rss_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
